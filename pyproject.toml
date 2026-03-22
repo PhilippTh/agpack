@@ -1,0 +1,64 @@
+[project]
+name = "agpack"
+version = "0.1.0"
+description = "Fetch and deploy AI agent resources from git repos to local tool directories"
+readme = "README.md"
+license = "GPL-3.0-only"
+authors = [
+    { name = "Philipp Thumfart", email = "philipp@thumfart.eu" },
+]
+requires-python = ">=3.10"
+
+[project.urls]
+Homepage = "https://github.com/PhilippTh/agpack"
+Funding = "https://github.com/sponsors/PhilippTh"
+dependencies = [
+    "click>=8.0",
+    "PyYAML>=6.0",
+    "tomli-w>=1.0",
+]
+
+[project.scripts]
+agpack = "agpack.cli:main"
+
+[tool.ruff]
+# Enable pycodestyle (`E`), Pyflakes (`F`), and import sorting (`I`)
+lint.select = ["E", "F", "I", "B", "C4", "ARG", "N", "COM", "UP", "W"]
+lint.ignore = ["B008", "COM812"]  # Ignore explicit function call in function decorator
+lint.fixable = ["ALL"]
+lint.unfixable = []
+
+# Same as Black
+line-length = 88
+indent-width = 4
+
+# Assume Python 3.12
+target-version = "py312"
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # Ignore unused imports in __init__.py files
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.15.7",
+]
