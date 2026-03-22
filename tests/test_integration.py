@@ -324,32 +324,33 @@ def test_status_command(tmp_path: Path) -> None:
 
 
 def test_init_command(tmp_path: Path) -> None:
-    """Test the init command."""
+    """Test the init command with --config."""
     runner = CliRunner()
 
-    import os
+    config_path = tmp_path / "agpack.yml"
 
-    old_cwd = os.getcwd()
-    try:
-        os.chdir(tmp_path)
+    result = runner.invoke(
+        main,
+        ["init", "--config", str(config_path)],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert "Created" in result.output
 
-        result = runner.invoke(main, ["init"], catch_exceptions=False)
-        assert result.exit_code == 0
-        assert "Created" in result.output
+    assert config_path.exists()
 
-        config_path = tmp_path / "agpack.yml"
-        assert config_path.exists()
+    content = config_path.read_text()
+    assert "name:" in content
+    assert "targets:" in content
+    assert "dependencies:" in content
 
-        content = config_path.read_text()
-        assert "name:" in content
-        assert "targets:" in content
-        assert "dependencies:" in content
-
-        # Running again should be a no-op
-        result = runner.invoke(main, ["init"], catch_exceptions=False)
-        assert "already exists" in result.output
-    finally:
-        os.chdir(old_cwd)
+    # Running again should be a no-op
+    result = runner.invoke(
+        main,
+        ["init", "--config", str(config_path)],
+        catch_exceptions=False,
+    )
+    assert "already exists" in result.output
 
 
 def test_sync_mcp_cleanup(tmp_path: Path) -> None:

@@ -26,6 +26,7 @@ class FetchResult:
     source: DependencySource
     local_path: Path  # path to the extracted content (file or directory)
     resolved_ref: str  # full commit SHA
+    _tmpdir: Path | None = None  # temp directory to clean up
 
 
 def _is_sha(ref: str) -> bool:
@@ -184,6 +185,7 @@ def fetch_dependency(source: DependencySource) -> FetchResult:
             source=source,
             local_path=content_path,
             resolved_ref=resolved_ref,
+            _tmpdir=tmpdir,
         )
 
     except Exception:
@@ -194,12 +196,5 @@ def fetch_dependency(source: DependencySource) -> FetchResult:
 
 def cleanup_fetch(result: FetchResult) -> None:
     """Clean up temporary files from a fetch operation."""
-    # Walk up to find the agpack- temp directory
-    path = result.local_path
-    while path.parent != path:
-        if path.name.startswith("agpack-") and path.parent == Path(
-            tempfile.gettempdir()
-        ):
-            shutil.rmtree(path, ignore_errors=True)
-            return
-        path = path.parent
+    if result._tmpdir is not None:
+        shutil.rmtree(result._tmpdir, ignore_errors=True)

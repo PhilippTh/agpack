@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -305,19 +304,13 @@ class TestFetchDependency:
 class TestCleanupFetch:
     """Tests for cleanup_fetch removing the temp directory."""
 
-    def test_removes_temp_directory(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """cleanup_fetch walks up to the agpack- prefixed dir and removes it."""
-        # Simulate the temp directory structure agpack creates
+    def test_removes_temp_directory(self, tmp_path: Path) -> None:
+        """cleanup_fetch removes the _tmpdir stored in FetchResult."""
         agpack_dir = tmp_path / "agpack-xyz123"
         repo_dir = agpack_dir / "repo"
         content_dir = repo_dir / "skills" / "foo"
         content_dir.mkdir(parents=True)
         (content_dir / "SKILL.md").write_text("hello")
-
-        # Make tempfile.gettempdir() return tmp_path so the walk-up logic matches
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
 
         source = DependencySource(
             url="https://github.com/owner/repo", path="skills/foo"
@@ -326,22 +319,34 @@ class TestCleanupFetch:
             source=source,
             local_path=content_dir,
             resolved_ref=FAKE_SHA_FULL,
+            _tmpdir=agpack_dir,
         )
 
         cleanup_fetch(result)
 
         assert not agpack_dir.exists()
 
-    def test_no_error_when_already_gone(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_error_when_already_gone(self, tmp_path: Path) -> None:
         """cleanup_fetch does not raise if the directory is already removed."""
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        gone_dir = tmp_path / "agpack-gone"
 
         source = DependencySource(url="https://github.com/owner/repo")
         result = FetchResult(
             source=source,
-            local_path=tmp_path / "agpack-gone" / "repo",
+            local_path=gone_dir / "repo",
+            resolved_ref=FAKE_SHA_FULL,
+            _tmpdir=gone_dir,
+        )
+
+        # Should not raise
+        cleanup_fetch(result)
+
+    def test_noop_when_tmpdir_is_none(self) -> None:
+        """cleanup_fetch is a no-op when _tmpdir is None."""
+        source = DependencySource(url="https://github.com/owner/repo")
+        result = FetchResult(
+            source=source,
+            local_path=Path("/nonexistent"),
             resolved_ref=FAKE_SHA_FULL,
         )
 

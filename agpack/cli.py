@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import click
 
 from agpack import __version__
+from agpack.config import AgpackConfig
 from agpack.config import ConfigError
+from agpack.config import DependencySource
 from agpack.config import load_config
 from agpack.deployer import cleanup_deployed_files
 from agpack.deployer import deploy_agent
@@ -27,6 +30,64 @@ from agpack.lockfile import write_lockfile
 from agpack.mcp import McpError
 from agpack.mcp import cleanup_mcp_server
 from agpack.mcp import deploy_mcp_servers
+
+
+def _sync_resource_type(
+    deps: list[DependencySource],
+    deploy_fn: Callable[..., list[str]],
+    resource_type: str,
+    config: AgpackConfig,
+    project_root: Path,
+    new_lockfile: Lockfile,
+    *,
+    dry_run: bool,
+    verbose: bool,
+) -> int:
+    """Fetch and deploy a list of dependencies of a single type.
+
+    Returns the number of successfully synced resources.
+    On error, writes a partial lockfile (with what has been synced so far)
+    before raising ClickException.
+    """
+    count = 0
+    for dep in deps:
+        click.echo(f"Fetching {resource_type} '{dep.name}' from {dep.url}...")
+        try:
+            result = fetch_dependency(dep)
+        except FetchError as exc:
+            if not dry_run:
+                write_lockfile(project_root, new_lockfile)
+            raise click.ClickException(str(exc)) from exc
+
+        try:
+            deployed = deploy_fn(
+                result,
+                config.targets,
+                project_root,
+                dry_run=dry_run,
+                verbose=verbose,
+            )
+        except Exception as exc:
+            cleanup_fetch(result)
+            if not dry_run:
+                write_lockfile(project_root, new_lockfile)
+            raise click.ClickException(
+                f"Error deploying {resource_type} '{dep.name}': {exc}"
+            ) from exc
+
+        new_lockfile.installed.append(
+            InstalledEntry(
+                url=dep.url,
+                path=dep.path,
+                resolved_ref=result.resolved_ref,
+                type=resource_type,
+                deployed_files=deployed,
+            )
+        )
+        cleanup_fetch(result)
+        count += 1
+
+    return count
 
 
 @click.group()
@@ -54,8 +115,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
     try:
         config = load_config(cfg_path)
     except ConfigError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+        raise click.ClickException(str(exc)) from exc
 
     # 2. Read existing lockfile
     old_lockfile = read_lockfile(project_root)
@@ -71,7 +131,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
     removed_deps = find_removed_dependencies(old_lockfile, current_identities)
     for entry in removed_deps:
         if verbose or dry_run:
-            click.echo(f"Removing {entry.type} '{entry.url}/{entry.path or ''}'...")
+            click.echo(f"Removing {entry.type} '{entry.identity}'...")
         cleanup_deployed_files(
             entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose
         )
@@ -92,111 +152,28 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
 
     # 6. Fetch and deploy dependencies
     new_lockfile = Lockfile()
-    counts = {"skills": 0, "commands": 0, "agents": 0, "mcp": 0}
+    counts: dict[str, int] = {}
 
-    # Skills
-    for dep in config.skills:
-        click.echo(f"Fetching skill '{dep.name}' from {dep.url}...")
-        try:
-            result = fetch_dependency(dep)
-        except FetchError as exc:
-            click.echo(f"Error: {exc}", err=True)
-            sys.exit(2)
+    resource_types: list[tuple[list[DependencySource], Callable[..., Any], str]] = [
+        (config.skills, deploy_skill, "skill"),
+        (config.commands, deploy_command, "command"),
+        (config.agents, deploy_agent, "agent"),
+    ]
 
-        try:
-            deployed = deploy_skill(
-                result,
-                config.targets,
-                project_root,
-                dry_run=dry_run,
-                verbose=verbose,
-            )
-        except Exception as exc:
-            click.echo(f"Error deploying skill '{dep.name}': {exc}", err=True)
-            cleanup_fetch(result)
-            sys.exit(3)
-
-        new_lockfile.installed.append(
-            InstalledEntry(
-                url=dep.url,
-                path=dep.path,
-                resolved_ref=result.resolved_ref,
-                type="skill",
-                deployed_files=deployed,
-            )
+    for deps, deploy_fn, resource_type in resource_types:
+        counts[resource_type] = _sync_resource_type(
+            deps,
+            deploy_fn,
+            resource_type,
+            config,
+            project_root,
+            new_lockfile,
+            dry_run=dry_run,
+            verbose=verbose,
         )
-        cleanup_fetch(result)
-        counts["skills"] += 1
-
-    # Commands
-    for dep in config.commands:
-        click.echo(f"Fetching command '{dep.name}' from {dep.url}...")
-        try:
-            result = fetch_dependency(dep)
-        except FetchError as exc:
-            click.echo(f"Error: {exc}", err=True)
-            sys.exit(2)
-
-        try:
-            deployed = deploy_command(
-                result,
-                config.targets,
-                project_root,
-                dry_run=dry_run,
-                verbose=verbose,
-            )
-        except Exception as exc:
-            click.echo(f"Error deploying command '{dep.name}': {exc}", err=True)
-            cleanup_fetch(result)
-            sys.exit(3)
-
-        new_lockfile.installed.append(
-            InstalledEntry(
-                url=dep.url,
-                path=dep.path,
-                resolved_ref=result.resolved_ref,
-                type="command",
-                deployed_files=deployed,
-            )
-        )
-        cleanup_fetch(result)
-        counts["commands"] += 1
-
-    # Agents
-    for dep in config.agents:
-        click.echo(f"Fetching agent '{dep.name}' from {dep.url}...")
-        try:
-            result = fetch_dependency(dep)
-        except FetchError as exc:
-            click.echo(f"Error: {exc}", err=True)
-            sys.exit(2)
-
-        try:
-            deployed = deploy_agent(
-                result,
-                config.targets,
-                project_root,
-                dry_run=dry_run,
-                verbose=verbose,
-            )
-        except Exception as exc:
-            click.echo(f"Error deploying agent '{dep.name}': {exc}", err=True)
-            cleanup_fetch(result)
-            sys.exit(3)
-
-        new_lockfile.installed.append(
-            InstalledEntry(
-                url=dep.url,
-                path=dep.path,
-                resolved_ref=result.resolved_ref,
-                type="agent",
-                deployed_files=deployed,
-            )
-        )
-        cleanup_fetch(result)
-        counts["agents"] += 1
 
     # MCP servers
+    mcp_count = 0
     if config.mcp:
         click.echo("Deploying MCP servers...")
         try:
@@ -208,14 +185,15 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
                 verbose=verbose,
             )
         except McpError as exc:
-            click.echo(f"Error: {exc}", err=True)
-            sys.exit(3)
+            if not dry_run:
+                write_lockfile(project_root, new_lockfile)
+            raise click.ClickException(str(exc)) from exc
 
         for server_name, target_paths in mcp_result.items():
             new_lockfile.mcp.append(
                 McpLockEntry(name=server_name, targets=target_paths)
             )
-            counts["mcp"] += 1
+            mcp_count += 1
 
     # 7. Write lockfile
     if not dry_run:
@@ -224,8 +202,8 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
     # 8. Summary
     target_count = len(config.targets)
     click.echo(
-        f"\n{counts['skills']} skills, {counts['commands']} commands, "
-        f"{counts['agents']} agents, {counts['mcp']} MCP servers "
+        f"\n{counts.get('skill', 0)} skills, {counts.get('command', 0)} commands, "
+        f"{counts.get('agent', 0)} agents, {mcp_count} MCP servers "
         f"synced to {target_count} targets."
     )
 
@@ -246,8 +224,7 @@ def status(config_path: str) -> None:
     try:
         config = load_config(cfg_path)
     except ConfigError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+        raise click.ClickException(str(exc)) from exc
 
     lockfile = read_lockfile(project_root)
 
@@ -316,11 +293,18 @@ def status(config_path: str) -> None:
 
 
 @main.command()
-def init() -> None:
-    """Scaffold a new agpack.yml in the current directory."""
-    path = Path.cwd() / "agpack.yml"
+@click.option(
+    "--config",
+    "config_path",
+    default="./agpack.yml",
+    type=click.Path(),
+    help="Path to write the config file.",
+)
+def init(config_path: str) -> None:
+    """Scaffold a new agpack.yml."""
+    path = Path(config_path).resolve()
     if path.exists():
-        click.echo("agpack.yml already exists — doing nothing.")
+        click.echo(f"{path.name} already exists — doing nothing.")
         return
 
     template = """\

@@ -177,9 +177,9 @@ def cleanup_mcp_server(
         if target_cfg is None:
             # Try to infer format from the file extension
             if rel_path.endswith(".json"):
-                _remove_from_json(config_path, server_name, dry_run, verbose)
+                _remove_from_json(config_path, server_name, dry_run)
             elif rel_path.endswith(".toml"):
-                _remove_from_toml(config_path, server_name, dry_run, verbose)
+                _remove_from_toml(config_path, server_name, dry_run)
             continue
 
         if dry_run:
@@ -238,7 +238,6 @@ def _remove_from_json(
     config_path: Path,
     server_name: str,
     dry_run: bool,
-    verbose: bool,  # noqa: ARG001
 ) -> None:
     """Remove a server from a JSON file, trying common server keys."""
     if dry_run:
@@ -260,7 +259,6 @@ def _remove_from_toml(
     config_path: Path,
     server_name: str,
     dry_run: bool,
-    verbose: bool,  # noqa: ARG001
 ) -> None:
     """Remove a server from a TOML file, trying common server keys."""
     if dry_run:

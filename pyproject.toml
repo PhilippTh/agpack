@@ -1,13 +1,13 @@
 [project]
 name = "agpack"
-version = "0.1.0"
+version = "0.1.2"
 description = "Fetch and deploy AI agent resources from git repos to local tool directories"
 readme = "README.md"
 license = "GPL-3.0-only"
 authors = [
     { name = "Philipp Thumfart", email = "philipp@thumfart.eu" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "click>=8.0",
     "PyYAML>=6.0",
@@ -19,7 +19,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

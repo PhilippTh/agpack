@@ -7,6 +7,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import click
+
 from agpack.fetcher import FetchResult
 from agpack.targets import AGENT_DIRS
 from agpack.targets import COMMAND_DIRS
@@ -80,7 +82,7 @@ def deploy_skill(
 
         if dry_run:
             if verbose:
-                _print_dry_run(f"  copy {fetch_result.local_path} → {dst}")
+                click.echo(f"[dry-run]   copy {fetch_result.local_path} → {dst}")
             # Collect what would be deployed
             if fetch_result.local_path.is_dir():
                 for f in sorted(fetch_result.local_path.rglob("*")):
@@ -96,19 +98,20 @@ def deploy_skill(
                 )
             continue
 
+        newly_deployed: list[str] = []
         if fetch_result.local_path.is_dir():
             deployed = _copy_tree(fetch_result.local_path, dst)
-            all_deployed.extend(
-                str(Path(d).relative_to(project_root)) for d in deployed
-            )
+            newly_deployed = [str(Path(d).relative_to(project_root)) for d in deployed]
         else:
             dst_file = dst / fetch_result.local_path.name
             _atomic_copy_file(fetch_result.local_path, dst_file)
-            all_deployed.append(str(dst_file.relative_to(project_root)))
+            newly_deployed = [str(dst_file.relative_to(project_root))]
+
+        all_deployed.extend(newly_deployed)
 
         if verbose:
-            for f in all_deployed:
-                _print_verbose(f"  {f}")
+            for f in newly_deployed:
+                click.echo(f"  {f}")
 
     return all_deployed
 
@@ -137,7 +140,7 @@ def deploy_command(
 
         if dry_run:
             if verbose:
-                _print_dry_run(f"  copy → {dst}")
+                click.echo(f"[dry-run]   copy → {dst}")
             all_deployed.append(str(dst.relative_to(project_root)))
             continue
 
@@ -145,7 +148,7 @@ def deploy_command(
         all_deployed.append(str(dst.relative_to(project_root)))
 
         if verbose:
-            _print_verbose(f"  {dst.relative_to(project_root)}")
+            click.echo(f"  {dst.relative_to(project_root)}")
 
     return all_deployed
 
@@ -174,7 +177,7 @@ def deploy_agent(
 
         if dry_run:
             if verbose:
-                _print_dry_run(f"  copy → {dst}")
+                click.echo(f"[dry-run]   copy → {dst}")
             all_deployed.append(str(dst.relative_to(project_root)))
             continue
 
@@ -182,7 +185,7 @@ def deploy_agent(
         all_deployed.append(str(dst.relative_to(project_root)))
 
         if verbose:
-            _print_verbose(f"  {dst.relative_to(project_root)}")
+            click.echo(f"  {dst.relative_to(project_root)}")
 
     return all_deployed
 
@@ -199,11 +202,11 @@ def cleanup_deployed_files(
         if full_path.exists():
             if dry_run:
                 if verbose:
-                    _print_dry_run(f"  delete {rel_path}")
+                    click.echo(f"[dry-run]   delete {rel_path}")
                 continue
             full_path.unlink()
             if verbose:
-                _print_verbose(f"  deleted {rel_path}")
+                click.echo(f"  deleted {rel_path}")
 
     if not dry_run:
         _cleanup_empty_dirs(deployed_files, project_root)
@@ -226,17 +229,3 @@ def _cleanup_empty_dirs(deployed_files: list[str], project_root: Path) -> None:
     for d in sorted(dirs_to_check, key=lambda p: len(p.parts), reverse=True):
         if d.exists() and d.is_dir() and not any(d.iterdir()):
             d.rmdir()
-
-
-def _print_dry_run(msg: str) -> None:
-    """Print a dry-run message."""
-    import click
-
-    click.echo(f"[dry-run] {msg}")
-
-
-def _print_verbose(msg: str) -> None:
-    """Print a verbose message."""
-    import click
-
-    click.echo(msg)
