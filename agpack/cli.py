@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +21,7 @@ from agpack.deployer import deploy_agent
 from agpack.deployer import deploy_command
 from agpack.deployer import deploy_skill
 from agpack.fetcher import FetchError
+from agpack.fetcher import FetchResult
 from agpack.fetcher import cleanup_fetch
 from agpack.fetcher import fetch_dependency
 from agpack.lockfile import InstalledEntry
@@ -30,6 +34,8 @@ from agpack.lockfile import write_lockfile
 from agpack.mcp import McpError
 from agpack.mcp import cleanup_mcp_server
 from agpack.mcp import deploy_mcp_servers
+
+_MAX_FETCH_WORKERS = 8
 
 
 def _sync_resource_type(
@@ -49,16 +55,36 @@ def _sync_resource_type(
     On error, writes a partial lockfile (with what has been synced so far)
     before raising ClickException.
     """
-    count = 0
-    for dep in deps:
-        click.echo(f"Fetching {resource_type} '{dep.name}' from {dep.url}...")
-        try:
-            result = fetch_dependency(dep)
-        except FetchError as exc:
-            if not dry_run:
-                write_lockfile(project_root, new_lockfile)
-            raise click.ClickException(str(exc)) from exc
+    if not deps:
+        return 0
 
+    # Phase 1: parallel fetch — collect all results and errors
+    results: list[tuple[DependencySource, FetchResult]] = []
+    errors: list[str] = []
+
+    with ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(deps))) as executor:
+        futures = {executor.submit(fetch_dependency, dep): dep for dep in deps}
+        for future in as_completed(futures):
+            dep = futures[future]
+            click.echo(f"Fetching {resource_type} '{dep.name}' from {dep.url}...")
+            try:
+                results.append((dep, future.result()))
+            except FetchError as exc:
+                errors.append(f"  - {resource_type} '{dep.name}': {exc}")
+
+    # Phase 2: collect-all error handling
+    if errors:
+        for _, result in results:
+            cleanup_fetch(result)
+        if not dry_run:
+            write_lockfile(project_root, new_lockfile)
+        raise click.ClickException(
+            "\n".join([f"Failed to fetch {len(errors)} {resource_type}(s):"] + errors)
+        )
+
+    # Phase 3: sequential deploy
+    count = 0
+    for dep, result in results:
         try:
             deployed = deploy_fn(
                 result,
@@ -110,6 +136,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
     """Fetch all dependencies and deploy to all target directories."""
     cfg_path = Path(config_path).resolve()
     project_root = cfg_path.parent
+    start_time = time.monotonic()
 
     # 1. Load and validate config
     try:
@@ -200,11 +227,12 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
         write_lockfile(project_root, new_lockfile)
 
     # 8. Summary
+    elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
     click.echo(
         f"\n{counts.get('skill', 0)} skills, {counts.get('command', 0)} commands, "
         f"{counts.get('agent', 0)} agents, {mcp_count} MCP servers "
-        f"synced to {target_count} targets."
+        f"synced to {target_count} targets in {elapsed:.2f}s."
     )
 
 
