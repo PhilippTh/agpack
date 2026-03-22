@@ -8,15 +8,27 @@ authors = [
     { name = "Philipp Thumfart", email = "philipp@thumfart.eu" },
 ]
 requires-python = ">=3.10"
-
-[project.urls]
-Homepage = "https://github.com/PhilippTh/agpack"
-Funding = "https://github.com/sponsors/PhilippTh"
 dependencies = [
     "click>=8.0",
     "PyYAML>=6.0",
     "tomli-w>=1.0",
 ]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+]
+
+[project.urls]
+Homepage = "https://github.com/PhilippTh/agpack"
+Funding = "https://github.com/sponsors/PhilippTh"
 
 [project.scripts]
 agpack = "agpack.cli:main"
