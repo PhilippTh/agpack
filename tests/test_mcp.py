@@ -444,6 +444,71 @@ class TestServersKeyPerTarget:
         assert servers_key in cfg, f"Expected key '{servers_key}' in {config_rel}"
         assert "my-server" in cfg[servers_key]
 
+
+# ---------------------------------------------------------------------------
+# 13. Opencode-specific MCP format
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 13a. Copilot/VS Code-specific MCP format
+# ---------------------------------------------------------------------------
+
+
+class TestCopilotFormat:
+    def test_stdio_server_includes_type_field(self, tmp_path: Path) -> None:
+        server = _stdio_server(env={"API_KEY": "secret"})
+        deploy_mcp_servers([server], ["copilot"], tmp_path)
+
+        srv = _read_json(tmp_path / ".vscode" / "mcp.json")["servers"]["my-server"]
+        assert srv["type"] == "stdio"
+        assert srv["command"] == "npx"
+        assert srv["args"] == ["-y", "my-server"]
+        assert srv["env"] == {"API_KEY": "secret"}
+
+    def test_sse_server_includes_type_field(self, tmp_path: Path) -> None:
+        server = _sse_server()
+        deploy_mcp_servers([server], ["copilot"], tmp_path)
+
+        srv = _read_json(tmp_path / ".vscode" / "mcp.json")["servers"]["remote"]
+        assert srv == {"url": "https://mcp.example.com/sse", "type": "sse"}
+
+
+# ---------------------------------------------------------------------------
+# 14. Opencode-specific MCP format
+# ---------------------------------------------------------------------------
+
+
+class TestOpencodeFormat:
+    def test_stdio_server_uses_local_type_and_array_command(
+        self, tmp_path: Path
+    ) -> None:
+        server = _stdio_server(env={"API_KEY": "secret"})
+        deploy_mcp_servers([server], ["opencode"], tmp_path)
+
+        srv = _read_json(tmp_path / "opencode.json")["mcp"]["my-server"]
+        assert srv["type"] == "local"
+        assert srv["command"] == ["npx", "-y", "my-server"]
+        assert srv["environment"] == {"API_KEY": "secret"}
+        assert "args" not in srv
+        assert "env" not in srv
+
+    def test_stdio_server_omits_empty_environment(self, tmp_path: Path) -> None:
+        server = McpServer(name="bare", type="stdio", command="run")
+        deploy_mcp_servers([server], ["opencode"], tmp_path)
+
+        srv = _read_json(tmp_path / "opencode.json")["mcp"]["bare"]
+        assert srv["type"] == "local"
+        assert srv["command"] == ["run"]
+        assert "environment" not in srv
+
+    def test_sse_server_uses_remote_type(self, tmp_path: Path) -> None:
+        server = _sse_server()
+        deploy_mcp_servers([server], ["opencode"], tmp_path)
+
+        srv = _read_json(tmp_path / "opencode.json")["mcp"]["remote"]
+        assert srv == {"type": "remote", "url": "https://mcp.example.com/sse"}
+
     def test_codex_uses_mcp_servers_key(self, tmp_path: Path) -> None:
         deploy_mcp_servers([_stdio_server()], ["codex"], tmp_path)
         cfg = _read_toml(tmp_path / ".codex" / "config.toml")

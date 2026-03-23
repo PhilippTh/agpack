@@ -21,10 +21,20 @@ class McpError(Exception):
     """Raised when an MCP config merge fails."""
 
 
-def _build_server_object(server: McpServer) -> dict[str, Any]:
-    """Build the config object for a single MCP server."""
+def _build_server_object(server: McpServer, target: str = "") -> dict[str, Any]:
+    """Build the config object for a single MCP server.
+
+    Different targets expect different schemas, so the output varies by target.
+    """
+    if target == "opencode":
+        return _build_opencode_server_object(server)
+
     if server.type == "stdio":
-        obj: dict[str, Any] = {"command": server.command}
+        obj: dict[str, Any] = {}
+        # VS Code / Copilot requires an explicit "type" field for stdio servers
+        if target == "copilot":
+            obj["type"] = "stdio"
+        obj["command"] = server.command
         if server.args:
             obj["args"] = server.args
         if server.env:
@@ -33,6 +43,21 @@ def _build_server_object(server: McpServer) -> dict[str, Any]:
     else:
         obj = {"url": server.url, "type": server.type}
         return obj
+
+
+def _build_opencode_server_object(server: McpServer) -> dict[str, Any]:
+    """Build an MCP server object in opencode's expected schema.
+
+    opencode uses: type "local"/"remote", command as array, "environment" key.
+    """
+    if server.type == "stdio":
+        cmd = [server.command] + server.args if server.args else [server.command]
+        obj: dict[str, Any] = {"type": "local", "command": cmd}
+        if server.env:
+            obj["environment"] = server.env
+        return obj
+    else:
+        return {"type": "remote", "url": server.url}
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -108,15 +133,15 @@ def deploy_mcp_servers(
     result: dict[str, list[str]] = {}
 
     for server in mcp_servers:
-        # Build the server config object
-        server_obj = _build_server_object(server)
-        servers_dict = {server.name: server_obj}
         written_to: list[str] = []
 
         for target in targets:
             target_cfg = MCP_TARGETS.get(target)
             if target_cfg is None:
                 continue
+
+            server_obj = _build_server_object(server, target=target)
+            servers_dict = {server.name: server_obj}
 
             config_path = project_root / target_cfg.config_path
             rel_path = target_cfg.config_path
