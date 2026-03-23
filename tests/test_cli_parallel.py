@@ -14,6 +14,7 @@ from agpack.cli import _MAX_FETCH_WORKERS
 from agpack.cli import _sync_resource_type
 from agpack.config import AgpackConfig
 from agpack.config import DependencySource
+from agpack.display import create_sync_progress
 from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
 from agpack.lockfile import Lockfile
@@ -52,14 +53,16 @@ class TestParallelFetchAllSucceed:
         with (
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.cleanup_fetch"),
+            create_sync_progress() as progress,
         ):
-            count = _sync_resource_type(
+            count, _ = _sync_resource_type(
                 deps,
                 deploy_fn,
                 "skill",
                 config,
                 tmp_path,
                 new_lockfile,
+                progress,
                 dry_run=False,
                 verbose=False,
             )
@@ -77,6 +80,7 @@ class TestParallelFetchAllSucceed:
         with (
             patch("agpack.cli.fetch_dependency", return_value=fake_result),
             patch("agpack.cli.cleanup_fetch"),
+            create_sync_progress() as progress,
         ):
             _sync_resource_type(
                 deps,
@@ -85,6 +89,7 @@ class TestParallelFetchAllSucceed:
                 config,
                 tmp_path,
                 new_lockfile,
+                progress,
                 dry_run=False,
                 verbose=False,
             )
@@ -107,6 +112,7 @@ class TestParallelFetchCollectAllErrors:
         with (
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.write_lockfile") as mock_write,
+            create_sync_progress() as progress,
             pytest.raises(click.ClickException) as exc_info,
         ):
             _sync_resource_type(
@@ -116,6 +122,7 @@ class TestParallelFetchCollectAllErrors:
                 config,
                 tmp_path,
                 new_lockfile,
+                progress,
                 dry_run=False,
                 verbose=False,
             )
@@ -142,6 +149,7 @@ class TestParallelFetchCollectAllErrors:
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.cleanup_fetch") as mock_cleanup,
             patch("agpack.cli.write_lockfile"),
+            create_sync_progress() as progress,
             pytest.raises(click.ClickException),
         ):
             _sync_resource_type(
@@ -151,6 +159,7 @@ class TestParallelFetchCollectAllErrors:
                 config,
                 tmp_path,
                 Lockfile(),
+                progress,
                 dry_run=False,
                 verbose=False,
             )
@@ -165,6 +174,7 @@ class TestParallelFetchCollectAllErrors:
             patch("agpack.cli.fetch_dependency", side_effect=FetchError("boom")),
             patch("agpack.cli.write_lockfile") as mock_write,
             patch("agpack.cli.cleanup_fetch"),
+            create_sync_progress() as progress,
             pytest.raises(click.ClickException),
         ):
             _sync_resource_type(
@@ -174,6 +184,7 @@ class TestParallelFetchCollectAllErrors:
                 config,
                 tmp_path,
                 Lockfile(),
+                progress,
                 dry_run=True,
                 verbose=False,
             )
@@ -195,6 +206,7 @@ class TestParallelFetchCollectAllErrors:
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.cleanup_fetch"),
             patch("agpack.cli.write_lockfile"),
+            create_sync_progress() as progress,
             pytest.raises(click.ClickException),
         ):
             _sync_resource_type(
@@ -204,6 +216,7 @@ class TestParallelFetchCollectAllErrors:
                 config,
                 tmp_path,
                 Lockfile(),
+                progress,
                 dry_run=False,
                 verbose=False,
             )
@@ -213,14 +226,18 @@ class TestParallelFetchCollectAllErrors:
 
 class TestParallelFetchEdgeCases:
     def test_empty_deps_returns_zero(self, tmp_path: Path) -> None:
-        with patch("agpack.cli.fetch_dependency") as mock_fetch:
-            count = _sync_resource_type(
+        with (
+            patch("agpack.cli.fetch_dependency") as mock_fetch,
+            create_sync_progress() as progress,
+        ):
+            count, _ = _sync_resource_type(
                 [],
                 MagicMock(),
                 "skill",
                 _make_config(),
                 tmp_path,
                 Lockfile(),
+                progress,
                 dry_run=False,
                 verbose=False,
             )
@@ -246,6 +263,7 @@ class TestParallelFetchEdgeCases:
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.cleanup_fetch"),
             patch.object(ThreadPoolExecutor, "__init__", capturing_init),
+            create_sync_progress() as progress,
         ):
             _sync_resource_type(
                 deps,
@@ -254,6 +272,7 @@ class TestParallelFetchEdgeCases:
                 config,
                 tmp_path,
                 Lockfile(),
+                progress,
                 dry_run=False,
                 verbose=False,
             )
@@ -270,6 +289,7 @@ class TestParallelFetchEdgeCases:
             patch("agpack.cli.fetch_dependency", return_value=fake_result),
             patch("agpack.cli.cleanup_fetch"),
             patch("agpack.cli.write_lockfile") as mock_write,
+            create_sync_progress() as progress,
             pytest.raises(Exception, match="Error deploying"),
         ):
             _sync_resource_type(
@@ -279,6 +299,7 @@ class TestParallelFetchEdgeCases:
                 config,
                 tmp_path,
                 Lockfile(),
+                progress,
                 dry_run=False,
                 verbose=False,
             )

@@ -1,6 +1,6 @@
 [project]
 name = "agpack"
-version = "0.1.3"
+version = "0.1.4"
 description = "Fetch and deploy AI agent resources from git repos to local tool directories"
 readme = "README.md"
 license = "GPL-3.0-only"
@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "click>=8.0",
     "PyYAML>=6.0",
+    "rich>=13.0",
     "tomli-w>=1.0",
 ]
 classifiers = [

@@ -7,8 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import click
-
+from agpack.display import console
 from agpack.fetcher import FetchResult
 from agpack.targets import AGENT_DIRS
 from agpack.targets import COMMAND_DIRS
@@ -82,7 +81,7 @@ def deploy_skill(
 
         if dry_run:
             if verbose:
-                click.echo(f"[dry-run]   copy {fetch_result.local_path} → {dst}")
+                console.print(f"[dry-run]   copy {fetch_result.local_path} → {dst}")
             # Collect what would be deployed
             if fetch_result.local_path.is_dir():
                 for f in sorted(fetch_result.local_path.rglob("*")):
@@ -111,7 +110,7 @@ def deploy_skill(
 
         if verbose:
             for f in newly_deployed:
-                click.echo(f"  {f}")
+                console.print(f"  {f}")
 
     return all_deployed
 
@@ -140,7 +139,7 @@ def deploy_command(
 
         if dry_run:
             if verbose:
-                click.echo(f"[dry-run]   copy → {dst}")
+                console.print(f"[dry-run]   copy → {dst}")
             all_deployed.append(str(dst.relative_to(project_root)))
             continue
 
@@ -148,7 +147,7 @@ def deploy_command(
         all_deployed.append(str(dst.relative_to(project_root)))
 
         if verbose:
-            click.echo(f"  {dst.relative_to(project_root)}")
+            console.print(f"  {dst.relative_to(project_root)}")
 
     return all_deployed
 
@@ -177,7 +176,7 @@ def deploy_agent(
 
         if dry_run:
             if verbose:
-                click.echo(f"[dry-run]   copy → {dst}")
+                console.print(f"[dry-run]   copy → {dst}")
             all_deployed.append(str(dst.relative_to(project_root)))
             continue
 
@@ -185,7 +184,7 @@ def deploy_agent(
         all_deployed.append(str(dst.relative_to(project_root)))
 
         if verbose:
-            click.echo(f"  {dst.relative_to(project_root)}")
+            console.print(f"  {dst.relative_to(project_root)}")
 
     return all_deployed
 
@@ -202,11 +201,11 @@ def cleanup_deployed_files(
         if full_path.exists():
             if dry_run:
                 if verbose:
-                    click.echo(f"[dry-run]   delete {rel_path}")
+                    console.print(f"[dry-run]   delete {rel_path}")
                 continue
             full_path.unlink()
             if verbose:
-                click.echo(f"  deleted {rel_path}")
+                console.print(f"  deleted {rel_path}")
 
     if not dry_run:
         _cleanup_empty_dirs(deployed_files, project_root)

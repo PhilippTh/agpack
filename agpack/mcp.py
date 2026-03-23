@@ -12,6 +12,7 @@ from typing import Any
 import tomli_w
 
 from agpack.config import McpServer
+from agpack.display import console
 from agpack.targets import MCP_TARGETS
 from agpack.targets import McpTargetConfig
 
@@ -122,9 +123,7 @@ def deploy_mcp_servers(
 
             if dry_run:
                 if verbose:
-                    import click
-
-                    click.echo(f"[dry-run]   merge MCP '{server.name}' → {rel_path}")
+                    console.print(f"[dry-run]   merge MCP '{server.name}' → {rel_path}")
                 written_to.append(rel_path)
                 continue
 
@@ -141,9 +140,7 @@ def deploy_mcp_servers(
                 ) from exc
 
             if verbose:
-                import click
-
-                click.echo(f"  MCP '{server.name}' → {rel_path}")
+                console.print(f"  MCP '{server.name}' → {rel_path}")
 
             written_to.append(rel_path)
 
@@ -184,9 +181,7 @@ def cleanup_mcp_server(
 
         if dry_run:
             if verbose:
-                import click
-
-                click.echo(f"[dry-run]   remove MCP '{server_name}' from {rel_path}")
+                console.print(f"[dry-run]   remove MCP '{server_name}' from {rel_path}")
             continue
 
         if target_cfg.format == "json":
@@ -195,9 +190,7 @@ def cleanup_mcp_server(
             _remove_server_from_toml(config_path, target_cfg.servers_key, server_name)
 
         if verbose:
-            import click
-
-            click.echo(f"  removed MCP '{server_name}' from {rel_path}")
+            console.print(f"  removed MCP '{server_name}' from {rel_path}")
 
 
 def _remove_server_from_json(
