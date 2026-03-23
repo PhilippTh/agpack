@@ -109,8 +109,8 @@ def deploy_skill(
         all_deployed.extend(newly_deployed)
 
         if verbose:
-            for f in newly_deployed:
-                console.print(f"  {f}")
+            for deployed_path in newly_deployed:
+                console.print(f"  {deployed_path}")
 
     return all_deployed
 

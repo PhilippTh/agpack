@@ -72,5 +72,15 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "pytest-cov>=6.0",
+    "diff-cover>=9.0",
+    "mypy>=1.15",
+    "types-PyYAML>=6.0",
     "ruff>=0.15.7",
 ]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true

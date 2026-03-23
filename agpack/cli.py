@@ -197,12 +197,12 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
 
     # 5. Clean up removed MCP servers
     removed_mcp = find_removed_mcp_servers(old_lockfile, current_mcp_names)
-    for entry in removed_mcp:
+    for mcp_entry in removed_mcp:
         if verbose or dry_run:
-            console.print(f"Removing MCP server '{entry.name}'...")
+            console.print(f"Removing MCP server '{mcp_entry.name}'...")
         cleanup_mcp_server(
-            entry.name,
-            entry.targets,
+            mcp_entry.name,
+            mcp_entry.targets,
             project_root,
             config.targets,
             dry_run=dry_run,
@@ -305,8 +305,8 @@ def status(config_path: str) -> None:
 
     mcp_map: dict[str, McpLockEntry] = {}
     if lockfile:
-        for entry in lockfile.mcp:
-            mcp_map[entry.name] = entry
+        for mcp_entry in lockfile.mcp:
+            mcp_map[mcp_entry.name] = mcp_entry
 
     resource_sections = [
         ("Skills", config.skills),
@@ -319,9 +319,9 @@ def status(config_path: str) -> None:
             console.print("  (none configured)")
         else:
             for dep in deps:
-                entry = installed_map.get(dep.identity)
-                if entry:
-                    short_ref = entry.resolved_ref[:7]
+                installed = installed_map.get(dep.identity)
+                if installed:
+                    short_ref = installed.resolved_ref[:7]
                     console.print(f"  ✓ {dep.name:<20} ({dep.url} @ {short_ref})")
                 else:
                     console.print(f"  ✗ {dep.name:<20} (not yet synced)")
@@ -332,9 +332,9 @@ def status(config_path: str) -> None:
         console.print("  (none configured)")
     else:
         for server in config.mcp:
-            entry = mcp_map.get(server.name)
-            if entry and entry.targets:
-                targets_str = ", ".join(entry.targets)
+            mcp_installed = mcp_map.get(server.name)
+            if mcp_installed and mcp_installed.targets:
+                targets_str = ", ".join(mcp_installed.targets)
                 console.print(f"  ✓ {server.name:<20} → {targets_str}")
             else:
                 console.print(f"  ✗ {server.name:<20} (not yet synced)")
