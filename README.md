@@ -26,10 +26,6 @@ pipx install agpack
 # or
 uv tool install agpack
 
-# Homebrew (macOS / Linux)
-brew tap PhilippTh/agpack
-brew install agpack
-
 # Or with plain pip
 pip install agpack
 ```
