@@ -1,6 +1,6 @@
 [project]
 name = "agpack"
-version = "0.1.4"
+dynamic = ["version"]
 description = "Fetch and deploy AI agent resources from git repos to local tool directories"
 readme = "README.md"
 license = "GPL-3.0-only"
@@ -68,6 +68,9 @@ testpaths = ["tests"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "agpack/__init__.py"
 
 [dependency-groups]
 dev = [

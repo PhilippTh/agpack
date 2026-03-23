@@ -1,5 +1,6 @@
 # agpack
 
+[![PyPI](https://img.shields.io/pypi/v/agpack)](https://pypi.org/project/agpack/)
 [![CI](https://github.com/PhilippTh/agpack/actions/workflows/ci.yml/badge.svg)](https://github.com/PhilippTh/agpack/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
@@ -20,12 +21,20 @@ agpack replaces that with a single `agpack.yml` that describes what you want and
 ## Install
 
 ```bash
-pip install agpack
+# Recommended: install as an isolated tool
+pipx install agpack
 # or
 uv tool install agpack
+
+# Homebrew (macOS / Linux)
+brew tap PhilippTh/agpack
+brew install agpack
+
+# Or with plain pip
+pip install agpack
 ```
 
-Requires Python 3.10+ and `git` on PATH.
+Requires Python 3.11+ and `git` on PATH.
 
 ## Quick start
 
