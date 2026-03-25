@@ -150,6 +150,36 @@ MCP:
 
 Creates a starter `agpack.yml` with commented-out examples.
 
+## Environment variables
+
+Use `${VAR_NAME}` syntax in config values to reference environment variables. agpack resolves them at sync time.
+
+```yaml
+mcp:
+  - name: context7
+    command: npx
+    args: ["-y", "@context7/mcp-server"]
+    env:
+      CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+```
+
+Variables are resolved from two sources, in order:
+
+1. A `.env` file in the project root (same directory as `agpack.yml`)
+2. Your shell environment
+
+The `.env` file takes precedence when a variable is defined in both places. If a referenced variable is not found in either source, sync fails with an error.
+
+Example `.env` file:
+
+```
+# API keys — add .env to .gitignore!
+CONTEXT7_API_KEY=sk-abc123
+OPENAI_API_KEY=sk-xyz789
+```
+
+The `.env` parser supports `KEY=VALUE`, `"quoted"` and `'quoted'` values, `# comments`, blank lines, and `export` prefixes.
+
 ## How it works under the hood
 
 1. Loads `agpack.yml`, validates it

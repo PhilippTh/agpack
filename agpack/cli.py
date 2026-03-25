@@ -24,6 +24,7 @@ from agpack.deployer import deploy_command
 from agpack.deployer import deploy_skill
 from agpack.display import console
 from agpack.display import create_sync_progress
+from agpack.envsubst import resolve_config
 from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
 from agpack.fetcher import cleanup_fetch
@@ -176,7 +177,13 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    # 2. Read existing lockfile
+    # 2. Resolve ${VAR} references in config values
+    try:
+        resolve_config(config, project_root, verbose=verbose)
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    # 3. Read existing lockfile
     old_lockfile = read_lockfile(project_root)
 
     # 3. Build set of current dependency identities
@@ -384,6 +391,8 @@ dependencies:
     # - name: my-server
     #   command: npx
     #   args: ["-y", "@example/mcp-server"]
+    #   env:
+    #     API_KEY: ${API_KEY}   # resolved from .env or shell environment
 """
     path.write_text(template, encoding="utf-8")
     console.print(f"Created {path}")
