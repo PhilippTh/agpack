@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 
 from agpack.display import console
@@ -16,6 +18,14 @@ from agpack.targets import SKILL_DIRS
 
 class DeployError(Exception):
     """Raised when a file deployment fails."""
+
+
+@dataclass
+class DeployResult:
+    """Result of deploying one or more assets from a single dependency."""
+
+    files: list[str] = field(default_factory=list)
+    expanded_items: list[str] = field(default_factory=list)
 
 
 def _atomic_copy_file(src: Path, dst: Path) -> None:
@@ -85,11 +95,70 @@ def _find_top_level_files(path: Path) -> list[Path]:
 
 
 # ---------------------------------------------------------------------------
-# Skills
+# Item detection — figure out what a dependency expands to
 # ---------------------------------------------------------------------------
 
 
-def _deploy_single_skill(
+def detect_skill_items(fetch_result: FetchResult) -> list[tuple[str, Path]]:
+    """Return ``(name, path)`` pairs for the skill items in a fetch result.
+
+    A directory with top-level files is treated as a single skill.
+    A directory with only subdirectories expands to one skill per subfolder.
+    """
+    local_path = fetch_result.local_path
+
+    if local_path.is_dir() and not _find_top_level_files(local_path):
+        subfolders = _find_asset_subfolders(local_path)
+        if not subfolders:
+            raise DeployError(
+                f"'{fetch_result.source.name}' is a directory but does not contain "
+                f"any skill folders. Provide a path to a skill folder or a "
+                f"directory containing skill folders."
+            )
+        return [(sf.name, sf) for sf in subfolders]
+
+    return [(fetch_result.source.name, local_path)]
+
+
+def detect_file_items(
+    fetch_result: FetchResult, asset_type: str
+) -> list[tuple[str, Path]]:
+    """Return ``(name, path)`` pairs for file assets (commands / agents)."""
+    local_path = fetch_result.local_path
+
+    if local_path.is_dir():
+        files = _find_top_level_files(local_path)
+        if not files:
+            for sf in _find_asset_subfolders(local_path):
+                files.extend(_find_top_level_files(sf))
+        if not files:
+            article = "an" if asset_type[0] in "aeiou" else "a"
+            raise DeployError(
+                f"'{fetch_result.source.name}' is a directory but does not contain "
+                f"any {asset_type} files. Provide a path to {article} {asset_type} "
+                f"file or a directory containing {asset_type} files."
+            )
+        return [(f.name, f) for f in files]
+
+    return [(fetch_result.source.name, local_path)]
+
+
+def detect_command_items(fetch_result: FetchResult) -> list[tuple[str, Path]]:
+    """Return ``(name, path)`` pairs for command items."""
+    return detect_file_items(fetch_result, "command")
+
+
+def detect_agent_items(fetch_result: FetchResult) -> list[tuple[str, Path]]:
+    """Return ``(name, path)`` pairs for agent items."""
+    return detect_file_items(fetch_result, "agent")
+
+
+# ---------------------------------------------------------------------------
+# Single-item deployment
+# ---------------------------------------------------------------------------
+
+
+def deploy_single_skill(
     skill_name: str,
     skill_path: Path,
     targets: list[str],
@@ -148,40 +217,25 @@ def deploy_skill(
     project_root: Path,
     dry_run: bool = False,
     verbose: bool = False,
-) -> list[str]:
+) -> DeployResult:
     """Deploy a skill to all applicable target directories.
 
     If the fetched path is a directory that contains files, it is deployed as
     a single skill.  If it contains only subdirectories (no top-level files),
     each subdirectory that itself contains files is deployed as a separate
     skill.  An error is raised when neither condition is met.
-
-    Returns list of all deployed file paths (relative to project_root).
     """
-    local_path = fetch_result.local_path
-
-    if local_path.is_dir() and not _find_top_level_files(local_path):
-        # Not a skill folder itself — check for skill subfolders
-        subfolders = _find_asset_subfolders(local_path)
-        if not subfolders:
-            raise DeployError(
-                f"'{fetch_result.source.name}' is a directory but does not contain "
-                f"any skill folders. Provide a path to a skill folder or a "
-                f"directory containing skill folders."
-            )
-        skill_entries = [(sf.name, sf) for sf in subfolders]
-    else:
-        # Single skill folder or single file
-        skill_entries = [(fetch_result.source.name, local_path)]
+    items = detect_skill_items(fetch_result)
+    expanded_items = [name for name, _ in items] if len(items) > 1 else []
 
     all_deployed: list[str] = []
-    for skill_name, skill_path in skill_entries:
-        deployed = _deploy_single_skill(
+    for skill_name, skill_path in items:
+        deployed = deploy_single_skill(
             skill_name, skill_path, targets, project_root, dry_run, verbose
         )
         all_deployed.extend(deployed)
 
-    return all_deployed
+    return DeployResult(files=all_deployed, expanded_items=expanded_items)
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +243,7 @@ def deploy_skill(
 # ---------------------------------------------------------------------------
 
 
-def _deploy_single_file(
+def deploy_single_file(
     filename: str,
     file_path: Path,
     targets: list[str],
@@ -223,6 +277,34 @@ def _deploy_single_file(
     return all_deployed
 
 
+def deploy_single_command(
+    filename: str,
+    file_path: Path,
+    targets: list[str],
+    project_root: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> list[str]:
+    """Deploy a single command file to all applicable target directories."""
+    return deploy_single_file(
+        filename, file_path, targets, COMMAND_DIRS, project_root, dry_run, verbose
+    )
+
+
+def deploy_single_agent(
+    filename: str,
+    file_path: Path,
+    targets: list[str],
+    project_root: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> list[str]:
+    """Deploy a single agent file to all applicable target directories."""
+    return deploy_single_file(
+        filename, file_path, targets, AGENT_DIRS, project_root, dry_run, verbose
+    )
+
+
 def _deploy_file_asset(
     fetch_result: FetchResult,
     targets: list[str],
@@ -231,39 +313,24 @@ def _deploy_file_asset(
     project_root: Path,
     dry_run: bool,
     verbose: bool,
-) -> list[str]:
+) -> DeployResult:
     """Deploy single-file asset(s) to all applicable target directories.
 
     If the fetched path is a directory, non-hidden files are collected from
     the top level (or from subfolders if the top level has none).  An error
     is raised when no deployable files are found.
     """
-    local_path = fetch_result.local_path
-
-    if local_path.is_dir():
-        files = _find_top_level_files(local_path)
-        if not files:
-            for sf in _find_asset_subfolders(local_path):
-                files.extend(_find_top_level_files(sf))
-        if not files:
-            article = "an" if asset_type[0] in "aeiou" else "a"
-            raise DeployError(
-                f"'{fetch_result.source.name}' is a directory but does not contain "
-                f"any {asset_type} files. Provide a path to {article} {asset_type} "
-                f"file or a directory containing {asset_type} files."
-            )
-        file_entries = [(f.name, f) for f in files]
-    else:
-        file_entries = [(fetch_result.source.name, local_path)]
+    items = detect_file_items(fetch_result, asset_type)
+    expanded_items = [name for name, _ in items] if len(items) > 1 else []
 
     all_deployed: list[str] = []
-    for filename, file_path in file_entries:
-        deployed = _deploy_single_file(
+    for filename, file_path in items:
+        deployed = deploy_single_file(
             filename, file_path, targets, target_dirs, project_root, dry_run, verbose
         )
         all_deployed.extend(deployed)
 
-    return all_deployed
+    return DeployResult(files=all_deployed, expanded_items=expanded_items)
 
 
 def deploy_command(
@@ -272,7 +339,7 @@ def deploy_command(
     project_root: Path,
     dry_run: bool = False,
     verbose: bool = False,
-) -> list[str]:
+) -> DeployResult:
     """Deploy command file(s) to all applicable target directories."""
     return _deploy_file_asset(
         fetch_result, targets, COMMAND_DIRS, "command", project_root, dry_run, verbose
@@ -285,7 +352,7 @@ def deploy_agent(
     project_root: Path,
     dry_run: bool = False,
     verbose: bool = False,
-) -> list[str]:
+) -> DeployResult:
     """Deploy agent file(s) to all applicable target directories."""
     return _deploy_file_asset(
         fetch_result, targets, AGENT_DIRS, "agent", project_root, dry_run, verbose

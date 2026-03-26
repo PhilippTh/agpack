@@ -38,6 +38,23 @@ def _make_config(targets: list[str] | None = None) -> AgpackConfig:
     )
 
 
+def _fake_detect(result: FetchResult) -> list[tuple[str, Path]]:
+    """Detect function that returns a single item per fetch result."""
+    return [(result.source.name, result.local_path)]
+
+
+def _fake_deploy_item(
+    name: str,
+    path: Path,
+    targets: list[str],
+    project_root: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> list[str]:
+    """Deploy function that pretends to deploy a single file."""
+    return [f"{name}.md"]
+
+
 class TestParallelFetchAllSucceed:
     def test_all_fetched_and_deployed(self, tmp_path: Path) -> None:
         deps = [_make_dep("a"), _make_dep("b"), _make_dep("c")]
@@ -48,16 +65,17 @@ class TestParallelFetchAllSucceed:
         def fake_fetch(dep: DependencySource) -> FetchResult:
             return fake_results[dep.name]
 
-        deploy_fn = MagicMock(return_value=["file.md"])
+        deploy_item_fn = MagicMock(side_effect=_fake_deploy_item)
 
         with (
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.cleanup_fetch"),
             create_sync_progress() as progress,
         ):
-            count, _ = _sync_resource_type(
+            sync = _sync_resource_type(
                 deps,
-                deploy_fn,
+                _fake_detect,
+                deploy_item_fn,
                 "skill",
                 config,
                 tmp_path,
@@ -67,8 +85,8 @@ class TestParallelFetchAllSucceed:
                 verbose=False,
             )
 
-        assert count == 3
-        assert deploy_fn.call_count == 3
+        assert sync.count == 3
+        assert deploy_item_fn.call_count == 3
         assert len(new_lockfile.installed) == 3
 
     def test_lockfile_entries_added(self, tmp_path: Path) -> None:
@@ -84,7 +102,8 @@ class TestParallelFetchAllSucceed:
         ):
             _sync_resource_type(
                 deps,
-                MagicMock(return_value=["f.md"]),
+                _fake_detect,
+                _fake_deploy_item,
                 "skill",
                 config,
                 tmp_path,
@@ -107,7 +126,8 @@ class TestParallelFetchCollectAllErrors:
         def fake_fetch(dep: DependencySource) -> FetchResult:
             raise FetchError(f"failed {dep.name}")
 
-        deploy_fn = MagicMock()
+        detect_fn = MagicMock()
+        deploy_item_fn = MagicMock()
 
         with (
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
@@ -117,7 +137,8 @@ class TestParallelFetchCollectAllErrors:
         ):
             _sync_resource_type(
                 deps,
-                deploy_fn,
+                detect_fn,
+                deploy_item_fn,
                 "skill",
                 config,
                 tmp_path,
@@ -132,7 +153,8 @@ class TestParallelFetchCollectAllErrors:
         assert "failed b" in msg
         assert "failed c" in msg
         assert "3" in msg
-        deploy_fn.assert_not_called()
+        detect_fn.assert_not_called()
+        deploy_item_fn.assert_not_called()
         mock_write.assert_called_once()
 
     def test_partial_failure_cleans_up_successes(self, tmp_path: Path) -> None:
@@ -154,6 +176,7 @@ class TestParallelFetchCollectAllErrors:
         ):
             _sync_resource_type(
                 deps,
+                MagicMock(),
                 MagicMock(),
                 "skill",
                 config,
@@ -180,6 +203,7 @@ class TestParallelFetchCollectAllErrors:
             _sync_resource_type(
                 deps,
                 MagicMock(),
+                MagicMock(),
                 "skill",
                 config,
                 tmp_path,
@@ -195,7 +219,8 @@ class TestParallelFetchCollectAllErrors:
         deps = [_make_dep("a"), _make_dep("b")]
         fake_result = _make_result(deps[0], tmp_path)
         config = _make_config()
-        deploy_fn = MagicMock()
+        detect_fn = MagicMock()
+        deploy_item_fn = MagicMock()
 
         def fake_fetch(dep: DependencySource) -> FetchResult:
             if dep.name == "b":
@@ -211,7 +236,8 @@ class TestParallelFetchCollectAllErrors:
         ):
             _sync_resource_type(
                 deps,
-                deploy_fn,
+                detect_fn,
+                deploy_item_fn,
                 "skill",
                 config,
                 tmp_path,
@@ -221,7 +247,8 @@ class TestParallelFetchCollectAllErrors:
                 verbose=False,
             )
 
-        deploy_fn.assert_not_called()
+        detect_fn.assert_not_called()
+        deploy_item_fn.assert_not_called()
 
 
 class TestParallelFetchEdgeCases:
@@ -230,8 +257,9 @@ class TestParallelFetchEdgeCases:
             patch("agpack.cli.fetch_dependency") as mock_fetch,
             create_sync_progress() as progress,
         ):
-            count, _ = _sync_resource_type(
+            sync = _sync_resource_type(
                 [],
+                MagicMock(),
                 MagicMock(),
                 "skill",
                 _make_config(),
@@ -241,7 +269,7 @@ class TestParallelFetchEdgeCases:
                 dry_run=False,
                 verbose=False,
             )
-        assert count == 0
+        assert sync.count == 0
         mock_fetch.assert_not_called()
 
     def test_concurrency_capped_at_max_workers(self, tmp_path: Path) -> None:
@@ -267,7 +295,8 @@ class TestParallelFetchEdgeCases:
         ):
             _sync_resource_type(
                 deps,
-                MagicMock(return_value=[]),
+                _fake_detect,
+                _fake_deploy_item,
                 "skill",
                 config,
                 tmp_path,
@@ -294,6 +323,7 @@ class TestParallelFetchEdgeCases:
         ):
             _sync_resource_type(
                 deps,
+                _fake_detect,
                 MagicMock(side_effect=RuntimeError("disk full")),
                 "skill",
                 config,
