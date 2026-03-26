@@ -11,3 +11,19 @@ wheels/
 
 # Coverage
 .coverage
+
+# Environment variables
+.env
+
+# agpack files
+.agpack.lock.yml
+agpack.yml
+
+# AI tools
+.claude
+.opencode
+.codex
+.cursor
+.agents
+.mcp.json
+opencode.json

@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 
 from agpack.display import console
@@ -16,6 +18,14 @@ from agpack.targets import SKILL_DIRS
 
 class DeployError(Exception):
     """Raised when a file deployment fails."""
+
+
+@dataclass
+class DeployResult:
+    """Result of deploying one or more assets from a single dependency."""
+
+    files: list[str] = field(default_factory=list)
+    expanded_items: list[str] = field(default_factory=list)
 
 
 def _atomic_copy_file(src: Path, dst: Path) -> None:
@@ -58,18 +68,107 @@ def _copy_tree(src_dir: Path, dst_dir: Path) -> list[str]:
     return deployed
 
 
-def deploy_skill(
-    fetch_result: FetchResult,
+def _find_asset_subfolders(path: Path) -> list[Path]:
+    """Return immediate subdirectories that contain at least one file.
+
+    Only non-.git subdirectories are considered.  Files may be nested
+    arbitrarily deep inside the subfolder.
+    """
+    subfolders: list[Path] = []
+    for item in sorted(path.iterdir()):
+        if item.is_dir() and not item.name.startswith(".git"):
+            has_files = any(
+                f.is_file()
+                and not any(p.startswith(".git") for p in f.relative_to(item).parts)
+                for f in item.rglob("*")
+            )
+            if has_files:
+                subfolders.append(item)
+    return subfolders
+
+
+def _find_top_level_files(path: Path) -> list[Path]:
+    """Return non-hidden files at the top level of a directory."""
+    return sorted(
+        item
+        for item in path.iterdir()
+        if item.is_file() and not item.name.startswith(".")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Item detection — figure out what a dependency expands to
+# ---------------------------------------------------------------------------
+
+
+def detect_skill_items(fetch_result: FetchResult) -> list[tuple[str, Path]]:
+    """Return ``(name, path)`` pairs for the skill items in a fetch result.
+
+    A directory with top-level files is treated as a single skill.
+    A directory with only subdirectories expands to one skill per subfolder.
+    """
+    local_path = fetch_result.local_path
+
+    if local_path.is_dir() and not _find_top_level_files(local_path):
+        subfolders = _find_asset_subfolders(local_path)
+        if not subfolders:
+            raise DeployError(
+                f"'{fetch_result.source.name}' is a directory but does not contain "
+                f"any skill folders. Provide a path to a skill folder or a "
+                f"directory containing skill folders."
+            )
+        return [(sf.name, sf) for sf in subfolders]
+
+    return [(fetch_result.source.name, local_path)]
+
+
+def detect_file_items(
+    fetch_result: FetchResult, asset_type: str
+) -> list[tuple[str, Path]]:
+    """Return ``(name, path)`` pairs for file assets (commands / agents)."""
+    local_path = fetch_result.local_path
+
+    if local_path.is_dir():
+        files = _find_top_level_files(local_path)
+        if not files:
+            for sf in _find_asset_subfolders(local_path):
+                files.extend(_find_top_level_files(sf))
+        if not files:
+            article = "an" if asset_type[0] in "aeiou" else "a"
+            raise DeployError(
+                f"'{fetch_result.source.name}' is a directory but does not contain "
+                f"any {asset_type} files. Provide a path to {article} {asset_type} "
+                f"file or a directory containing {asset_type} files."
+            )
+        return [(f.name, f) for f in files]
+
+    return [(fetch_result.source.name, local_path)]
+
+
+def detect_command_items(fetch_result: FetchResult) -> list[tuple[str, Path]]:
+    """Return ``(name, path)`` pairs for command items."""
+    return detect_file_items(fetch_result, "command")
+
+
+def detect_agent_items(fetch_result: FetchResult) -> list[tuple[str, Path]]:
+    """Return ``(name, path)`` pairs for agent items."""
+    return detect_file_items(fetch_result, "agent")
+
+
+# ---------------------------------------------------------------------------
+# Single-item deployment
+# ---------------------------------------------------------------------------
+
+
+def deploy_single_skill(
+    skill_name: str,
+    skill_path: Path,
     targets: list[str],
     project_root: Path,
-    dry_run: bool = False,
-    verbose: bool = False,
+    dry_run: bool,
+    verbose: bool,
 ) -> list[str]:
-    """Deploy a skill to all applicable target directories.
-
-    Returns list of all deployed file paths (relative to project_root).
-    """
-    skill_name = fetch_result.source.name
+    """Deploy a single skill folder/file to all applicable target directories."""
     all_deployed: list[str] = []
 
     for target in targets:
@@ -81,29 +180,27 @@ def deploy_skill(
 
         if dry_run:
             if verbose:
-                console.print(f"[dry-run]   copy {fetch_result.local_path} → {dst}")
-            # Collect what would be deployed
-            if fetch_result.local_path.is_dir():
-                for f in sorted(fetch_result.local_path.rglob("*")):
+                console.print(f"[dry-run]   copy {skill_path} → {dst}")
+            if skill_path.is_dir():
+                for f in sorted(skill_path.rglob("*")):
                     if f.is_file() and not any(
-                        p.startswith(".git")
-                        for p in f.relative_to(fetch_result.local_path).parts
+                        p.startswith(".git") for p in f.relative_to(skill_path).parts
                     ):
-                        rel = dst / f.relative_to(fetch_result.local_path)
+                        rel = dst / f.relative_to(skill_path)
                         all_deployed.append(str(rel.relative_to(project_root)))
             else:
                 all_deployed.append(
-                    str((dst / fetch_result.local_path.name).relative_to(project_root))
+                    str((dst / skill_path.name).relative_to(project_root))
                 )
             continue
 
         newly_deployed: list[str] = []
-        if fetch_result.local_path.is_dir():
-            deployed = _copy_tree(fetch_result.local_path, dst)
+        if skill_path.is_dir():
+            deployed = _copy_tree(skill_path, dst)
             newly_deployed = [str(Path(d).relative_to(project_root)) for d in deployed]
         else:
-            dst_file = dst / fetch_result.local_path.name
-            _atomic_copy_file(fetch_result.local_path, dst_file)
+            dst_file = dst / skill_path.name
+            _atomic_copy_file(skill_path, dst_file)
             newly_deployed = [str(dst_file.relative_to(project_root))]
 
         all_deployed.extend(newly_deployed)
@@ -115,24 +212,53 @@ def deploy_skill(
     return all_deployed
 
 
-def deploy_command(
+def deploy_skill(
     fetch_result: FetchResult,
     targets: list[str],
     project_root: Path,
     dry_run: bool = False,
     verbose: bool = False,
-) -> list[str]:
-    """Deploy a command file to all applicable target directories.
+) -> DeployResult:
+    """Deploy a skill to all applicable target directories.
 
-    Returns list of all deployed file paths (relative to project_root).
+    If the fetched path is a directory that contains files, it is deployed as
+    a single skill.  If it contains only subdirectories (no top-level files),
+    each subdirectory that itself contains files is deployed as a separate
+    skill.  An error is raised when neither condition is met.
     """
-    filename = fetch_result.source.name
+    items = detect_skill_items(fetch_result)
+    expanded_items = [name for name, _ in items] if len(items) > 1 else []
+
+    all_deployed: list[str] = []
+    for skill_name, skill_path in items:
+        deployed = deploy_single_skill(
+            skill_name, skill_path, targets, project_root, dry_run, verbose
+        )
+        all_deployed.extend(deployed)
+
+    return DeployResult(files=all_deployed, expanded_items=expanded_items)
+
+
+# ---------------------------------------------------------------------------
+# Commands & Agents (single-file assets)
+# ---------------------------------------------------------------------------
+
+
+def deploy_single_file(
+    filename: str,
+    file_path: Path,
+    targets: list[str],
+    target_dirs: dict[str, str],
+    project_root: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> list[str]:
+    """Deploy a single file to all applicable target directories."""
     all_deployed: list[str] = []
 
     for target in targets:
-        target_dir = COMMAND_DIRS.get(target)
+        target_dir = target_dirs.get(target)
         if target_dir is None:
-            # This target doesn't support commands — skip silently
             continue
 
         dst = project_root / target_dir / filename
@@ -143,13 +269,82 @@ def deploy_command(
             all_deployed.append(str(dst.relative_to(project_root)))
             continue
 
-        _atomic_copy_file(fetch_result.local_path, dst)
+        _atomic_copy_file(file_path, dst)
         all_deployed.append(str(dst.relative_to(project_root)))
 
         if verbose:
             console.print(f"  {dst.relative_to(project_root)}")
 
     return all_deployed
+
+
+def deploy_single_command(
+    filename: str,
+    file_path: Path,
+    targets: list[str],
+    project_root: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> list[str]:
+    """Deploy a single command file to all applicable target directories."""
+    return deploy_single_file(
+        filename, file_path, targets, COMMAND_DIRS, project_root, dry_run, verbose
+    )
+
+
+def deploy_single_agent(
+    filename: str,
+    file_path: Path,
+    targets: list[str],
+    project_root: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> list[str]:
+    """Deploy a single agent file to all applicable target directories."""
+    return deploy_single_file(
+        filename, file_path, targets, AGENT_DIRS, project_root, dry_run, verbose
+    )
+
+
+def _deploy_file_asset(
+    fetch_result: FetchResult,
+    targets: list[str],
+    target_dirs: dict[str, str],
+    asset_type: str,
+    project_root: Path,
+    dry_run: bool,
+    verbose: bool,
+) -> DeployResult:
+    """Deploy single-file asset(s) to all applicable target directories.
+
+    If the fetched path is a directory, non-hidden files are collected from
+    the top level (or from subfolders if the top level has none).  An error
+    is raised when no deployable files are found.
+    """
+    items = detect_file_items(fetch_result, asset_type)
+    expanded_items = [name for name, _ in items] if len(items) > 1 else []
+
+    all_deployed: list[str] = []
+    for filename, file_path in items:
+        deployed = deploy_single_file(
+            filename, file_path, targets, target_dirs, project_root, dry_run, verbose
+        )
+        all_deployed.extend(deployed)
+
+    return DeployResult(files=all_deployed, expanded_items=expanded_items)
+
+
+def deploy_command(
+    fetch_result: FetchResult,
+    targets: list[str],
+    project_root: Path,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> DeployResult:
+    """Deploy command file(s) to all applicable target directories."""
+    return _deploy_file_asset(
+        fetch_result, targets, COMMAND_DIRS, "command", project_root, dry_run, verbose
+    )
 
 
 def deploy_agent(
@@ -158,35 +353,11 @@ def deploy_agent(
     project_root: Path,
     dry_run: bool = False,
     verbose: bool = False,
-) -> list[str]:
-    """Deploy an agent file to all applicable target directories.
-
-    Returns list of all deployed file paths (relative to project_root).
-    """
-    filename = fetch_result.source.name
-    all_deployed: list[str] = []
-
-    for target in targets:
-        target_dir = AGENT_DIRS.get(target)
-        if target_dir is None:
-            # This target doesn't support agents — skip silently
-            continue
-
-        dst = project_root / target_dir / filename
-
-        if dry_run:
-            if verbose:
-                console.print(f"[dry-run]   copy → {dst}")
-            all_deployed.append(str(dst.relative_to(project_root)))
-            continue
-
-        _atomic_copy_file(fetch_result.local_path, dst)
-        all_deployed.append(str(dst.relative_to(project_root)))
-
-        if verbose:
-            console.print(f"  {dst.relative_to(project_root)}")
-
-    return all_deployed
+) -> DeployResult:
+    """Deploy agent file(s) to all applicable target directories."""
+    return _deploy_file_asset(
+        fetch_result, targets, AGENT_DIRS, "agent", project_root, dry_run, verbose
+    )
 
 
 def cleanup_deployed_files(

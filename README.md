@@ -108,6 +108,33 @@ The `url` field takes any valid `git clone` URL. HTTPS, SSH, local paths -- what
 
 Authentication is handled entirely by your system git config -- SSH keys, credential helpers, whatever you already have set up.
 
+The `path` field can point to a single file, a single skill folder, or a parent directory containing multiple items. When `path` points at a directory, agpack figures out what's inside:
+
+- **Skills** -- a directory with top-level files is deployed as one skill. A directory that only contains subdirectories deploys each subfolder as a separate skill.
+- **Commands & Agents** -- every non-hidden file in the directory is deployed individually. If the top level only has subdirectories, files inside those are collected instead.
+
+```yaml
+skills:
+  # A single skill folder
+  - url: https://github.com/owner/repo
+    path: skills/my-skill
+
+  # A directory of skills -- each subfolder becomes its own skill
+  - url: https://github.com/owner/repo
+    path: skills
+
+commands:
+  # A single command file
+  - url: https://github.com/owner/repo
+    path: commands/review.md
+
+  # A directory of commands -- every file inside is deployed
+  - url: https://github.com/owner/repo
+    path: commands
+```
+
+If the directory contains no deployable files, sync fails with an error.
+
 ## Where things go
 
 | Target | Skills | Commands | Agents | MCP Config |
