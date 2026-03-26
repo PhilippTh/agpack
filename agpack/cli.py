@@ -13,6 +13,8 @@ from pathlib import Path
 import click
 from rich.progress import Progress
 from rich.progress import TaskID
+from rich.rule import Rule
+from rich.table import Table
 
 from agpack import __version__
 from agpack.config import AgpackConfig
@@ -97,7 +99,7 @@ def _sync_resource_type(
     task_ids: dict[str, TaskID] = {}
     for dep in deps:
         task_ids[dep.identity] = progress.add_task(
-            f"{resource_type} '{dep.name}'",
+            f"{resource_type} [bold]{dep.name}[/bold]",
             total=2,
             icon=" ",
             detail=f"Fetching from {dep.url}",
@@ -150,7 +152,7 @@ def _sync_resource_type(
                 is_last = i == len(items) - 1
                 branch = "└── " if is_last else "├── "
                 sub_tid = progress.add_task(
-                    f"    {branch}{item_name}",
+                    f"[dim]    {branch}[/dim]{item_name}",
                     total=1,
                     icon=" ",
                     detail="",
@@ -355,11 +357,17 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
     # 8. Summary
     elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
-    console.print(
-        f"\n{counts.get('skill', 0)} skills, {counts.get('command', 0)} commands, "
-        f"{counts.get('agent', 0)} agents, {mcp_count} MCP servers "
-        f"synced to {target_count} targets in {elapsed:.2f}s."
-    )
+    items = [
+        ("skills", "skill"),
+        ("commands", "command"),
+        ("agents", "agent"),
+    ]
+    parts = [f"[bold]{counts.get(k, 0)}[/bold] {name}" for name, k in items]
+    parts.append(f"[bold]{mcp_count}[/bold] MCP servers")
+    summary = ", ".join(parts)
+    targets = f"[bold]{target_count}[/bold] targets"
+    console.print()
+    console.print(Rule(f"{summary} → {targets} [dim]({elapsed:.2f}s)[/dim]"))
 
 
 @main.command()
@@ -399,30 +407,63 @@ def status(config_path: str) -> None:
         ("Agents", config.agents),
     ]
     for label, deps in resource_sections:
-        console.print(f"\n{label}:" if label != "Skills" else f"{label}:")
+        table = Table(
+            title=label,
+            title_style="bold",
+            show_header=False,
+            box=None,
+            padding=(0, 1),
+            title_justify="left",
+        )
+        table.add_column(style="bold", no_wrap=True)
+        table.add_column(style="dim")
         if not deps:
-            console.print("  (none configured)")
+            table.add_row("[dim]no dependencies configured[/dim]")
         else:
             for dep in deps:
                 installed = installed_map.get(dep.identity)
                 if installed:
                     short_ref = installed.resolved_ref[:7]
-                    console.print(f"  ✓ {dep.name:<20} ({dep.url} @ {short_ref})")
+                    table.add_row(
+                        f"[green]✓[/green] {dep.name}",
+                        f"{dep.url} @ {short_ref}",
+                    )
                 else:
-                    console.print(f"  ✗ {dep.name:<20} (not yet synced)")
+                    table.add_row(
+                        f"[red]✗[/red] {dep.name}",
+                        "not yet synced",
+                    )
+        console.print(table)
+        console.print()
 
     # MCP
-    console.print("\nMCP:")
+    table = Table(
+        title="MCP Servers",
+        title_style="bold",
+        show_header=False,
+        box=None,
+        padding=(0, 1),
+        title_justify="left",
+    )
+    table.add_column(style="bold", no_wrap=True)
+    table.add_column(style="dim")
     if not config.mcp:
-        console.print("  (none configured)")
+        table.add_row("[dim]no servers configured[/dim]")
     else:
         for server in config.mcp:
             mcp_installed = mcp_map.get(server.name)
             if mcp_installed and mcp_installed.targets:
                 targets_str = ", ".join(mcp_installed.targets)
-                console.print(f"  ✓ {server.name:<20} → {targets_str}")
+                table.add_row(
+                    f"[green]✓[/green] {server.name}",
+                    f"→ {targets_str}",
+                )
             else:
-                console.print(f"  ✗ {server.name:<20} (not yet synced)")
+                table.add_row(
+                    f"[red]✗[/red] {server.name}",
+                    "not yet synced",
+                )
+    console.print(table)
 
 
 @main.command()
@@ -479,4 +520,4 @@ dependencies:
     #     API_KEY: ${API_KEY}   # resolved from .env or shell environment
 """
     path.write_text(template, encoding="utf-8")
-    console.print(f"Created {path}")
+    console.print(f"[green]✓[/green] Created [bold]{path.name}[/bold]")
