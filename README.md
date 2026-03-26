@@ -108,6 +108,51 @@ The `url` field takes any valid `git clone` URL. HTTPS, SSH, local paths -- what
 
 Authentication is handled entirely by your system git config -- SSH keys, credential helpers, whatever you already have set up.
 
+### Pointing to directories
+
+You don't have to list every skill, command, or agent individually. You can point `path` at a parent directory and agpack will figure out what's inside.
+
+**Skills** -- if the directory has files at the top level, it's deployed as a single skill. If it only contains subdirectories, each subdirectory is deployed as a separate skill:
+
+```yaml
+skills:
+  # Single skill folder
+  - url: https://github.com/owner/repo
+    path: skills/my-skill
+
+  # Directory of skills -- each subfolder becomes its own skill
+  - url: https://github.com/owner/repo
+    path: skills
+```
+
+Given a repo layout like:
+
+```
+skills/
+  lint/
+    SKILL.md
+  format/
+    SKILL.md
+    lib/helpers.py
+```
+
+Pointing at `skills` deploys both `lint` and `format` as individual skills.
+
+**Commands & Agents** -- if the path is a directory, every non-hidden file inside is deployed as an individual command or agent. If the top level only has subdirectories, files inside those subdirectories are collected instead:
+
+```yaml
+commands:
+  # Single file
+  - url: https://github.com/owner/repo
+    path: commands/review.md
+
+  # Directory -- every .md file inside is deployed as a command
+  - url: https://github.com/owner/repo
+    path: commands
+```
+
+If the directory (and its subdirectories) contains no deployable files, sync fails with an error.
+
 ## Where things go
 
 | Target | Skills | Commands | Agents | MCP Config |

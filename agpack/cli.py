@@ -375,15 +375,21 @@ targets:
 
 dependencies:
   skills:
+    # Point to a single skill folder:
     # - url: https://github.com/owner/repo
     #   path: skills/my-skill
     #   ref: v1.0.0
+    # Or to a directory of skill folders (each subfolder is deployed separately):
+    # - url: https://github.com/owner/repo
+    #   path: skills
 
   commands:
+    # Point to a single file or a directory of command files:
     # - url: https://github.com/owner/repo
     #   path: commands/my-command.md
 
   agents:
+    # Point to a single file or a directory of agent files:
     # - url: https://github.com/owner/repo
     #   path: agents/my-agent.md
 

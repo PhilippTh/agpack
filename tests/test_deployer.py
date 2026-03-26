@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agpack.config import DependencySource
+from agpack.deployer import DeployError
 from agpack.deployer import _atomic_copy_file
 from agpack.deployer import cleanup_deployed_files
 from agpack.deployer import deploy_agent
@@ -344,3 +347,257 @@ class TestAtomicCopyFile:
         _atomic_copy_file(src, dst)
 
         assert dst.read_text() == "new"
+
+
+# ---------------------------------------------------------------------------
+# Folder-of-skills detection
+# ---------------------------------------------------------------------------
+
+
+def _make_folder_of_skills_fetch(
+    tmp_path: Path,
+    name: str = "my-skills",
+    skills: dict[str, dict[str, str]] | None = None,
+) -> FetchResult:
+    """Create a FetchResult pointing at a directory that contains skill subfolders."""
+    if skills is None:
+        skills = {
+            "skill-a": {"SKILL.md": "# Skill A"},
+            "skill-b": {"SKILL.md": "# Skill B", "lib/util.py": "pass"},
+        }
+    src = tmp_path / "src" / name
+    for skill_name, files in skills.items():
+        for rel, content in files.items():
+            p = src / skill_name / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+    return FetchResult(
+        source=DependencySource(url=f"https://github.com/org/{name}", path=name),
+        local_path=src,
+        resolved_ref="abc1234",
+    )
+
+
+def _make_dir_command_fetch(
+    tmp_path: Path,
+    name: str = "my-commands",
+    files: dict[str, str] | None = None,
+) -> FetchResult:
+    """Create a FetchResult pointing at a directory containing command files."""
+    if files is None:
+        files = {"lint.md": "# Lint", "format.md": "# Format"}
+    src = tmp_path / "src" / name
+    for rel, content in files.items():
+        p = src / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    return FetchResult(
+        source=DependencySource(url=f"https://github.com/org/{name}", path=name),
+        local_path=src,
+        resolved_ref="abc1234",
+    )
+
+
+class TestDeploySkillFolderDetection:
+    def test_deploys_each_subfolder_as_separate_skill(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        fr = _make_folder_of_skills_fetch(tmp_path)
+
+        deployed = deploy_skill(fr, ["claude"], project)
+
+        skill_a = project / ".claude" / "skills" / "skill-a" / "SKILL.md"
+        skill_b = project / ".claude" / "skills" / "skill-b" / "SKILL.md"
+        skill_b_lib = project / ".claude" / "skills" / "skill-b" / "lib" / "util.py"
+        assert skill_a.exists()
+        assert skill_a.read_text() == "# Skill A"
+        assert skill_b.exists()
+        assert skill_b_lib.exists()
+        # 1 file for skill-a + 2 files for skill-b = 3 per target
+        assert len(deployed) == 3
+
+    def test_folder_of_skills_to_multiple_targets(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        fr = _make_folder_of_skills_fetch(tmp_path)
+
+        deployed = deploy_skill(fr, ALL_TARGETS, project)
+
+        from agpack.targets import SKILL_DIRS
+
+        # 3 files × 5 targets = 15
+        assert len(deployed) == 3 * len(SKILL_DIRS)
+        for target, base in SKILL_DIRS.items():
+            assert (project / base / "skill-a" / "SKILL.md").exists()
+            assert (project / base / "skill-b" / "SKILL.md").exists()
+
+    def test_folder_of_skills_dry_run(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        fr = _make_folder_of_skills_fetch(tmp_path)
+
+        deployed = deploy_skill(fr, ["claude"], project, dry_run=True)
+
+        assert len(deployed) == 3
+        for rel in deployed:
+            assert not (project / rel).exists()
+
+    def test_errors_on_empty_directory(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        src = tmp_path / "src" / "empty"
+        src.mkdir(parents=True)
+        fr = FetchResult(
+            source=DependencySource(url="https://github.com/org/empty", path="empty"),
+            local_path=src,
+            resolved_ref="abc1234",
+        )
+
+        with pytest.raises(DeployError, match="does not contain any skill folders"):
+            deploy_skill(fr, ["claude"], project)
+
+    def test_errors_on_dir_with_only_empty_subdirs(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        src = tmp_path / "src" / "parent"
+        (src / "empty-a").mkdir(parents=True)
+        (src / "empty-b").mkdir(parents=True)
+        fr = FetchResult(
+            source=DependencySource(url="https://github.com/org/parent", path="parent"),
+            local_path=src,
+            resolved_ref="abc1234",
+        )
+
+        with pytest.raises(DeployError, match="does not contain any skill folders"):
+            deploy_skill(fr, ["claude"], project)
+
+    def test_single_skill_folder_still_works(self, tmp_path: Path) -> None:
+        """A directory with top-level files is still deployed as a single skill."""
+        project = tmp_path / "project"
+        project.mkdir()
+        fr = _make_dir_fetch(tmp_path, name="my-skill")
+
+        deployed = deploy_skill(fr, ["claude"], project)
+
+        assert (project / ".claude" / "skills" / "my-skill" / "SKILL.md").exists()
+        assert len(deployed) == 2  # SKILL.md + lib/helper.py
+
+
+# ---------------------------------------------------------------------------
+# Folder-of-commands detection
+# ---------------------------------------------------------------------------
+
+
+class TestDeployCommandFolderDetection:
+    def test_deploys_each_file_from_directory(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        fr = _make_dir_command_fetch(tmp_path)
+
+        deployed = deploy_command(fr, ["claude"], project)
+
+        from agpack.targets import COMMAND_DIRS
+
+        assert (project / ".claude" / "commands" / "lint.md").exists()
+        assert (project / ".claude" / "commands" / "format.md").exists()
+        assert (project / ".claude" / "commands" / "lint.md").read_text() == "# Lint"
+
+    def test_deploys_files_from_subfolders(self, tmp_path: Path) -> None:
+        """When top level has no files, files from subfolders are deployed."""
+        project = tmp_path / "project"
+        project.mkdir()
+        src = tmp_path / "src" / "cmds"
+        (src / "group-a").mkdir(parents=True)
+        (src / "group-a" / "lint.md").write_text("# Lint")
+        (src / "group-b").mkdir(parents=True)
+        (src / "group-b" / "format.md").write_text("# Format")
+        fr = FetchResult(
+            source=DependencySource(url="https://github.com/org/cmds", path="cmds"),
+            local_path=src,
+            resolved_ref="abc1234",
+        )
+
+        deployed = deploy_command(fr, ["claude"], project)
+
+        assert (project / ".claude" / "commands" / "lint.md").exists()
+        assert (project / ".claude" / "commands" / "format.md").exists()
+
+    def test_errors_on_empty_directory(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        src = tmp_path / "src" / "empty"
+        src.mkdir(parents=True)
+        fr = FetchResult(
+            source=DependencySource(url="https://github.com/org/empty", path="empty"),
+            local_path=src,
+            resolved_ref="abc1234",
+        )
+
+        with pytest.raises(DeployError, match="does not contain any command files"):
+            deploy_command(fr, ["claude"], project)
+
+    def test_dry_run_with_directory(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        fr = _make_dir_command_fetch(tmp_path)
+
+        deployed = deploy_command(fr, ["claude"], project, dry_run=True)
+
+        assert len(deployed) == 2
+        for rel in deployed:
+            assert not (project / rel).exists()
+
+
+# ---------------------------------------------------------------------------
+# Folder-of-agents detection
+# ---------------------------------------------------------------------------
+
+
+class TestDeployAgentFolderDetection:
+    def test_deploys_each_file_from_directory(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        src = tmp_path / "src" / "agents"
+        src.mkdir(parents=True)
+        (src / "reviewer.md").write_text("# Reviewer")
+        (src / "planner.md").write_text("# Planner")
+        fr = FetchResult(
+            source=DependencySource(url="https://github.com/org/agents", path="agents"),
+            local_path=src,
+            resolved_ref="abc1234",
+        )
+
+        deployed = deploy_agent(fr, ["claude"], project)
+
+        assert (project / ".claude" / "agents" / "reviewer.md").exists()
+        assert (project / ".claude" / "agents" / "planner.md").exists()
+
+    def test_deploys_files_from_subfolders(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        src = tmp_path / "src" / "agents"
+        (src / "group").mkdir(parents=True)
+        (src / "group" / "reviewer.md").write_text("# Reviewer")
+        fr = FetchResult(
+            source=DependencySource(url="https://github.com/org/agents", path="agents"),
+            local_path=src,
+            resolved_ref="abc1234",
+        )
+
+        deployed = deploy_agent(fr, ["claude"], project)
+
+        assert (project / ".claude" / "agents" / "reviewer.md").exists()
+
+    def test_errors_on_empty_directory(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        src = tmp_path / "src" / "empty"
+        src.mkdir(parents=True)
+        fr = FetchResult(
+            source=DependencySource(url="https://github.com/org/empty", path="empty"),
+            local_path=src,
+            resolved_ref="abc1234",
+        )
+
+        with pytest.raises(DeployError, match="does not contain any agent files"):
+            deploy_agent(fr, ["claude"], project)
