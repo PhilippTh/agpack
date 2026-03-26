@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from rich.console import Console
+from rich.console import RenderableType
 from rich.progress import Progress
 from rich.progress import ProgressColumn
+from rich.progress import Task
 from rich.progress import TextColumn
 from rich.spinner import Spinner
 from rich.text import Text
@@ -23,11 +25,11 @@ class StatusColumn(ProgressColumn):
         super().__init__()
         self._spinner = Spinner("dots")
 
-    def render(self, task: object) -> Text:  # noqa: ANN001 – Rich Task
-        if task.finished:  # type: ignore[union-attr]
-            icon = task.fields.get("icon", " ")  # type: ignore[union-attr]
+    def render(self, task: Task) -> RenderableType:
+        if task.finished:
+            icon: str = task.fields.get("icon", " ")
             return Text.from_markup(icon)
-        return self._spinner.render(task.get_time())  # type: ignore[union-attr]
+        return self._spinner.render(task.get_time())
 
 
 def create_sync_progress() -> Progress:
