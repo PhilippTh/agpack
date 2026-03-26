@@ -47,6 +47,19 @@ from agpack.mcp import deploy_mcp_servers
 _MAX_FETCH_WORKERS = 8
 
 
+def _source_file_count(deployed: list[str]) -> int:
+    """Count unique source files from a deployed-paths list.
+
+    Deployed paths look like ``<target_dir>/<resource>/<file…>`` where
+    ``<target_dir>`` is always two components (e.g. ``.claude/skills``).
+    Stripping those two components and deduplicating gives the number of
+    unique source files, regardless of how many targets received copies.
+    """
+    if not deployed:
+        return 0
+    return len({Path(f).parts[2:] for f in deployed})
+
+
 @dataclass
 class SyncResult:
     """Outcome of syncing one resource type."""
@@ -175,23 +188,23 @@ def _sync_resource_type(
             all_deployed.extend(files)
 
             if is_expanded:
-                n = len(files)
+                n = _source_file_count(files)
                 progress.update(
                     sub_task_ids[idx],
                     completed=1,
                     icon="[green]✓[/green]",
-                    detail=f"{n} {'file' if n == 1 else 'files'}",
+                    detail=f"Copied {n} {'file' if n == 1 else 'files'}",
                 )
 
-        # Update parent row
-        total_files = len(all_deployed)
-        file_label = "file" if total_files == 1 else "files"
+        # Update parent row — show source file count, not total across targets
+        src_files = _source_file_count(all_deployed)
         if is_expanded:
             item_label = f"{resource_type}s" if len(items) != 1 else resource_type
-            detail = f"{len(items)} {item_label}, {total_files} {file_label}"
+            detail = f"Copied {len(items)} {item_label}"
             sync.count += len(items)
         else:
-            detail = f"{total_files} {file_label}"
+            file_label = "file" if src_files == 1 else "files"
+            detail = f"Copied {src_files} {file_label}"
             sync.count += 1
 
         progress.update(tid, completed=2, icon="[green]✓[/green]", detail=detail)

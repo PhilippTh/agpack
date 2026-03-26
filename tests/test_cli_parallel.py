@@ -81,6 +81,7 @@ class TestParallelFetchAllSucceed:
                 tmp_path,
                 new_lockfile,
                 progress,
+
                 dry_run=False,
                 verbose=False,
             )
@@ -109,6 +110,7 @@ class TestParallelFetchAllSucceed:
                 tmp_path,
                 new_lockfile,
                 progress,
+
                 dry_run=False,
                 verbose=False,
             )
@@ -144,6 +146,7 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 new_lockfile,
                 progress,
+
                 dry_run=False,
                 verbose=False,
             )
@@ -183,6 +186,7 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 Lockfile(),
                 progress,
+
                 dry_run=False,
                 verbose=False,
             )
@@ -209,6 +213,7 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 Lockfile(),
                 progress,
+
                 dry_run=True,
                 verbose=False,
             )
@@ -243,6 +248,7 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 Lockfile(),
                 progress,
+
                 dry_run=False,
                 verbose=False,
             )
@@ -266,6 +272,7 @@ class TestParallelFetchEdgeCases:
                 tmp_path,
                 Lockfile(),
                 progress,
+
                 dry_run=False,
                 verbose=False,
             )
@@ -302,6 +309,7 @@ class TestParallelFetchEdgeCases:
                 tmp_path,
                 Lockfile(),
                 progress,
+
                 dry_run=False,
                 verbose=False,
             )
@@ -330,6 +338,7 @@ class TestParallelFetchEdgeCases:
                 tmp_path,
                 Lockfile(),
                 progress,
+
                 dry_run=False,
                 verbose=False,
             )
