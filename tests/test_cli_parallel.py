@@ -45,11 +45,11 @@ def _fake_detect(result: FetchResult) -> list[tuple[str, Path]]:
 
 def _fake_deploy_item(
     name: str,
-    path: Path,
-    targets: list[str],
-    project_root: Path,
-    dry_run: bool,
-    verbose: bool,
+    _path: Path,
+    _targets: list[str],
+    _project_root: Path,
+    _dry_run: bool,
+    _verbose: bool,
 ) -> list[str]:
     """Deploy function that pretends to deploy a single file."""
     return [f"{name}.md"]
@@ -81,7 +81,6 @@ class TestParallelFetchAllSucceed:
                 tmp_path,
                 new_lockfile,
                 progress,
-
                 dry_run=False,
                 verbose=False,
             )
@@ -110,7 +109,6 @@ class TestParallelFetchAllSucceed:
                 tmp_path,
                 new_lockfile,
                 progress,
-
                 dry_run=False,
                 verbose=False,
             )
@@ -146,7 +144,6 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 new_lockfile,
                 progress,
-
                 dry_run=False,
                 verbose=False,
             )
@@ -186,7 +183,6 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 Lockfile(),
                 progress,
-
                 dry_run=False,
                 verbose=False,
             )
@@ -213,7 +209,6 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 Lockfile(),
                 progress,
-
                 dry_run=True,
                 verbose=False,
             )
@@ -248,7 +243,6 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 Lockfile(),
                 progress,
-
                 dry_run=False,
                 verbose=False,
             )
@@ -272,7 +266,6 @@ class TestParallelFetchEdgeCases:
                 tmp_path,
                 Lockfile(),
                 progress,
-
                 dry_run=False,
                 verbose=False,
             )
@@ -309,7 +302,6 @@ class TestParallelFetchEdgeCases:
                 tmp_path,
                 Lockfile(),
                 progress,
-
                 dry_run=False,
                 verbose=False,
             )
@@ -338,7 +330,6 @@ class TestParallelFetchEdgeCases:
                 tmp_path,
                 Lockfile(),
                 progress,
-
                 dry_run=False,
                 verbose=False,
             )

@@ -90,7 +90,9 @@ def _find_asset_subfolders(path: Path) -> list[Path]:
 def _find_top_level_files(path: Path) -> list[Path]:
     """Return non-hidden files at the top level of a directory."""
     return sorted(
-        item for item in path.iterdir() if item.is_file() and not item.name.startswith(".")
+        item
+        for item in path.iterdir()
+        if item.is_file() and not item.name.startswith(".")
     )
 
 
@@ -182,8 +184,7 @@ def deploy_single_skill(
             if skill_path.is_dir():
                 for f in sorted(skill_path.rglob("*")):
                     if f.is_file() and not any(
-                        p.startswith(".git")
-                        for p in f.relative_to(skill_path).parts
+                        p.startswith(".git") for p in f.relative_to(skill_path).parts
                     ):
                         rel = dst / f.relative_to(skill_path)
                         all_deployed.append(str(rel.relative_to(project_root)))

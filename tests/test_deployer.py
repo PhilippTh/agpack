@@ -439,7 +439,7 @@ class TestDeploySkillFolderDetection:
         # 3 files × 5 targets = 15
         assert len(result.files) == 3 * len(SKILL_DIRS)
         assert result.expanded_items == ["skill-a", "skill-b"]
-        for target, base in SKILL_DIRS.items():
+        for _target, base in SKILL_DIRS.items():
             assert (project / base / "skill-a" / "SKILL.md").exists()
             assert (project / base / "skill-b" / "SKILL.md").exists()
 

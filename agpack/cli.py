@@ -6,11 +6,11 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
+from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 
 import click
-from dataclasses import dataclass
-from dataclasses import field
 from rich.progress import Progress
 from rich.progress import TaskID
 
@@ -20,12 +20,12 @@ from agpack.config import ConfigError
 from agpack.config import DependencySource
 from agpack.config import load_config
 from agpack.deployer import cleanup_deployed_files
-from agpack.deployer import detect_agent_items
-from agpack.deployer import detect_command_items
-from agpack.deployer import detect_skill_items
 from agpack.deployer import deploy_single_agent
 from agpack.deployer import deploy_single_command
 from agpack.deployer import deploy_single_skill
+from agpack.deployer import detect_agent_items
+from agpack.deployer import detect_command_items
+from agpack.deployer import detect_skill_items
 from agpack.display import console
 from agpack.display import create_sync_progress
 from agpack.envsubst import resolve_config
@@ -297,10 +297,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
 
-    DetectFn = Callable[[FetchResult], list[tuple[str, Path]]]
-    DeployItemFn = Callable[[str, Path, list[str], Path, bool, bool], list[str]]
-
-    resource_types: list[tuple[list[DependencySource], DetectFn, DeployItemFn, str]] = [
+    resource_types = [
         (config.skills, detect_skill_items, deploy_single_skill, "skill"),
         (config.commands, detect_command_items, deploy_single_command, "command"),
         (config.agents, detect_agent_items, deploy_single_agent, "agent"),
