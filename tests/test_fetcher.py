@@ -10,9 +10,11 @@ from unittest.mock import patch
 import pytest
 
 from agpack.config import DependencySource
+from agpack.fetcher import _GIT_TIMEOUT_SECONDS
 from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
 from agpack.fetcher import _is_sha
+from agpack.fetcher import _run_git
 from agpack.fetcher import cleanup_fetch
 from agpack.fetcher import fetch_dependency
 
@@ -352,3 +354,41 @@ class TestCleanupFetch:
 
         # Should not raise
         cleanup_fetch(result)
+
+
+# ---------------------------------------------------------------------------
+# _run_git — environment & timeout
+# ---------------------------------------------------------------------------
+
+
+class TestRunGit:
+    """Tests for _run_git subprocess behaviour."""
+
+    @patch("agpack.fetcher.subprocess.run", return_value=_ok())
+    def test_sets_git_terminal_prompt_env(self, mock_run: MagicMock) -> None:
+        """GIT_TERMINAL_PROMPT=0 is passed in the environment."""
+        _run_git(["status"])
+
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+    @patch("agpack.fetcher.subprocess.run", return_value=_ok())
+    def test_passes_timeout(self, mock_run: MagicMock) -> None:
+        """A timeout is forwarded to subprocess.run."""
+        _run_git(["status"])
+
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["timeout"] == _GIT_TIMEOUT_SECONDS
+
+    @patch(
+        "agpack.fetcher.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="git clone", timeout=120),
+    )
+    def test_timeout_returns_failed_result(self, mock_run: MagicMock) -> None:  # noqa: ARG002
+        """TimeoutExpired is caught and converted to a failed CompletedProcess."""
+        result = _run_git(["clone", "https://example.com/repo"])
+
+        assert result.returncode == 1
+        assert "timed out" in result.stderr

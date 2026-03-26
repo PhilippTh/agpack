@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -10,6 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agpack.config import DependencySource
+
+# Timeout (in seconds) for any single git subprocess call.  Prevents
+# indefinite hangs when the remote is unreachable or git is waiting for
+# credentials that will never arrive.
+_GIT_TIMEOUT_SECONDS = 120
 
 # Match 7-40 hex chars (commit SHA)
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
@@ -37,13 +43,31 @@ def _is_sha(ref: str) -> bool:
 def _run_git(
     args: list[str], cwd: str | Path | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """Run a git command and return the result."""
-    return subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
+    """Run a git command and return the result.
+
+    The subprocess inherits the current environment with
+    ``GIT_TERMINAL_PROMPT=0`` injected so that git never blocks waiting
+    for interactive credentials input (e.g. when an HTTPS URL is used but
+    only SSH authentication is configured).  A timeout is also enforced to
+    guard against network hangs.
+    """
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=["git", *args],
+            returncode=1,
+            stdout="",
+            stderr=f"Git operation timed out after {_GIT_TIMEOUT_SECONDS} seconds",
+        )
 
 
 def _clone(
