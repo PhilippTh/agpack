@@ -595,6 +595,11 @@ dependencies:
     # - url: https://github.com/owner/repo
     #   path: skills/my-skill
     #   ref: v1.0.0
+    # Multiple URLs (tried in order, e.g. HTTPS + SSH fallback):
+    # - url:
+    #     - https://github.com/owner/repo
+    #     - git@github.com:owner/repo.git
+    #   path: skills/my-skill
     # Or to a directory of skill folders (each subfolder is deployed separately):
     # - url: https://github.com/owner/repo
     #   path: skills

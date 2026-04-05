@@ -89,7 +89,7 @@ class TestFetchDependency:
     @patch("agpack.fetcher._run_git")
     def test_clone_succeeds(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """Clone succeeds — URL is passed directly to git clone."""
-        source = DependencySource(url="https://github.com/owner/repo", ref="main")
+        source = DependencySource(urls=["https://github.com/owner/repo"], ref="main")
 
         def side_effect(args: list[str], cwd=None):  # noqa: ARG001
             if args[0] == "clone":
@@ -122,7 +122,7 @@ class TestFetchDependency:
         self, mock_git: MagicMock, tmp_path: Path
     ) -> None:
         """When clone fails, FetchError is raised."""
-        source = DependencySource(url="https://github.com/owner/repo", ref="main")
+        source = DependencySource(urls=["https://github.com/owner/repo"], ref="main")
 
         mock_git.return_value = _fail(stderr="connection refused")
 
@@ -138,7 +138,7 @@ class TestFetchDependency:
     ) -> None:
         """When source.path is set, sparse checkout is attempted."""
         source = DependencySource(
-            url="https://github.com/owner/repo", ref="main", path="skills/foo"
+            urls=["https://github.com/owner/repo"], ref="main", path="skills/foo"
         )
 
         def side_effect(args: list[str], cwd=None):  # noqa: ARG001
@@ -181,7 +181,7 @@ class TestFetchDependency:
     ) -> None:
         """When sparse checkout fails, a full clone is performed."""
         source = DependencySource(
-            url="https://github.com/owner/repo", ref="main", path="lib/bar"
+            urls=["https://github.com/owner/repo"], ref="main", path="lib/bar"
         )
         clone_attempt = {"count": 0}
 
@@ -230,7 +230,7 @@ class TestFetchDependency:
     def test_sha_ref_no_branch_flag(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """When ref is a SHA, --branch is NOT used; fetch+checkout is done."""
         sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-        source = DependencySource(url="https://github.com/owner/repo", ref=sha)
+        source = DependencySource(urls=["https://github.com/owner/repo"], ref=sha)
 
         def side_effect(args: list[str], cwd=None):  # noqa: ARG001
             if args[0] == "clone":
@@ -275,7 +275,7 @@ class TestFetchDependency:
     ) -> None:
         """When source.path does not exist after clone, FetchError is raised."""
         source = DependencySource(
-            url="https://github.com/owner/repo", ref="main", path="does/not/exist"
+            urls=["https://github.com/owner/repo"], ref="main", path="does/not/exist"
         )
 
         def side_effect(args: list[str], cwd=None):  # noqa: ARG001
@@ -315,7 +315,7 @@ class TestCleanupFetch:
         (content_dir / "SKILL.md").write_text("hello")
 
         source = DependencySource(
-            url="https://github.com/owner/repo", path="skills/foo"
+            urls=["https://github.com/owner/repo"], path="skills/foo"
         )
         result = FetchResult(
             source=source,
@@ -332,7 +332,7 @@ class TestCleanupFetch:
         """cleanup_fetch does not raise if the directory is already removed."""
         gone_dir = tmp_path / "agpack-gone"
 
-        source = DependencySource(url="https://github.com/owner/repo")
+        source = DependencySource(urls=["https://github.com/owner/repo"])
         result = FetchResult(
             source=source,
             local_path=gone_dir / "repo",
@@ -345,7 +345,7 @@ class TestCleanupFetch:
 
     def test_noop_when_tmpdir_is_none(self) -> None:
         """cleanup_fetch is a no-op when _tmpdir is None."""
-        source = DependencySource(url="https://github.com/owner/repo")
+        source = DependencySource(urls=["https://github.com/owner/repo"])
         result = FetchResult(
             source=source,
             local_path=Path("/nonexistent"),
@@ -392,3 +392,199 @@ class TestRunGit:
 
         assert result.returncode == 1
         assert "timed out" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# URL fallback
+# ---------------------------------------------------------------------------
+
+
+class TestUrlFallback:
+    """Tests for fallback URLs when the primary URL fails."""
+
+    @patch("agpack.fetcher._run_git")
+    def test_primary_succeeds_no_fallback_tried(
+        self, mock_git: MagicMock, tmp_path: Path
+    ) -> None:
+        """When the primary URL works, fallback URLs are not attempted."""
+        source = DependencySource(
+            urls=["https://github.com/owner/repo", "git@github.com:owner/repo.git"],
+            ref="main",
+        )
+
+        def side_effect(args: list[str], cwd=None):  # noqa: ARG001
+            if args[0] == "clone":
+                clone_dir = Path(args[-1])
+                clone_dir.mkdir(parents=True, exist_ok=True)
+                return _ok()
+            if args[0] == "rev-parse":
+                return _ok(stdout=FAKE_SHA_FULL + "\n")
+            return _ok()
+
+        mock_git.side_effect = side_effect
+
+        with patch("agpack.fetcher.tempfile.mkdtemp", return_value=str(tmp_path)):
+            result = fetch_dependency(source)
+
+        assert result.resolved_ref == FAKE_SHA_FULL
+
+        # Only one clone call — the primary URL
+        clone_calls = [c for c in mock_git.call_args_list if c[0][0][0] == "clone"]
+        assert len(clone_calls) == 1
+        assert "https://github.com/owner/repo" in clone_calls[0][0][0]
+
+    @patch("agpack.fetcher._run_git")
+    def test_primary_fails_fallback_succeeds(
+        self, mock_git: MagicMock, tmp_path: Path
+    ) -> None:
+        """When the primary URL fails, the fallback URL is tried and succeeds."""
+        source = DependencySource(
+            urls=["https://github.com/owner/repo", "git@github.com:owner/repo.git"],
+            ref="main",
+        )
+
+        call_count = {"clone": 0}
+
+        def side_effect(args: list[str], cwd=None):  # noqa: ARG001
+            if args[0] == "clone":
+                call_count["clone"] += 1
+                clone_dir = Path(args[-1])
+                if call_count["clone"] <= 1:
+                    # First clone (primary HTTPS) fails
+                    return _fail(stderr="connection refused")
+                # Second clone (fallback SSH) succeeds
+                clone_dir.mkdir(parents=True, exist_ok=True)
+                return _ok()
+            if args[0] == "rev-parse":
+                return _ok(stdout=FAKE_SHA_FULL + "\n")
+            return _ok()
+
+        mock_git.side_effect = side_effect
+
+        with patch("agpack.fetcher.tempfile.mkdtemp", return_value=str(tmp_path)):
+            result = fetch_dependency(source)
+
+        assert result.resolved_ref == FAKE_SHA_FULL
+
+        # Two clone calls: primary failed, fallback succeeded
+        clone_calls = [c for c in mock_git.call_args_list if c[0][0][0] == "clone"]
+        assert len(clone_calls) == 2
+        assert "https://github.com/owner/repo" in clone_calls[0][0][0]
+        assert "git@github.com:owner/repo.git" in clone_calls[1][0][0]
+
+    @patch("agpack.fetcher._run_git")
+    def test_all_urls_fail_raises_last_error(
+        self, mock_git: MagicMock, tmp_path: Path
+    ) -> None:
+        """When all URLs fail, the last FetchError is raised."""
+        source = DependencySource(
+            urls=["https://github.com/owner/repo", "git@github.com:owner/repo.git"],
+            ref="main",
+        )
+
+        mock_git.return_value = _fail(stderr="auth failed")
+
+        with (
+            patch("agpack.fetcher.tempfile.mkdtemp", return_value=str(tmp_path)),
+            pytest.raises(FetchError, match="Failed to clone"),
+        ):
+            fetch_dependency(source)
+
+    @patch("agpack.fetcher._run_git")
+    def test_multiple_urls_tried_in_order(
+        self, mock_git: MagicMock, tmp_path: Path
+    ) -> None:
+        """Multiple URLs are tried in order until one succeeds."""
+        source = DependencySource(
+            urls=[
+                "https://primary.com/repo",
+                "https://mirror1.com/repo",
+                "https://mirror2.com/repo",
+            ],
+            ref="main",
+        )
+
+        call_count = {"clone": 0}
+
+        def side_effect(args: list[str], cwd=None):  # noqa: ARG001
+            if args[0] == "clone":
+                call_count["clone"] += 1
+                clone_dir = Path(args[-1])
+                if call_count["clone"] <= 2:
+                    # Primary and first fallback fail
+                    return _fail(stderr="unavailable")
+                # Second fallback succeeds
+                clone_dir.mkdir(parents=True, exist_ok=True)
+                return _ok()
+            if args[0] == "rev-parse":
+                return _ok(stdout=FAKE_SHA_FULL + "\n")
+            return _ok()
+
+        mock_git.side_effect = side_effect
+
+        with patch("agpack.fetcher.tempfile.mkdtemp", return_value=str(tmp_path)):
+            result = fetch_dependency(source)
+
+        assert result.resolved_ref == FAKE_SHA_FULL
+
+        clone_calls = [c for c in mock_git.call_args_list if c[0][0][0] == "clone"]
+        assert len(clone_calls) == 3
+        assert "https://primary.com/repo" in clone_calls[0][0][0]
+        assert "https://mirror1.com/repo" in clone_calls[1][0][0]
+        assert "https://mirror2.com/repo" in clone_calls[2][0][0]
+
+    @patch("agpack.fetcher._run_git")
+    def test_single_url_no_retry(self, mock_git: MagicMock, tmp_path: Path) -> None:
+        """With a single URL, failure raises immediately (no retry)."""
+        source = DependencySource(
+            urls=["https://github.com/owner/repo"],
+            ref="main",
+        )
+
+        mock_git.return_value = _fail(stderr="not found")
+
+        with (
+            patch("agpack.fetcher.tempfile.mkdtemp", return_value=str(tmp_path)),
+            pytest.raises(FetchError, match="Failed to clone"),
+        ):
+            fetch_dependency(source)
+
+        clone_calls = [c for c in mock_git.call_args_list if c[0][0][0] == "clone"]
+        assert len(clone_calls) == 1
+
+    @patch("agpack.fetcher._run_git")
+    def test_fallback_with_sparse_checkout(
+        self, mock_git: MagicMock, tmp_path: Path
+    ) -> None:
+        """URL fallback works together with sparse checkout."""
+        source = DependencySource(
+            urls=["https://github.com/owner/repo", "git@github.com:owner/repo.git"],
+            ref="main",
+            path="skills/foo",
+        )
+
+        call_count = {"clone": 0}
+
+        def side_effect(args: list[str], cwd=None):  # noqa: ARG001
+            if args[0] == "clone":
+                call_count["clone"] += 1
+                clone_dir = Path(args[-1])
+                if call_count["clone"] <= 2:
+                    # Primary URL: both sparse and full clone fail
+                    return _fail(stderr="connection refused")
+                # Alt URL: clone succeeds
+                clone_dir.mkdir(parents=True, exist_ok=True)
+                (clone_dir / "skills" / "foo").mkdir(parents=True, exist_ok=True)
+                return _ok()
+            if args[0] == "sparse-checkout":
+                return _ok()
+            if args[0] == "rev-parse":
+                return _ok(stdout=FAKE_SHA_FULL + "\n")
+            return _ok()
+
+        mock_git.side_effect = side_effect
+
+        with patch("agpack.fetcher.tempfile.mkdtemp", return_value=str(tmp_path)):
+            result = fetch_dependency(source)
+
+        assert result.local_path == tmp_path / "repo" / "skills" / "foo"

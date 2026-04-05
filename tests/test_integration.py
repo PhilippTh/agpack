@@ -818,3 +818,75 @@ def test_status_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert result.exit_code == 0
     assert "my-skill" in result.output
     assert "backend-expert" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Alt URL fallback integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_sync_url_fallback(tmp_path: Path) -> None:
+    """When first URL is invalid, second URL is used to clone."""
+    bare_repo = _create_bare_repo(tmp_path)
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "skills": [
+                {
+                    "url": [
+                        "https://invalid.example.com/nonexistent/repo",
+                        str(bare_repo),
+                    ],
+                    "path": "skills/my-skill",
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert (project_dir / ".claude/skills/my-skill/SKILL.md").exists()
+
+
+def test_sync_url_multiple_fallbacks(tmp_path: Path) -> None:
+    """Multiple URLs: first two invalid, third valid."""
+    bare_repo = _create_bare_repo(tmp_path)
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "skills": [
+                {
+                    "url": [
+                        "https://invalid1.example.com/repo",
+                        "https://invalid2.example.com/repo",
+                        str(bare_repo),
+                    ],
+                    "path": "skills/my-skill",
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert (project_dir / ".claude/skills/my-skill/SKILL.md").exists()

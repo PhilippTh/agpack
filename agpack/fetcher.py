@@ -146,12 +146,48 @@ def _get_resolved_ref(clone_dir: Path) -> str:
     return result.stdout.strip()
 
 
+def _try_clone(
+    url: str,
+    ref: str | None,
+    path: str | None,
+    tmpdir: Path,
+) -> Path:
+    """Try to clone a repo from *url*, returning the clone directory.
+
+    Attempts sparse checkout first when *path* is set, falling back to
+    a full clone if sparse checkout isn't supported.
+
+    Raises :class:`FetchError` if the clone fails.
+    """
+    clone_dir: Path | None = None
+
+    # Try sparse checkout first if we have a path
+    if path is not None:
+        try:
+            clone_dir = _clone(url=url, ref=ref, tmpdir=tmpdir, use_sparse=True)
+            if not _setup_sparse_checkout(clone_dir, path):
+                # Sparse checkout failed, retry with full clone
+                shutil.rmtree(clone_dir)
+                clone_dir = None
+        except FetchError:
+            # Sparse clone itself failed, retry with full clone
+            clone_dir = None
+
+    if clone_dir is None:
+        clone_dir = _clone(url=url, ref=ref, tmpdir=tmpdir, use_sparse=False)
+
+    return clone_dir
+
+
 def fetch_dependency(source: DependencySource) -> FetchResult:
     """Fetch a dependency from a remote git repo.
 
     Clones the repo (with sparse checkout when possible), extracts the
     relevant path, and returns a FetchResult with the local path to
     the extracted content.
+
+    When the primary URL fails and additional URLs are configured,
+    each is tried in order until one succeeds.
 
     The caller is responsible for cleaning up the returned local_path's
     parent temp directory when done.
@@ -163,54 +199,50 @@ def fetch_dependency(source: DependencySource) -> FetchResult:
         A FetchResult with the local path and resolved ref.
 
     Raises:
-        FetchError: If the fetch fails.
+        FetchError: If all URLs fail.
     """
+    urls = source.urls
     tmpdir = Path(tempfile.mkdtemp(prefix="agpack-"))
 
     try:
-        clone_dir: Path | None = None
+        last_error: FetchError | None = None
 
-        # Try sparse checkout first if we have a path
-        if source.path is not None:
+        for url in urls:
+            # Each attempt needs a clean clone directory
+            clone_target = tmpdir / "repo"
+            if clone_target.exists():
+                shutil.rmtree(clone_target)
+
             try:
-                clone_dir = _clone(
-                    url=source.url,
+                clone_dir = _try_clone(
+                    url=url,
                     ref=source.ref,
+                    path=source.path,
                     tmpdir=tmpdir,
-                    use_sparse=True,
                 )
-                if not _setup_sparse_checkout(clone_dir, source.path):
-                    # Sparse checkout failed, retry with full clone
-                    shutil.rmtree(clone_dir)
-                    clone_dir = None
-            except FetchError:
-                # Sparse clone itself failed, retry with full clone
-                clone_dir = None
+            except FetchError as exc:
+                last_error = exc
+                continue
 
-        if clone_dir is None:
-            clone_dir = _clone(
-                url=source.url,
-                ref=source.ref,
-                tmpdir=tmpdir,
-                use_sparse=False,
+            resolved_ref = _get_resolved_ref(clone_dir)
+
+            # Determine the local path to the content
+            if source.path:
+                content_path = clone_dir / source.path
+                if not content_path.exists():
+                    raise FetchError(f"Path '{source.path}' not found in {url}")
+            else:
+                content_path = clone_dir
+
+            return FetchResult(
+                source=source,
+                local_path=content_path,
+                resolved_ref=resolved_ref,
+                _tmpdir=tmpdir,
             )
 
-        resolved_ref = _get_resolved_ref(clone_dir)
-
-        # Determine the local path to the content
-        if source.path:
-            content_path = clone_dir / source.path
-            if not content_path.exists():
-                raise FetchError(f"Path '{source.path}' not found in {source.url}")
-        else:
-            content_path = clone_dir
-
-        return FetchResult(
-            source=source,
-            local_path=content_path,
-            resolved_ref=resolved_ref,
-            _tmpdir=tmpdir,
-        )
+        # All URLs failed — raise the last error
+        raise last_error  # type: ignore[misc]
 
     except Exception:
         # Clean up on failure

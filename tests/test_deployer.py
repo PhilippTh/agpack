@@ -24,7 +24,7 @@ ALL_TARGETS = ["claude", "opencode", "codex", "cursor", "copilot"]
 
 
 def _make_source(name: str = "my-skill") -> DependencySource:
-    return DependencySource(url=f"https://github.com/org/{name}", path=name)
+    return DependencySource(urls=[f"https://github.com/org/{name}"], path=name)
 
 
 def _make_file_fetch(
@@ -39,7 +39,7 @@ def _make_file_fetch(
     src.write_text(content)
     return FetchResult(
         source=DependencySource(
-            url=f"https://github.com/org/{source_name}", path=source_name
+            urls=[f"https://github.com/org/{source_name}"], path=source_name
         ),
         local_path=src,
         resolved_ref="abc1234",
@@ -147,7 +147,7 @@ class TestDeploySkill:
         project = tmp_path / "project"
         project.mkdir()
         source = DependencySource(
-            url="https://github.com/org/repo", path="skills/custom-name"
+            urls=["https://github.com/org/repo"], path="skills/custom-name"
         )
         src_dir = tmp_path / "src" / "custom-name"
         src_dir.mkdir(parents=True)
@@ -382,7 +382,7 @@ def _make_folder_of_skills_fetch(
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content)
     return FetchResult(
-        source=DependencySource(url=f"https://github.com/org/{name}", path=name),
+        source=DependencySource(urls=[f"https://github.com/org/{name}"], path=name),
         local_path=src,
         resolved_ref="abc1234",
     )
@@ -402,7 +402,7 @@ def _make_dir_command_fetch(
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
     return FetchResult(
-        source=DependencySource(url=f"https://github.com/org/{name}", path=name),
+        source=DependencySource(urls=[f"https://github.com/org/{name}"], path=name),
         local_path=src,
         resolved_ref="abc1234",
     )
@@ -461,7 +461,9 @@ class TestDeploySkillFolderDetection:
         src = tmp_path / "src" / "empty"
         src.mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(url="https://github.com/org/empty", path="empty"),
+            source=DependencySource(
+                urls=["https://github.com/org/empty"], path="empty"
+            ),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -476,7 +478,9 @@ class TestDeploySkillFolderDetection:
         (src / "empty-a").mkdir(parents=True)
         (src / "empty-b").mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(url="https://github.com/org/parent", path="parent"),
+            source=DependencySource(
+                urls=["https://github.com/org/parent"], path="parent"
+            ),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -525,7 +529,7 @@ class TestDeployCommandFolderDetection:
         (src / "group-b").mkdir(parents=True)
         (src / "group-b" / "format.md").write_text("# Format")
         fr = FetchResult(
-            source=DependencySource(url="https://github.com/org/cmds", path="cmds"),
+            source=DependencySource(urls=["https://github.com/org/cmds"], path="cmds"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -542,7 +546,9 @@ class TestDeployCommandFolderDetection:
         src = tmp_path / "src" / "empty"
         src.mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(url="https://github.com/org/empty", path="empty"),
+            source=DependencySource(
+                urls=["https://github.com/org/empty"], path="empty"
+            ),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -576,7 +582,9 @@ class TestDeployAgentFolderDetection:
         (src / "reviewer.md").write_text("# Reviewer")
         (src / "planner.md").write_text("# Planner")
         fr = FetchResult(
-            source=DependencySource(url="https://github.com/org/agents", path="agents"),
+            source=DependencySource(
+                urls=["https://github.com/org/agents"], path="agents"
+            ),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -594,7 +602,9 @@ class TestDeployAgentFolderDetection:
         (src / "group").mkdir(parents=True)
         (src / "group" / "reviewer.md").write_text("# Reviewer")
         fr = FetchResult(
-            source=DependencySource(url="https://github.com/org/agents", path="agents"),
+            source=DependencySource(
+                urls=["https://github.com/org/agents"], path="agents"
+            ),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -611,7 +621,9 @@ class TestDeployAgentFolderDetection:
         src = tmp_path / "src" / "empty"
         src.mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(url="https://github.com/org/empty", path="empty"),
+            source=DependencySource(
+                urls=["https://github.com/org/empty"], path="empty"
+            ),
             local_path=src,
             resolved_ref="abc1234",
         )

@@ -21,7 +21,7 @@ from agpack.lockfile import Lockfile
 
 
 def _make_dep(name: str) -> DependencySource:
-    return DependencySource(url=f"https://github.com/owner/{name}")
+    return DependencySource(urls=[f"https://github.com/owner/{name}"])
 
 
 def _make_result(dep: DependencySource, tmp_path: Path) -> FetchResult:
