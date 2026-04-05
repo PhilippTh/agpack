@@ -21,13 +21,7 @@ agpack replaces that with a single `agpack.yml` that describes what you want and
 ## Install
 
 ```bash
-# Recommended: install as an isolated tool
-pipx install agpack
-# or
-uv tool install agpack
-
-# Or with plain pip
-pip install agpack
+pipx install agpack   # or: uv tool install agpack
 ```
 
 Requires Python 3.11+ and `git` on PATH.
@@ -41,27 +35,21 @@ agpack init          # creates agpack.yml with commented-out examples
 Edit `agpack.yml`:
 
 ```yaml
-name: my-project
-version: 0.1.0
-
 targets:
   - claude
   - opencode
 
 dependencies:
   skills:
-    - url: https://github.com/PhilippTh/agent-assets
-      path: skills/article-review
-    - url: https://github.com/PhilippTh/agent-assets
-      path: skills/deep-dive
-      ref: v1.2.0
+    - url: https://github.com/owner/repo
+      path: skills/my-skill
 
   commands:
-    - url: https://github.com/PhilippTh/agent-assets
+    - url: https://github.com/owner/repo
       path: commands/review.md
 
   agents:
-    - url: https://github.com/PhilippTh/agent-assets
+    - url: https://github.com/owner/repo
       path: agents/backend-expert.md
 
   mcp:
@@ -70,72 +58,111 @@ dependencies:
       args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
 ```
 
-Then:
-
 ```bash
 agpack sync
 ```
 
-That's it. Skills get copied to `.claude/skills/`, `.opencode/skills/`, etc. Commands and agents go to their respective directories. MCP server definitions get merged into each tool's config file.
+Skills get copied to `.claude/skills/`, `.opencode/skills/`, etc. Commands and agents go to their respective directories. MCP server definitions get merged into each tool's config file. Run `agpack sync` again after editing the config -- removed dependencies get cleaned up automatically.
 
-## How dependencies work
+## Dependencies
 
-The `url` field takes any valid `git clone` URL. HTTPS, SSH, local paths -- whatever git understands:
+### URLs and pinning
+
+The `url` field takes any valid `git clone` URL -- HTTPS, SSH, local paths, whatever git understands. Authentication is handled by your system git config (SSH keys, credential helpers, etc.).
+
+Use `ref` to pin a dependency to a specific tag or commit:
 
 ```yaml
-# GitHub over HTTPS
 - url: https://github.com/owner/repo
   path: skills/my-skill
+  ref: v1.2.0
 
-# GitLab over SSH
 - url: git@gitlab.com:myorg/myrepo.git
-  path: skills/my-skill
-
-# Azure DevOps
-- url: https://dev.azure.com/myorg/myproject/_git/myrepo
-  path: skills/my-skill
-
-# Pinned to a tag
-- url: https://github.com/owner/repo
-  path: skills/my-skill
-  ref: v1.0.0
-
-# Pinned to a commit
-- url: https://github.com/owner/repo
   path: skills/my-skill
   ref: abc1234
 ```
 
-Authentication is handled entirely by your system git config -- SSH keys, credential helpers, whatever you already have set up.
+### Directory expansion
 
-The `path` field can point to a single file, a single skill folder, or a parent directory containing multiple items. When `path` points at a directory, agpack figures out what's inside:
+The `path` field can point to a single file, a single folder, or a parent directory containing multiple items. When it points at a directory, agpack figures out what's inside:
 
-- **Skills** -- a directory with top-level files is deployed as one skill. A directory that only contains subdirectories deploys each subfolder as a separate skill.
-- **Commands & Agents** -- every non-hidden file in the directory is deployed individually. If the top level only has subdirectories, files inside those are collected instead.
+- **Skills** -- a directory with top-level files is deployed as one skill. A directory containing only subdirectories deploys each subfolder as a separate skill.
+- **Commands & Agents** -- every non-hidden file is deployed individually. If the directory only contains subdirectories, files inside those are collected instead.
 
 ```yaml
 skills:
-  # A single skill folder
   - url: https://github.com/owner/repo
-    path: skills/my-skill
+    path: skills/my-skill       # deploys one skill
 
-  # A directory of skills -- each subfolder becomes its own skill
   - url: https://github.com/owner/repo
-    path: skills
+    path: skills                 # deploys each subfolder as a separate skill
 
 commands:
-  # A single command file
   - url: https://github.com/owner/repo
-    path: commands/review.md
+    path: commands/review.md     # deploys one file
 
-  # A directory of commands -- every file inside is deployed
   - url: https://github.com/owner/repo
-    path: commands
+    path: commands               # deploys every file inside
 ```
 
 If the directory contains no deployable files, sync fails with an error.
 
-## Where things go
+### Environment variables
+
+Use `${VAR_NAME}` in any string value to reference environment variables. This works in URLs, paths, refs, MCP commands, args, env values, and server URLs.
+
+```yaml
+dependencies:
+  skills:
+    - url: https://github.com/${GITHUB_ORG}/shared-skills
+      path: skills/my-skill
+
+  mcp:
+    - name: context7
+      command: npx
+      args: ["-y", "@context7/mcp-server"]
+      env:
+        CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+```
+
+Variables are resolved from up to three sources (highest priority first):
+
+1. `.env` in the project root (same directory as `agpack.yml`)
+2. `.env` in the global config directory (`~/.config/agpack/`)
+3. Shell environment
+
+If a referenced variable is not found in any source, sync fails with an error. The `.env` parser supports `KEY=VALUE`, quoted values, `# comments`, blank lines, and `export` prefixes.
+
+## Global config
+
+A global config defines dependencies shared across all your projects -- skills, agents, or MCP servers you want everywhere without repeating them in each `agpack.yml`.
+
+```bash
+agpack init --global   # creates ~/.config/agpack/agpack.yml
+```
+
+The global config uses the same `dependencies` block but has no `targets` (those are always per-project):
+
+```yaml
+# ~/.config/agpack/agpack.yml
+dependencies:
+  skills:
+    - url: https://github.com/owner/shared-skills
+      path: skills/my-standard-skill
+
+  mcp:
+    - name: context7
+      command: npx
+      args: ["-y", "@upstash/context7-mcp@latest"]
+      env:
+        CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+```
+
+Global dependencies are merged with the project config during sync. If the same dependency or MCP server appears in both, the project version wins.
+
+To skip the global config, either pass `--no-global` on the command line or add `global: false` to your project's `agpack.yml`. The default path (`~/.config/agpack/agpack.yml`) can be overridden with the `AGPACK_GLOBAL_CONFIG` environment variable.
+
+## Target mapping
 
 | Target | Skills | Commands | Agents | MCP Config |
 |--------|--------|----------|--------|------------|
@@ -145,76 +172,26 @@ If the directory contains no deployable files, sync fails with an error.
 | Cursor | `.cursor/skills/<name>/` | -- | `.cursor/agents/<file>` | `.cursor/mcp.json` |
 | Copilot | `.github/skills/<name>/` | `.github/prompts/<file>` | `.github/agents/<file>` | `.vscode/mcp.json` |
 
-Unsupported resource types (`--`) are skipped silently. MCP server definitions are merged into each tool's config file without touching servers agpack didn't create.
+Unsupported resource types are skipped silently. MCP definitions are merged into each tool's config file without touching servers agpack didn't create.
 
 ## Commands
 
-### `agpack sync`
-
-Fetches everything and deploys it. Run it again after changing `agpack.yml` -- removed dependencies get cleaned up automatically.
-
 ```
-agpack sync [--dry-run] [--verbose] [--config PATH]
-```
-
-### `agpack status`
-
-Shows what's installed vs what's configured:
-
-```
-Skills:
-  ✓ article-review       (https://github.com/PhilippTh/agent-resources @ abc1234)
-  ✗ new-skill            (not yet synced)
-
-Commands:
-  ✓ review.md            (https://github.com/PhilippTh/agent-resources @ abc1234)
-
-MCP:
-  ✓ filesystem           → .mcp.json, opencode.json
+agpack init    [--config PATH] [--global]       Scaffold a new config file
+agpack sync    [--config PATH] [--no-global]    Fetch and deploy all dependencies
+               [--dry-run] [--verbose]
+agpack status  [--config PATH] [--no-global]    Show installed vs configured state
 ```
 
-### `agpack init`
+## How it works
 
-Creates a starter `agpack.yml` with commented-out examples.
-
-## Environment variables
-
-Use `${VAR_NAME}` syntax in config values to reference environment variables. agpack resolves them at sync time.
-
-```yaml
-mcp:
-  - name: context7
-    command: npx
-    args: ["-y", "@context7/mcp-server"]
-    env:
-      CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
-```
-
-Variables are resolved from two sources, in order:
-
-1. A `.env` file in the project root (same directory as `agpack.yml`)
-2. Your shell environment
-
-The `.env` file takes precedence when a variable is defined in both places. If a referenced variable is not found in either source, sync fails with an error.
-
-Example `.env` file:
-
-```
-# API keys — add .env to .gitignore!
-CONTEXT7_API_KEY=sk-abc123
-OPENAI_API_KEY=sk-xyz789
-```
-
-The `.env` parser supports `KEY=VALUE`, `"quoted"` and `'quoted'` values, `# comments`, blank lines, and `export` prefixes.
-
-## How it works under the hood
-
-1. Loads `agpack.yml`, validates it
-2. Reads `.agpack.lock.yml` to see what was previously installed
-3. Cleans up files from dependencies you've removed
-4. For each dependency: shallow-clones the repo (with sparse checkout when a `path` is set), copies files to all target directories
-5. Merges MCP configs into each tool's config file
-6. Writes an updated lockfile
+1. Loads `agpack.yml` and the global config (if present), merges them
+2. Resolves `${VAR}` references from `.env` files and the shell
+3. Reads `.agpack.lock.yml` to diff against the previous state
+4. Cleans up files from removed dependencies
+5. Shallow-clones each repo (sparse checkout when `path` is set), copies files to all target directories
+6. Merges MCP configs into each tool's config file
+7. Writes an updated lockfile
 
 Every file write is atomic (write-to-temp-then-rename). agpack never partially writes a file and never deletes anything it didn't create.
 

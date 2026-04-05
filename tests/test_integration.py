@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -83,8 +84,6 @@ def test_full_sync_flow(tmp_path: Path) -> None:
 
     # Write agpack.yml pointing to the local bare repo
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude", "opencode"],
         "dependencies": {
             "skills": [
@@ -172,8 +171,6 @@ def test_sync_cleanup_removed_dependency(tmp_path: Path) -> None:
 
     # First sync with skill + command
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [
@@ -234,8 +231,6 @@ def test_sync_dry_run(tmp_path: Path) -> None:
     project_dir.mkdir()
 
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [
@@ -271,8 +266,6 @@ def test_status_command(tmp_path: Path) -> None:
     project_dir.mkdir()
 
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [
@@ -340,7 +333,6 @@ def test_init_command(tmp_path: Path) -> None:
     assert config_path.exists()
 
     content = config_path.read_text()
-    assert "name:" in content
     assert "targets:" in content
     assert "dependencies:" in content
 
@@ -361,8 +353,6 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
     project_dir.mkdir()
 
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "mcp": [
@@ -414,3 +404,417 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
     mcp_data = json.loads((project_dir / ".mcp.json").read_text())
     assert "filesystem" not in mcp_data["mcpServers"]
     assert "other-server" in mcp_data["mcpServers"]
+
+
+# ---------------------------------------------------------------------------
+# Global config integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_sync_with_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Global config dependencies are included in sync."""
+    bare_repo = _create_bare_repo(tmp_path)
+
+    # Set up global config
+    global_dir = tmp_path / "global_config"
+    global_dir.mkdir()
+    global_config = {
+        "dependencies": {
+            "agents": [
+                {
+                    "url": str(bare_repo),
+                    "path": "agents/backend-expert.md",
+                },
+            ],
+        },
+    }
+    global_path = global_dir / "agpack.yml"
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
+
+    # Set up project directory with skills only
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "skills": [
+                {
+                    "url": str(bare_repo),
+                    "path": "skills/my-skill",
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path)],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+
+    # Project skill deployed
+    assert (project_dir / ".claude/skills/my-skill/SKILL.md").exists()
+    # Global agent deployed
+    assert (project_dir / ".claude/agents/backend-expert.md").exists()
+
+
+def test_sync_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--no-global flag prevents global config from being loaded."""
+    bare_repo = _create_bare_repo(tmp_path)
+
+    # Set up global config with an agent
+    global_dir = tmp_path / "global_config"
+    global_dir.mkdir()
+    global_config = {
+        "dependencies": {
+            "agents": [
+                {
+                    "url": str(bare_repo),
+                    "path": "agents/backend-expert.md",
+                },
+            ],
+        },
+    }
+    global_path = global_dir / "agpack.yml"
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
+
+    # Project with skills only
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "skills": [
+                {
+                    "url": str(bare_repo),
+                    "path": "skills/my-skill",
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+
+    # Project skill deployed
+    assert (project_dir / ".claude/skills/my-skill/SKILL.md").exists()
+    # Global agent NOT deployed
+    assert not (project_dir / ".claude/agents/backend-expert.md").exists()
+
+
+def test_sync_global_false_in_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'global: false' in project config prevents global config from loading."""
+    bare_repo = _create_bare_repo(tmp_path)
+
+    # Set up global config with an agent
+    global_dir = tmp_path / "global_config"
+    global_dir.mkdir()
+    global_config = {
+        "dependencies": {
+            "agents": [
+                {
+                    "url": str(bare_repo),
+                    "path": "agents/backend-expert.md",
+                },
+            ],
+        },
+    }
+    global_path = global_dir / "agpack.yml"
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
+
+    # Project config with global: false
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_text = f"""\
+global: false
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: {bare_repo}
+      path: skills/my-skill
+"""
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(config_text)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path)],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+
+    # Project skill deployed
+    assert (project_dir / ".claude/skills/my-skill/SKILL.md").exists()
+    # Global agent NOT deployed
+    assert not (project_dir / ".claude/agents/backend-expert.md").exists()
+
+
+def test_sync_global_mcp_merged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Global MCP servers are merged and deployed alongside project ones."""
+    _create_bare_repo(tmp_path)
+
+    # Global config with an MCP server
+    global_dir = tmp_path / "global_config"
+    global_dir.mkdir()
+    global_config = {
+        "dependencies": {
+            "mcp": [
+                {
+                    "name": "global-server",
+                    "command": "node",
+                    "args": ["global.js"],
+                },
+            ],
+        },
+    }
+    global_path = global_dir / "agpack.yml"
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
+
+    # Project with its own MCP server
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "mcp": [
+                {
+                    "name": "project-server",
+                    "command": "npx",
+                    "args": ["-y", "project-pkg"],
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path)],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+
+    mcp_data = json.loads((project_dir / ".mcp.json").read_text())
+    assert "project-server" in mcp_data["mcpServers"]
+    assert "global-server" in mcp_data["mcpServers"]
+
+
+def test_sync_global_mcp_project_wins_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When project and global define the same MCP server name, project wins."""
+    _create_bare_repo(tmp_path)
+
+    global_dir = tmp_path / "global_config"
+    global_dir.mkdir()
+    global_config = {
+        "dependencies": {
+            "mcp": [
+                {
+                    "name": "shared",
+                    "command": "node",
+                    "args": ["global-version.js"],
+                },
+            ],
+        },
+    }
+    global_path = global_dir / "agpack.yml"
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "mcp": [
+                {
+                    "name": "shared",
+                    "command": "npx",
+                    "args": ["project-version"],
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path)],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+
+    mcp_data = json.loads((project_dir / ".mcp.json").read_text())
+    assert mcp_data["mcpServers"]["shared"]["command"] == "npx"
+    assert mcp_data["mcpServers"]["shared"]["args"] == ["project-version"]
+
+
+def test_init_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test 'agpack init --global' scaffolds global config."""
+    global_path = tmp_path / "agpack.yml"
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", "--global"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert "Created" in result.output
+    assert global_path.exists()
+
+    content = global_path.read_text()
+    assert "dependencies:" in content
+    assert "skills:" in content
+    assert "mcp:" in content
+    # Should NOT have project-specific top-level fields
+    assert "name: my-project" not in content
+    assert "\nversion:" not in content
+    assert "\ntargets:" not in content
+
+
+def test_init_global_already_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test 'agpack init --global' when file already exists."""
+    global_path = tmp_path / "agpack.yml"
+    global_path.write_text("existing content\n")
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", "--global"],
+        catch_exceptions=False,
+    )
+    assert "already exists" in result.output
+    assert global_path.read_text() == "existing content\n"
+
+
+def test_status_with_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Status command includes global config dependencies."""
+    bare_repo = _create_bare_repo(tmp_path)
+
+    # Global config with an agent
+    global_dir = tmp_path / "global_config"
+    global_dir.mkdir()
+    global_config = {
+        "dependencies": {
+            "agents": [
+                {
+                    "url": str(bare_repo),
+                    "path": "agents/backend-expert.md",
+                },
+            ],
+        },
+    }
+    global_path = global_dir / "agpack.yml"
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
+
+    # Project with skills only
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "skills": [
+                {
+                    "url": str(bare_repo),
+                    "path": "skills/my-skill",
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+
+    # Status should show both project + global deps
+    result = runner.invoke(
+        main,
+        ["status", "--config", str(config_path)],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert "my-skill" in result.output
+    assert "backend-expert" in result.output
+
+
+def test_status_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Status --no-global excludes global config."""
+    bare_repo = _create_bare_repo(tmp_path)
+
+    global_dir = tmp_path / "global_config"
+    global_dir.mkdir()
+    global_config = {
+        "dependencies": {
+            "agents": [
+                {
+                    "url": str(bare_repo),
+                    "path": "agents/backend-expert.md",
+                },
+            ],
+        },
+    }
+    global_path = global_dir / "agpack.yml"
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "skills": [
+                {
+                    "url": str(bare_repo),
+                    "path": "skills/my-skill",
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["status", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert "my-skill" in result.output
+    assert "backend-expert" not in result.output
