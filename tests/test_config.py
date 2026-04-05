@@ -890,3 +890,121 @@ dependencies:
         "https://github.com/org/repo",
         "git@github.com:org/repo.git",
     ]
+
+
+# ---------------------------------------------------------------------------
+# 23. _parse_dependency validation errors
+# ---------------------------------------------------------------------------
+
+
+def test_dependency_entry_not_a_dict(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  skills:
+    - just-a-string
+""",
+    )
+    with pytest.raises(ConfigError, match="expected an object"):
+        load_config(cfg_path)
+
+
+def test_dependency_url_empty_string(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: ""
+""",
+    )
+    with pytest.raises(ConfigError, match="'url' must not be empty"):
+        load_config(cfg_path)
+
+
+def test_dependency_path_not_a_string(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: https://github.com/org/repo
+      path: 123
+""",
+    )
+    with pytest.raises(ConfigError, match="'path' must be a string"):
+        load_config(cfg_path)
+
+
+def test_mcp_entry_not_a_dict(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  mcp:
+    - just-a-string
+""",
+    )
+    with pytest.raises(ConfigError, match="expected an object"):
+        load_config(cfg_path)
+
+
+def test_mcp_invalid_type(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  mcp:
+    - name: bad
+      type: grpc
+      command: something
+""",
+    )
+    with pytest.raises(ConfigError, match="'type' must be 'stdio', 'sse', or 'http'"):
+        load_config(cfg_path)
+
+
+# ---------------------------------------------------------------------------
+# 24. load_config validation errors
+# ---------------------------------------------------------------------------
+
+
+def test_config_file_not_found(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="Config file not found"):
+        load_config(tmp_path / "nonexistent.yml")
+
+
+def test_config_malformed_yaml(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path, ":\n  - [invalid yaml")
+    with pytest.raises(ConfigError, match="Failed to parse YAML"):
+        load_config(cfg_path)
+
+
+def test_config_not_a_mapping(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path, "- a list\n- not a mapping\n")
+    with pytest.raises(ConfigError, match="Config file must be a YAML mapping"):
+        load_config(cfg_path)
+
+
+def test_config_dependencies_not_a_mapping(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies: "oops"
+""",
+    )
+    with pytest.raises(ConfigError, match="'dependencies' must be a mapping"):
+        load_config(cfg_path)

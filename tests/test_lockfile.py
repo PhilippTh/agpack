@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 import yaml
 
 from agpack import __version__
@@ -440,3 +442,27 @@ class TestRoundTrip:
         for orig, rest in zip(original.mcp, restored.mcp, strict=False):
             assert rest.name == orig.name
             assert rest.targets == orig.targets
+
+
+# ---------------------------------------------------------------------------
+# Atomic write failure cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestWriteLockfileAtomicFailure:
+    def test_cleans_up_temp_file_on_replace_failure(self, tmp_path: Path) -> None:
+        """When os.replace fails, the temp file is cleaned up and error re-raised."""
+        lf = Lockfile()
+
+        with (
+            patch("agpack.lockfile.os.replace", side_effect=OSError("disk full")),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            write_lockfile(tmp_path, lf)
+
+        # No temp files should be left behind
+        leftover = list(tmp_path.glob(".agpack-lock-tmp-*"))
+        assert leftover == []
+
+        # The lockfile should not have been created
+        assert not (tmp_path / LOCKFILE_NAME).exists()

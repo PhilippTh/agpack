@@ -45,6 +45,11 @@ jobs:
         with:
           name: coverage-report
           path: coverage.xml
+      - name: Upload to Codecov
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
 
   diff-coverage:
     name: Diff Coverage (≥80%)
