@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -13,6 +14,7 @@ from agpack.deployer import _atomic_copy_file
 from agpack.deployer import cleanup_deployed_files
 from agpack.deployer import deploy_agent
 from agpack.deployer import deploy_command
+from agpack.deployer import deploy_single_skill
 from agpack.deployer import deploy_skill
 from agpack.fetcher import FetchResult
 
@@ -630,3 +632,87 @@ class TestDeployAgentFolderDetection:
 
         with pytest.raises(DeployError, match="does not contain any agent files"):
             deploy_agent(fr, ["claude"], project)
+
+
+# ---------------------------------------------------------------------------
+# _atomic_copy_file failure cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicCopyFailure:
+    def test_cleans_up_temp_file_on_copy_failure(self, tmp_path: Path) -> None:
+        """When shutil.copy2 fails, the temp file is cleaned up and error re-raised."""
+        src = tmp_path / "src.txt"
+        src.write_text("payload")
+        dst = tmp_path / "out" / "dst.txt"
+
+        with (
+            patch("agpack.deployer.shutil.copy2", side_effect=OSError("no space")),
+            pytest.raises(OSError, match="no space"),
+        ):
+            _atomic_copy_file(src, dst)
+
+        # No temp files should be left behind
+        leftover = list((tmp_path / "out").glob(".agpack-tmp-*"))
+        assert leftover == []
+
+
+# ---------------------------------------------------------------------------
+# deploy_single_skill – single file (not directory)
+# ---------------------------------------------------------------------------
+
+
+class TestDeploySingleFileSkill:
+    def test_deploys_single_file_as_skill(self, tmp_path: Path) -> None:
+        """A single file (not a directory) is deployed as a skill."""
+        project = tmp_path / "project"
+        project.mkdir()
+
+        skill_file = tmp_path / "src" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# My Skill")
+
+        result = deploy_single_skill(
+            "my-skill", skill_file, ["claude"], project, dry_run=False, verbose=False
+        )
+
+        assert len(result) == 1
+        deployed = project / result[0]
+        assert deployed.exists()
+        assert deployed.read_text() == "# My Skill"
+        assert "my-skill" in str(deployed)
+
+    def test_deploys_single_file_skill_to_multiple_targets(
+        self, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+
+        skill_file = tmp_path / "src" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# My Skill")
+
+        result = deploy_single_skill(
+            "my-skill", skill_file, ALL_TARGETS, project, dry_run=False, verbose=False
+        )
+
+        from agpack.targets import SKILL_DIRS
+
+        assert len(result) == len(SKILL_DIRS)
+        for rel in result:
+            assert (project / rel).exists()
+
+    def test_dry_run_single_file_skill(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+
+        skill_file = tmp_path / "src" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# My Skill")
+
+        result = deploy_single_skill(
+            "my-skill", skill_file, ["claude"], project, dry_run=True, verbose=False
+        )
+
+        assert len(result) == 1
+        assert not (project / result[0]).exists()

@@ -2,6 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/agpack)](https://pypi.org/project/agpack/)
 [![CI](https://github.com/PhilippTh/agpack/actions/workflows/ci.yml/badge.svg)](https://github.com/PhilippTh/agpack/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/PhilippTh/agpack/graph/badge.svg)](https://codecov.io/gh/PhilippTh/agpack)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![mypy](https://img.shields.io/badge/type--checked-mypy-blue)](https://mypy-lang.org/)

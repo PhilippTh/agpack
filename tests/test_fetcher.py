@@ -13,6 +13,7 @@ from agpack.config import DependencySource
 from agpack.fetcher import _GIT_TIMEOUT_SECONDS
 from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
+from agpack.fetcher import _checkout_sha
 from agpack.fetcher import _is_sha
 from agpack.fetcher import _run_git
 from agpack.fetcher import cleanup_fetch
@@ -296,6 +297,135 @@ class TestFetchDependency:
             pytest.raises(FetchError, match="Path.*not found"),
         ):
             fetch_dependency(source)
+
+    @patch("agpack.fetcher._run_git")
+    def test_clone_dir_cleanup_on_fallback_url(
+        self, mock_git: MagicMock, tmp_path: Path
+    ) -> None:
+        """When a fallback URL is tried, the previous clone dir is cleaned up."""
+        source = DependencySource(
+            urls=["https://primary.com/repo", "https://fallback.com/repo"],
+            ref="main",
+        )
+
+        call_count = {"clone": 0}
+
+        def side_effect(args: list[str], cwd=None):  # noqa: ARG001
+            if args[0] == "clone":
+                call_count["clone"] += 1
+                clone_dir = Path(args[-1])
+                if call_count["clone"] == 1:
+                    clone_dir.mkdir(parents=True, exist_ok=True)
+                    return _fail(stderr="auth failed")
+                # Fallback: succeeds
+                clone_dir.mkdir(parents=True, exist_ok=True)
+                return _ok()
+            if args[0] == "rev-parse":
+                return _ok(stdout=FAKE_SHA_FULL + "\n")
+            return _ok()
+
+        mock_git.side_effect = side_effect
+
+        with patch("agpack.fetcher.tempfile.mkdtemp", return_value=str(tmp_path)):
+            result = fetch_dependency(source)
+
+        assert result.resolved_ref == FAKE_SHA_FULL
+
+
+# ---------------------------------------------------------------------------
+# _checkout_sha fallback paths
+# ---------------------------------------------------------------------------
+
+
+class TestCheckoutShaFallback:
+    """Tests for _checkout_sha fallback logic when direct fetch fails."""
+
+    @patch("agpack.fetcher._run_git")
+    def test_unshallow_then_checkout(self, mock_git: MagicMock) -> None:
+        """When direct fetch+checkout fails, unshallow then checkout."""
+        sha = "a" * 40
+        call_log: list[list[str]] = []
+
+        def side_effect(args: list[str], cwd=None):  # noqa: ARG001
+            call_log.append(args)
+            if args == ["fetch", "origin", sha]:
+                return _fail(stderr="unadvertised object")
+            if args == ["fetch", "--unshallow"]:
+                return _ok()
+            if args == ["checkout", sha]:
+                return _ok()
+            return _ok()
+
+        mock_git.side_effect = side_effect
+        _checkout_sha(Path("/tmp/repo"), sha)
+
+        assert ["fetch", "origin", sha] in call_log
+        assert ["fetch", "--unshallow"] in call_log
+        assert ["checkout", sha] in call_log
+
+    @patch("agpack.fetcher._run_git")
+    def test_unshallow_fails_falls_back_to_fetch_origin(
+        self, mock_git: MagicMock
+    ) -> None:
+        """When unshallow fails (already full), falls back to fetch origin."""
+        sha = "b" * 40
+        call_log: list[list[str]] = []
+
+        def side_effect(args: list[str], cwd=None):  # noqa: ARG001
+            call_log.append(args)
+            if args == ["fetch", "origin", sha]:
+                return _fail(stderr="unadvertised object")
+            if args == ["fetch", "--unshallow"]:
+                return _fail(stderr="cannot unshallow")
+            if args == ["fetch", "origin"]:
+                return _ok()
+            if args == ["checkout", sha]:
+                return _ok()
+            return _ok()
+
+        mock_git.side_effect = side_effect
+        _checkout_sha(Path("/tmp/repo"), sha)
+
+        assert ["fetch", "origin"] in call_log
+        assert ["checkout", sha] in call_log
+
+    @patch("agpack.fetcher._run_git")
+    def test_all_fallbacks_fail_raises(self, mock_git: MagicMock) -> None:
+        """When all fetch attempts fail, FetchError is raised."""
+        sha = "c" * 40
+
+        def side_effect(args: list[str], cwd=None):  # noqa: ARG001
+            if args == ["fetch", "origin", sha]:
+                return _fail(stderr="unadvertised object")
+            if args == ["fetch", "--unshallow"]:
+                return _fail(stderr="cannot unshallow")
+            if args == ["fetch", "origin"]:
+                return _fail(stderr="network error")
+            return _ok()
+
+        mock_git.side_effect = side_effect
+
+        with pytest.raises(FetchError, match="Failed to fetch commit"):
+            _checkout_sha(Path("/tmp/repo"), sha)
+
+    @patch("agpack.fetcher._run_git")
+    def test_checkout_fails_after_unshallow(self, mock_git: MagicMock) -> None:
+        """When checkout fails after successful unshallow, FetchError is raised."""
+        sha = "d" * 40
+
+        def side_effect(args: list[str], cwd=None):  # noqa: ARG001
+            if args == ["fetch", "origin", sha]:
+                return _fail(stderr="unadvertised object")
+            if args == ["fetch", "--unshallow"]:
+                return _ok()
+            if args == ["checkout", sha]:
+                return _fail(stderr="reference is not a tree")
+            return _ok()
+
+        mock_git.side_effect = side_effect
+
+        with pytest.raises(FetchError, match="Failed to checkout commit"):
+            _checkout_sha(Path("/tmp/repo"), sha)
 
 
 # ---------------------------------------------------------------------------

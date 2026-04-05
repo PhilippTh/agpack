@@ -858,6 +858,121 @@ def test_sync_url_fallback(tmp_path: Path) -> None:
     assert (project_dir / ".claude/skills/my-skill/SKILL.md").exists()
 
 
+def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
+    """When detect_fn raises mid-sync, a partial lockfile is written."""
+    from unittest.mock import patch
+
+    bare_repo = _create_bare_repo(tmp_path)
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    # Two skills: first will succeed, second will have detect fail
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "skills": [
+                {
+                    "url": str(bare_repo),
+                    "path": "skills/my-skill",
+                },
+            ],
+            "commands": [
+                {
+                    "url": str(bare_repo),
+                    "path": "commands/review.md",
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    # First sync succeeds, establishing a lockfile
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+
+    # Now make detect_command_items raise on second sync
+    def failing_detect(fetch_result):  # noqa: ARG001
+        raise RuntimeError("detection failed")
+
+    with patch("agpack.cli.detect_command_items", side_effect=failing_detect):
+        result = runner.invoke(
+            main,
+            ["sync", "--config", str(config_path), "--no-global"],
+        )
+
+    assert result.exit_code != 0
+    assert "detection failed" in result.output
+
+    # Partial lockfile should still exist (the skills that succeeded are preserved)
+    lockfile_path = project_dir / ".agpack.lock.yml"
+    assert lockfile_path.exists()
+    lockfile = yaml.safe_load(lockfile_path.read_text())
+    # The skill sync succeeded before commands failed
+    assert len(lockfile["installed"]) >= 1
+
+
+def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
+    """When deploy_mcp_servers raises McpError, partial lockfile is written."""
+    from unittest.mock import patch
+
+    from agpack.mcp import McpError
+
+    bare_repo = _create_bare_repo(tmp_path)
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "skills": [
+                {
+                    "url": str(bare_repo),
+                    "path": "skills/my-skill",
+                },
+            ],
+            "mcp": [
+                {
+                    "name": "bad-server",
+                    "command": "npx",
+                    "args": ["-y", "bad-server"],
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    with patch(
+        "agpack.cli.deploy_mcp_servers",
+        side_effect=McpError("corrupt config file"),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["sync", "--config", str(config_path), "--no-global"],
+        )
+
+    assert result.exit_code != 0
+    assert "corrupt config file" in result.output
+
+    # Partial lockfile should exist with the successfully synced skill
+    lockfile_path = project_dir / ".agpack.lock.yml"
+    assert lockfile_path.exists()
+    lockfile = yaml.safe_load(lockfile_path.read_text())
+    assert len(lockfile["installed"]) == 1
+    assert lockfile["installed"][0]["type"] == "skill"
+    # MCP section should be empty since deploy failed
+    assert lockfile.get("mcp", []) == []
+
+
 def test_sync_url_multiple_fallbacks(tmp_path: Path) -> None:
     """Multiple URLs: first two invalid, third valid."""
     bare_repo = _create_bare_repo(tmp_path)
