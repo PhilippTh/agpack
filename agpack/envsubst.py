@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
+from agpack.config import GlobalConfig
 
 _VAR_PATTERN = re.compile(r"\$\{([^}]+)}")
 
@@ -69,31 +70,76 @@ def resolve_env_vars(value: str, env: dict[str, str], *, context: str = "") -> s
     return _VAR_PATTERN.sub(_replace, value)
 
 
+def _build_env(
+    project_root: Path,
+    global_config: GlobalConfig | None = None,
+    *,
+    verbose: bool = False,
+) -> dict[str, str]:
+    """Build a merged environment dict for variable substitution.
+
+    Resolution order (highest priority first):
+      1. Project ``.env`` (from *project_root*)
+      2. Global ``.env`` (from the global config directory)
+      3. Shell environment (``os.environ``)
+    """
+    global_dotenv: dict[str, str] = {}
+    if global_config is not None:
+        global_dotenv = load_dotenv(global_config.config_dir)
+
+    project_dotenv = load_dotenv(project_root)
+    merged = {**os.environ, **global_dotenv, **project_dotenv}
+
+    if verbose:
+        from agpack.display import console
+
+        if global_dotenv:
+            console.print(f"  Loaded {len(global_dotenv)} variable(s) from global .env")
+        if project_dotenv:
+            console.print(
+                f"  Loaded {len(project_dotenv)} variable(s) from project .env"
+            )
+
+    return merged
+
+
 def resolve_config(
     config: AgpackConfig,
     project_root: Path,
     *,
+    global_config: GlobalConfig | None = None,
     verbose: bool = False,
 ) -> None:
     """Resolve ``${VAR}`` references in config values in-place.
 
-    Currently resolves MCP server ``env`` values. The substitution
-    infrastructure is general-purpose and can be extended to other
-    config fields as needed.
+    Substitutes ``${VAR}`` references in **all** string fields across
+    the config: dependency URLs, paths, refs, MCP commands, args, env
+    values, and MCP URLs.
 
-    Resolution order: ``.env`` file values take precedence over the
-    shell environment.
+    Resolution order for variables (highest priority first):
+
+    1. Project ``.env`` (from *project_root*)
+    2. Global ``.env`` (from the global config directory, if provided)
+    3. Shell environment (``os.environ``)
     """
-    dotenv = load_dotenv(project_root)
-    merged = {**os.environ, **dotenv}
+    merged = _build_env(project_root, global_config, verbose=verbose)
 
-    if verbose and dotenv:
-        from agpack.display import console
+    # Dependency fields: url, path, ref
+    for dep in [*config.skills, *config.commands, *config.agents]:
+        ctx = f"dependency '{dep.name}'"
+        dep.url = resolve_env_vars(dep.url, merged, context=ctx)
+        if dep.path is not None:
+            dep.path = resolve_env_vars(dep.path, merged, context=ctx)
+        if dep.ref is not None:
+            dep.ref = resolve_env_vars(dep.ref, merged, context=ctx)
 
-        console.print(f"  Loaded {len(dotenv)} variable(s) from .env")
-
-    # MCP server env values
+    # MCP server fields: command, args, env values, url
     for server in config.mcp:
         ctx = f"mcp server '{server.name}'"
+        if server.command is not None:
+            server.command = resolve_env_vars(server.command, merged, context=ctx)
+        server.args = [resolve_env_vars(a, merged, context=ctx) for a in server.args]
         for key, value in server.env.items():
             server.env[key] = resolve_env_vars(value, merged, context=ctx)
+        if server.url is not None:
+            server.url = resolve_env_vars(server.url, merged, context=ctx)

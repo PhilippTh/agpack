@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -10,6 +11,13 @@ from typing import Any
 import yaml
 
 from agpack.targets import VALID_TARGETS
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
+DEFAULT_GLOBAL_CONFIG_PATH = DEFAULT_GLOBAL_CONFIG_DIR / "agpack.yml"
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -67,6 +75,22 @@ class AgpackConfig:
     commands: list[DependencySource] = field(default_factory=list)
     agents: list[DependencySource] = field(default_factory=list)
     mcp: list[McpServer] = field(default_factory=list)
+    use_global: bool = True
+
+
+@dataclass
+class GlobalConfig:
+    """Parsed global config (~/.config/agpack/agpack.yml).
+
+    Contains only dependencies — no name, version, or targets.
+    """
+
+    skills: list[DependencySource] = field(default_factory=list)
+    commands: list[DependencySource] = field(default_factory=list)
+    agents: list[DependencySource] = field(default_factory=list)
+    mcp: list[McpServer] = field(default_factory=list)
+    config_dir: Path = field(default_factory=lambda: DEFAULT_GLOBAL_CONFIG_DIR)
+    """Directory containing the global config (used to locate .env)."""
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +223,11 @@ def load_config(path: Path) -> AgpackConfig:
                 f"Unrecognised target '{t}'. Valid targets: {sorted(VALID_TARGETS)}"
             )
 
+    # Global config opt-out
+    use_global = data.get("global", True)
+    if not isinstance(use_global, bool):
+        raise ConfigError("'global' must be true or false")
+
     # Dependencies
     deps = data.get("dependencies", {})
     if not isinstance(deps, dict):
@@ -229,4 +258,127 @@ def load_config(path: Path) -> AgpackConfig:
         commands=commands,
         agents=agents,
         mcp=mcp,
+        use_global=use_global,
+    )
+
+
+def _resolve_global_config_path() -> Path:
+    """Return the global config file path.
+
+    Respects the ``AGPACK_GLOBAL_CONFIG`` environment variable.
+    Falls back to ``~/.config/agpack/agpack.yml``.
+    """
+    override = os.environ.get("AGPACK_GLOBAL_CONFIG")
+    if override:
+        return Path(override).resolve()
+    return DEFAULT_GLOBAL_CONFIG_PATH
+
+
+def load_global_config(path: Path | None = None) -> GlobalConfig | None:
+    """Load the global agpack config.
+
+    Args:
+        path: Explicit path to the global config file.
+              If *None*, the path is resolved via ``AGPACK_GLOBAL_CONFIG``
+              or the default ``~/.config/agpack/agpack.yml``.
+
+    Returns:
+        A :class:`GlobalConfig` if the file exists and is valid,
+        or *None* if the file does not exist.
+
+    Raises:
+        ConfigError: If the file exists but is malformed.
+    """
+    if path is None:
+        path = _resolve_global_config_path()
+
+    if not path.exists():
+        return None
+
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Failed to parse global config YAML: {exc}") from exc
+
+    # An empty file yields None from safe_load
+    if data is None:
+        return GlobalConfig(config_dir=path.parent)
+
+    if not isinstance(data, dict):
+        raise ConfigError("Global config file must be a YAML mapping")
+
+    deps = data.get("dependencies", {})
+    if not isinstance(deps, dict):
+        raise ConfigError("Global config 'dependencies' must be a mapping")
+
+    skills = [
+        _parse_dependency(s, f"global dependencies.skills[{i}]")
+        for i, s in enumerate(deps.get("skills") or [])
+    ]
+    commands = [
+        _parse_dependency(c, f"global dependencies.commands[{i}]")
+        for i, c in enumerate(deps.get("commands") or [])
+    ]
+    agents = [
+        _parse_dependency(a, f"global dependencies.agents[{i}]")
+        for i, a in enumerate(deps.get("agents") or [])
+    ]
+    mcp = [
+        _parse_mcp(m, f"global dependencies.mcp[{i}]")
+        for i, m in enumerate(deps.get("mcp") or [])
+    ]
+
+    return GlobalConfig(
+        skills=skills,
+        commands=commands,
+        agents=agents,
+        mcp=mcp,
+        config_dir=path.parent,
+    )
+
+
+def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConfig:
+    """Merge a global config into a project config.
+
+    Global dependencies are appended after project dependencies.
+    Duplicates are resolved in favour of the project config:
+
+    - Dependencies are deduplicated by :attr:`DependencySource.identity`.
+    - MCP servers are deduplicated by :attr:`McpServer.name`.
+
+    Returns a **new** :class:`AgpackConfig`; the inputs are not mutated.
+    """
+    project_mcp_names = {m.name for m in project.mcp}
+
+    def _merge_deps(
+        project_list: list[DependencySource],
+        global_list: list[DependencySource],
+    ) -> list[DependencySource]:
+        seen = {d.identity for d in project_list}
+        merged = list(project_list)
+        for dep in global_list:
+            if dep.identity not in seen:
+                merged.append(dep)
+                seen.add(dep.identity)
+        return merged
+
+    skills = _merge_deps(project.skills, global_cfg.skills)
+    commands = _merge_deps(project.commands, global_cfg.commands)
+    agents = _merge_deps(project.agents, global_cfg.agents)
+
+    # Merge MCP — project names take precedence
+    mcp = list(project.mcp)
+    for server in global_cfg.mcp:
+        if server.name not in project_mcp_names:
+            mcp.append(server)
+
+    return AgpackConfig(
+        name=project.name,
+        version=project.version,
+        targets=project.targets,
+        skills=skills,
+        commands=commands,
+        agents=agents,
+        mcp=mcp,
+        use_global=project.use_global,
     )

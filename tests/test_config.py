@@ -9,7 +9,11 @@ import pytest
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
 from agpack.config import DependencySource
+from agpack.config import GlobalConfig
+from agpack.config import McpServer
 from agpack.config import load_config
+from agpack.config import load_global_config
+from agpack.config import merge_configs
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -548,3 +552,318 @@ dependencies:
     assert len(cfg.mcp) == 2
     assert cfg.mcp[0].type == "stdio"
     assert cfg.mcp[1].type == "sse"
+
+
+# ---------------------------------------------------------------------------
+# 19. use_global field
+# ---------------------------------------------------------------------------
+
+
+def test_use_global_defaults_to_true(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+name: pack
+version: "1"
+targets:
+  - claude
+""",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.use_global is True
+
+
+def test_use_global_false(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+name: pack
+version: "1"
+global: false
+targets:
+  - claude
+""",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.use_global is False
+
+
+def test_use_global_true_explicit(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+name: pack
+version: "1"
+global: true
+targets:
+  - claude
+""",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.use_global is True
+
+
+def test_use_global_non_bool_raises(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+name: pack
+version: "1"
+global: "yes"
+targets:
+  - claude
+""",
+    )
+    with pytest.raises(ConfigError, match="'global' must be true or false"):
+        load_config(cfg_path)
+
+
+# ---------------------------------------------------------------------------
+# 20. load_global_config
+# ---------------------------------------------------------------------------
+
+
+def _write_global_config(tmp_path: Path, text: str) -> Path:
+    """Write *text* to a global config file inside *tmp_path*."""
+    p = tmp_path / "agpack.yml"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_load_global_config_full(tmp_path: Path) -> None:
+    path = _write_global_config(
+        tmp_path,
+        """\
+dependencies:
+  skills:
+    - url: https://github.com/org/skills
+      path: skills/shared
+  commands:
+    - url: https://github.com/org/commands
+  agents:
+    - url: https://github.com/org/agents
+      path: agents/shared.md
+  mcp:
+    - name: global-server
+      command: npx
+      args: ["-y", "@example/server"]
+      env:
+        KEY: value
+""",
+    )
+    cfg = load_global_config(path)
+    assert cfg is not None
+    assert len(cfg.skills) == 1
+    assert cfg.skills[0].url == "https://github.com/org/skills"
+    assert cfg.skills[0].path == "skills/shared"
+    assert len(cfg.commands) == 1
+    assert len(cfg.agents) == 1
+    assert len(cfg.mcp) == 1
+    assert cfg.mcp[0].name == "global-server"
+    assert cfg.config_dir == tmp_path
+
+
+def test_load_global_config_missing_file(tmp_path: Path) -> None:
+    path = tmp_path / "nonexistent.yml"
+    assert load_global_config(path) is None
+
+
+def test_load_global_config_empty_file(tmp_path: Path) -> None:
+    path = _write_global_config(tmp_path, "")
+    cfg = load_global_config(path)
+    assert cfg is not None
+    assert cfg.skills == []
+    assert cfg.commands == []
+    assert cfg.agents == []
+    assert cfg.mcp == []
+
+
+def test_load_global_config_empty_dependencies(tmp_path: Path) -> None:
+    path = _write_global_config(tmp_path, "dependencies: {}\n")
+    cfg = load_global_config(path)
+    assert cfg is not None
+    assert cfg.skills == []
+
+
+def test_load_global_config_malformed_yaml(tmp_path: Path) -> None:
+    path = _write_global_config(tmp_path, ":\n  - [invalid yaml")
+    with pytest.raises(ConfigError, match="Failed to parse global config YAML"):
+        load_global_config(path)
+
+
+def test_load_global_config_not_a_mapping(tmp_path: Path) -> None:
+    path = _write_global_config(tmp_path, "- a list\n- not a mapping\n")
+    with pytest.raises(ConfigError, match="Global config file must be a YAML mapping"):
+        load_global_config(path)
+
+
+def test_load_global_config_dependencies_not_a_mapping(tmp_path: Path) -> None:
+    path = _write_global_config(tmp_path, "dependencies: [bad]\n")
+    with pytest.raises(
+        ConfigError, match="Global config 'dependencies' must be a mapping"
+    ):
+        load_global_config(path)
+
+
+def test_load_global_config_env_var_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom_dir = tmp_path / "custom"
+    custom_dir.mkdir()
+    custom_path = custom_dir / "my-global.yml"
+    custom_path.write_text(
+        "dependencies:\n  skills:\n    - url: https://example.com/repo\n"
+    )
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(custom_path))
+
+    cfg = load_global_config()
+    assert cfg is not None
+    assert len(cfg.skills) == 1
+    assert cfg.config_dir == custom_dir
+
+
+def test_load_global_config_env_var_nonexistent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(tmp_path / "nope.yml"))
+    assert load_global_config() is None
+
+
+def test_load_global_config_skills_only(tmp_path: Path) -> None:
+    path = _write_global_config(
+        tmp_path,
+        """\
+dependencies:
+  skills:
+    - url: https://github.com/org/repo
+      path: skills/only
+""",
+    )
+    cfg = load_global_config(path)
+    assert cfg is not None
+    assert len(cfg.skills) == 1
+    assert cfg.commands == []
+    assert cfg.agents == []
+    assert cfg.mcp == []
+
+
+# ---------------------------------------------------------------------------
+# 21. merge_configs
+# ---------------------------------------------------------------------------
+
+
+def _make_project_config(**kwargs: object) -> AgpackConfig:
+    defaults: dict[str, object] = {
+        "name": "test",
+        "version": "1",
+        "targets": ["claude"],
+    }
+    defaults.update(kwargs)
+    return AgpackConfig(**defaults)  # type: ignore[arg-type]
+
+
+def test_merge_basic() -> None:
+    project = _make_project_config(
+        skills=[DependencySource(url="https://github.com/a/b", path="skills/proj")],
+    )
+    global_cfg = GlobalConfig(
+        skills=[DependencySource(url="https://github.com/c/d", path="skills/global")],
+        commands=[DependencySource(url="https://github.com/e/f")],
+    )
+    merged = merge_configs(project, global_cfg)
+
+    assert len(merged.skills) == 2
+    assert merged.skills[0].url == "https://github.com/a/b"  # project first
+    assert merged.skills[1].url == "https://github.com/c/d"  # global appended
+    assert len(merged.commands) == 1
+    assert merged.commands[0].url == "https://github.com/e/f"
+
+
+def test_merge_project_wins_on_duplicate_dep() -> None:
+    dep = DependencySource(url="https://github.com/a/b", path="skills/shared")
+    project = _make_project_config(skills=[dep])
+    global_cfg = GlobalConfig(
+        skills=[DependencySource(url="https://github.com/a/b", path="skills/shared")],
+    )
+    merged = merge_configs(project, global_cfg)
+
+    # Duplicate should be deduped — only the project entry survives
+    assert len(merged.skills) == 1
+    assert merged.skills[0] is dep
+
+
+def test_merge_project_wins_on_duplicate_mcp() -> None:
+    project_server = McpServer(name="ctx7", command="npx", args=["project-version"])
+    global_server = McpServer(name="ctx7", command="npx", args=["global-version"])
+
+    project = _make_project_config(mcp=[project_server])
+    global_cfg = GlobalConfig(mcp=[global_server])
+    merged = merge_configs(project, global_cfg)
+
+    assert len(merged.mcp) == 1
+    assert merged.mcp[0].args == ["project-version"]
+
+
+def test_merge_empty_global() -> None:
+    project = _make_project_config(
+        skills=[DependencySource(url="https://github.com/a/b")],
+    )
+    global_cfg = GlobalConfig()
+    merged = merge_configs(project, global_cfg)
+
+    assert len(merged.skills) == 1
+    assert merged.commands == []
+
+
+def test_merge_empty_project_deps() -> None:
+    project = _make_project_config()
+    global_cfg = GlobalConfig(
+        skills=[DependencySource(url="https://github.com/c/d")],
+        mcp=[McpServer(name="s1", command="cmd")],
+    )
+    merged = merge_configs(project, global_cfg)
+
+    assert len(merged.skills) == 1
+    assert merged.skills[0].url == "https://github.com/c/d"
+    assert len(merged.mcp) == 1
+
+
+def test_merge_preserves_project_metadata() -> None:
+    project = _make_project_config(name="my-proj", version="2.0", targets=["opencode"])
+    global_cfg = GlobalConfig(
+        skills=[DependencySource(url="https://github.com/a/b")],
+    )
+    merged = merge_configs(project, global_cfg)
+
+    assert merged.name == "my-proj"
+    assert merged.version == "2.0"
+    assert merged.targets == ["opencode"]
+
+
+def test_merge_does_not_mutate_inputs() -> None:
+    project = _make_project_config(
+        skills=[DependencySource(url="https://github.com/a/b")],
+    )
+    global_cfg = GlobalConfig(
+        skills=[DependencySource(url="https://github.com/c/d")],
+    )
+    orig_project_skills = list(project.skills)
+    orig_global_skills = list(global_cfg.skills)
+
+    merge_configs(project, global_cfg)
+
+    assert project.skills == orig_project_skills
+    assert global_cfg.skills == orig_global_skills
+
+
+def test_merge_cross_type_identity_not_deduped() -> None:
+    """A skill and a command with the same identity are NOT deduped."""
+    dep = DependencySource(url="https://github.com/a/b", path="shared")
+    project = _make_project_config(skills=[dep])
+    global_cfg = GlobalConfig(
+        commands=[DependencySource(url="https://github.com/a/b", path="shared")],
+    )
+    merged = merge_configs(project, global_cfg)
+
+    assert len(merged.skills) == 1
+    assert len(merged.commands) == 1

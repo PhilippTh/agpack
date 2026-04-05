@@ -20,7 +20,10 @@ from agpack import __version__
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
 from agpack.config import DependencySource
+from agpack.config import GlobalConfig
 from agpack.config import load_config
+from agpack.config import load_global_config
+from agpack.config import merge_configs
 from agpack.deployer import cleanup_deployed_files
 from agpack.deployer import deploy_single_agent
 from agpack.deployer import deploy_single_command
@@ -244,7 +247,12 @@ def main() -> None:
     help="Path to config file.",
 )
 @click.option("--verbose", is_flag=True, help="Print each file being written.")
-def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
+@click.option(
+    "--no-global",
+    is_flag=True,
+    help="Ignore the global config file.",
+)
+def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> None:
     """Fetch all dependencies and deploy to all target directories."""
     cfg_path = Path(config_path).resolve()
     project_root = cfg_path.parent
@@ -256,23 +264,35 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    # 2. Resolve ${VAR} references in config values
+    # 2. Load and merge global config
+    global_cfg: GlobalConfig | None = None
+    if not no_global and config.use_global:
+        try:
+            global_cfg = load_global_config()
+        except ConfigError as exc:
+            raise click.ClickException(f"Global config error: {exc}") from exc
+        if global_cfg is not None:
+            if verbose:
+                console.print("  Loaded global config")
+            config = merge_configs(config, global_cfg)
+
+    # 3. Resolve ${VAR} references in config values
     try:
-        resolve_config(config, project_root, verbose=verbose)
+        resolve_config(config, project_root, global_config=global_cfg, verbose=verbose)
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    # 3. Read existing lockfile
+    # 4. Read existing lockfile
     old_lockfile = read_lockfile(project_root)
 
-    # 3. Build set of current dependency identities
+    # 5. Build set of current dependency identities
     current_identities: set[str] = set()
     for dep in [*config.skills, *config.commands, *config.agents]:
         current_identities.add(dep.identity)
 
     current_mcp_names = {m.name for m in config.mcp}
 
-    # 4. Clean up removed dependencies
+    # 6. Clean up removed dependencies
     removed_deps = find_removed_dependencies(old_lockfile, current_identities)
     for entry in removed_deps:
         if verbose or dry_run:
@@ -281,7 +301,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
             entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose
         )
 
-    # 5. Clean up removed MCP servers
+    # 7. Clean up removed MCP servers
     removed_mcp = find_removed_mcp_servers(old_lockfile, current_mcp_names)
     for mcp_entry in removed_mcp:
         if verbose or dry_run:
@@ -295,7 +315,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
             verbose=verbose,
         )
 
-    # 6. Fetch and deploy dependencies
+    # 8. Fetch and deploy dependencies
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
 
@@ -350,11 +370,11 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
             )
             mcp_count += 1
 
-    # 7. Write lockfile
+    # 9. Write lockfile
     if not dry_run:
         write_lockfile(project_root, new_lockfile)
 
-    # 8. Summary
+    # 10. Summary
     elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
     items = [
@@ -378,7 +398,12 @@ def sync(dry_run: bool, config_path: str, verbose: bool) -> None:
     type=click.Path(),
     help="Path to config file.",
 )
-def status(config_path: str) -> None:
+@click.option(
+    "--no-global",
+    is_flag=True,
+    help="Ignore the global config file.",
+)
+def status(config_path: str, no_global: bool) -> None:
     """Show the current state of installed resources vs the config."""
     cfg_path = Path(config_path).resolve()
     project_root = cfg_path.parent
@@ -387,6 +412,15 @@ def status(config_path: str) -> None:
         config = load_config(cfg_path)
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    # Load and merge global config
+    if not no_global and config.use_global:
+        try:
+            global_cfg = load_global_config()
+        except ConfigError as exc:
+            raise click.ClickException(f"Global config error: {exc}") from exc
+        if global_cfg is not None:
+            config = merge_configs(config, global_cfg)
 
     lockfile = read_lockfile(project_root)
 
@@ -474,8 +508,58 @@ def status(config_path: str) -> None:
     type=click.Path(),
     help="Path to write the config file.",
 )
-def init(config_path: str) -> None:
+@click.option(
+    "--global",
+    "is_global",
+    is_flag=True,
+    help="Scaffold the global config at ~/.config/agpack/agpack.yml.",
+)
+def init(config_path: str, is_global: bool) -> None:
     """Scaffold a new agpack.yml."""
+    from agpack.config import _resolve_global_config_path
+
+    if is_global:
+        path = _resolve_global_config_path()
+        if path.exists():
+            console.print(f"{path} already exists — doing nothing.")
+            return
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        template = """\
+# Global agpack config — dependencies here are included in every project.
+# Override per-project with 'global: false' in your project agpack.yml,
+# or run agpack sync --no-global.
+
+dependencies:
+  skills:
+    # Shared skills available in all projects:
+    # - url: https://github.com/owner/repo
+    #   path: skills/my-skill
+    #   ref: v1.0.0
+
+  commands:
+    # Shared commands available in all projects:
+    # - url: https://github.com/owner/repo
+    #   path: commands/my-command.md
+
+  agents:
+    # Shared agents available in all projects:
+    # - url: https://github.com/owner/repo
+    #   path: agents/my-agent.md
+
+  mcp:
+    # Shared MCP servers available in all projects:
+    # - name: my-server
+    #   command: npx
+    #   args: ["-y", "@example/mcp-server"]
+    #   env:
+    #     API_KEY: ${API_KEY}   # resolved from .env or shell environment
+"""
+        path.write_text(template, encoding="utf-8")
+        console.print(f"[green]✓[/green] Created [bold]{path}[/bold]")
+        return
+
     path = Path(config_path).resolve()
     if path.exists():
         console.print(f"{path.name} already exists — doing nothing.")
@@ -484,6 +568,9 @@ def init(config_path: str) -> None:
     template = """\
 name: my-project
 version: 0.1.0
+
+# Set to false to ignore the global config (~/.config/agpack/agpack.yml):
+# global: false
 
 targets:
   # - claude
