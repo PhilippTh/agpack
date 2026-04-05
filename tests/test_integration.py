@@ -84,8 +84,6 @@ def test_full_sync_flow(tmp_path: Path) -> None:
 
     # Write agpack.yml pointing to the local bare repo
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude", "opencode"],
         "dependencies": {
             "skills": [
@@ -173,8 +171,6 @@ def test_sync_cleanup_removed_dependency(tmp_path: Path) -> None:
 
     # First sync with skill + command
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [
@@ -235,8 +231,6 @@ def test_sync_dry_run(tmp_path: Path) -> None:
     project_dir.mkdir()
 
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [
@@ -272,8 +266,6 @@ def test_status_command(tmp_path: Path) -> None:
     project_dir.mkdir()
 
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [
@@ -341,7 +333,6 @@ def test_init_command(tmp_path: Path) -> None:
     assert config_path.exists()
 
     content = config_path.read_text()
-    assert "name:" in content
     assert "targets:" in content
     assert "dependencies:" in content
 
@@ -362,8 +353,6 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
     project_dir.mkdir()
 
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "mcp": [
@@ -449,8 +438,6 @@ def test_sync_with_global_config(
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [
@@ -503,8 +490,6 @@ def test_sync_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [
@@ -559,8 +544,6 @@ def test_sync_global_false_in_project(
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     config_text = f"""\
-name: test-project
-version: "1.0.0"
 global: false
 targets:
   - claude
@@ -614,8 +597,6 @@ def test_sync_global_mcp_merged(
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "mcp": [
@@ -669,8 +650,6 @@ def test_sync_global_mcp_project_wins_duplicate(
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "mcp": [
@@ -768,8 +747,6 @@ def test_status_with_global_config(
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [
@@ -819,8 +796,6 @@ def test_status_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     config = {
-        "name": "test-project",
-        "version": "1.0.0",
         "targets": ["claude"],
         "dependencies": {
             "skills": [

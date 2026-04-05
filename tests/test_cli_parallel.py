@@ -32,8 +32,6 @@ def _make_result(dep: DependencySource, tmp_path: Path) -> FetchResult:
 
 def _make_config(targets: list[str] | None = None) -> AgpackConfig:
     return AgpackConfig(
-        name="test",
-        version="0.1.0",
         targets=targets or ["claude"],
     )
 

@@ -579,9 +579,6 @@ dependencies:
         return
 
     template = """\
-name: my-project
-version: 0.1.0
-
 # Set to false to ignore the global config (~/.config/agpack/agpack.yml):
 # global: false
 

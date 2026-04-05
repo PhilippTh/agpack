@@ -36,8 +36,6 @@ def test_load_valid_full_config(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: my-pack
-version: "1.0"
 targets:
   - claude
   - opencode
@@ -62,8 +60,6 @@ dependencies:
     cfg = load_config(cfg_path)
 
     assert isinstance(cfg, AgpackConfig)
-    assert cfg.name == "my-pack"
-    assert cfg.version == "1.0"
     assert cfg.targets == ["claude", "opencode"]
 
     assert len(cfg.skills) == 1
@@ -87,43 +83,7 @@ dependencies:
 
 
 # ---------------------------------------------------------------------------
-# 2. Missing name
-# ---------------------------------------------------------------------------
-
-
-def test_missing_name(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-version: "1.0"
-targets:
-  - claude
-""",
-    )
-    with pytest.raises(ConfigError, match="Missing required field 'name'"):
-        load_config(cfg_path)
-
-
-# ---------------------------------------------------------------------------
-# 3. Missing version
-# ---------------------------------------------------------------------------
-
-
-def test_missing_version(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-name: pack
-targets:
-  - claude
-""",
-    )
-    with pytest.raises(ConfigError, match="Missing required field 'version'"):
-        load_config(cfg_path)
-
-
-# ---------------------------------------------------------------------------
-# 4. Missing / invalid targets
+# 2. Missing / invalid targets
 # ---------------------------------------------------------------------------
 
 
@@ -143,8 +103,6 @@ def test_targets_not_a_list(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets: claude
 """,
     )
@@ -156,8 +114,6 @@ def test_empty_targets(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets: []
 """,
     )
@@ -174,8 +130,6 @@ def test_unrecognised_target(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - not-a-target
 """,
@@ -193,8 +147,6 @@ def test_dependency_missing_url(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies:
@@ -215,8 +167,6 @@ def test_dependency_url_must_be_string(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies:
@@ -237,8 +187,6 @@ def test_dependency_all_optional_fields(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies:
@@ -264,8 +212,6 @@ def test_mcp_stdio_valid(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies:
@@ -297,8 +243,6 @@ def test_mcp_stdio_missing_command(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies:
@@ -320,8 +264,6 @@ def test_mcp_sse_valid(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies:
@@ -348,8 +290,6 @@ def test_mcp_sse_missing_url(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies:
@@ -371,8 +311,6 @@ def test_mcp_http_valid(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies:
@@ -398,8 +336,6 @@ def test_mcp_missing_name(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies:
@@ -471,8 +407,6 @@ def test_empty_dependencies(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 dependencies: {}
@@ -489,8 +423,6 @@ def test_no_dependencies_key(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 """,
@@ -511,8 +443,6 @@ def test_mixed_dependencies(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - cursor
   - copilot
@@ -563,8 +493,6 @@ def test_use_global_defaults_to_true(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,
         """\
-name: pack
-version: "1"
 targets:
   - claude
 """,
@@ -754,8 +682,6 @@ dependencies:
 
 def _make_project_config(**kwargs: object) -> AgpackConfig:
     defaults: dict[str, object] = {
-        "name": "test",
-        "version": "1",
         "targets": ["claude"],
     }
     defaults.update(kwargs)
@@ -829,15 +755,14 @@ def test_merge_empty_project_deps() -> None:
 
 
 def test_merge_preserves_project_metadata() -> None:
-    project = _make_project_config(name="my-proj", version="2.0", targets=["opencode"])
+    project = _make_project_config(targets=["opencode"], use_global=False)
     global_cfg = GlobalConfig(
         skills=[DependencySource(url="https://github.com/a/b")],
     )
     merged = merge_configs(project, global_cfg)
 
-    assert merged.name == "my-proj"
-    assert merged.version == "2.0"
     assert merged.targets == ["opencode"]
+    assert merged.use_global is False
 
 
 def test_merge_does_not_mutate_inputs() -> None:

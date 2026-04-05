@@ -110,8 +110,6 @@ def test_resolve_partial_missing_raises() -> None:
 
 def _make_config(mcp: list[McpServer] | None = None) -> AgpackConfig:
     return AgpackConfig(
-        name="test",
-        version="1",
         targets=["claude"],
         mcp=mcp or [],
     )

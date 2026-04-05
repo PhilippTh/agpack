@@ -67,8 +67,6 @@ class McpServer:
 class AgpackConfig:
     """Parsed and validated agpack.yml."""
 
-    name: str
-    version: str
     targets: list[str]
     skills: list[DependencySource] = field(default_factory=list)
     commands: list[DependencySource] = field(default_factory=list)
@@ -81,7 +79,7 @@ class AgpackConfig:
 class GlobalConfig:
     """Parsed global config (~/.config/agpack/agpack.yml).
 
-    Contains only dependencies — no name, version, or targets.
+    Contains only dependencies — no targets.
     """
 
     skills: list[DependencySource] = field(default_factory=list)
@@ -237,16 +235,6 @@ def load_config(path: Path) -> AgpackConfig:
     if not isinstance(data, dict):
         raise ConfigError("Config file must be a YAML mapping")
 
-    # Required top-level fields
-    name = data.get("name")
-    if not name:
-        raise ConfigError("Missing required field 'name'")
-
-    version = data.get("version")
-    if not version:
-        raise ConfigError("Missing required field 'version'")
-    version = str(version)
-
     # Targets
     targets = data.get("targets")
     if not targets or not isinstance(targets, list):
@@ -271,8 +259,6 @@ def load_config(path: Path) -> AgpackConfig:
     skills, commands, agents, mcp = _parse_dependencies(deps)
 
     return AgpackConfig(
-        name=str(name),
-        version=version,
         targets=targets,
         skills=skills,
         commands=commands,
@@ -378,8 +364,6 @@ def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConf
             mcp.append(server)
 
     return AgpackConfig(
-        name=project.name,
-        version=project.version,
         targets=project.targets,
         skills=skills,
         commands=commands,
