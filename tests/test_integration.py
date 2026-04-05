@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -557,7 +558,7 @@ def test_sync_global_false_in_project(
     # Project config with global: false
     project_dir = tmp_path / "project"
     project_dir.mkdir()
-    config_text = """\
+    config_text = f"""\
 name: test-project
 version: "1.0.0"
 global: false
@@ -567,7 +568,7 @@ dependencies:
   skills:
     - url: {bare_repo}
       path: skills/my-skill
-""".format(bare_repo=bare_repo)
+"""
     config_path = project_dir / "agpack.yml"
     config_path.write_text(config_text)
 

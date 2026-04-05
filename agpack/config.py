@@ -17,7 +17,6 @@ from agpack.targets import VALID_TARGETS
 # ---------------------------------------------------------------------------
 
 DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
-DEFAULT_GLOBAL_CONFIG_PATH = DEFAULT_GLOBAL_CONFIG_DIR / "agpack.yml"
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -179,6 +178,42 @@ def _parse_mcp(raw: dict[str, Any], context: str) -> McpServer:
         )
 
 
+def _parse_dependencies(
+    deps: dict[str, Any], prefix: str = ""
+) -> tuple[
+    list[DependencySource],
+    list[DependencySource],
+    list[DependencySource],
+    list[McpServer],
+]:
+    """Parse all dependency lists from a ``dependencies`` mapping.
+
+    Args:
+        deps: The raw ``dependencies`` dict from YAML.
+        prefix: Optional prefix for error context (e.g. ``"global "``).
+
+    Returns:
+        A tuple of (skills, commands, agents, mcp).
+    """
+    skills = [
+        _parse_dependency(s, f"{prefix}dependencies.skills[{i}]")
+        for i, s in enumerate(deps.get("skills") or [])
+    ]
+    commands = [
+        _parse_dependency(c, f"{prefix}dependencies.commands[{i}]")
+        for i, c in enumerate(deps.get("commands") or [])
+    ]
+    agents = [
+        _parse_dependency(a, f"{prefix}dependencies.agents[{i}]")
+        for i, a in enumerate(deps.get("agents") or [])
+    ]
+    mcp = [
+        _parse_mcp(m, f"{prefix}dependencies.mcp[{i}]")
+        for i, m in enumerate(deps.get("mcp") or [])
+    ]
+    return skills, commands, agents, mcp
+
+
 def load_config(path: Path) -> AgpackConfig:
     """Load and validate agpack.yml.
 
@@ -233,22 +268,7 @@ def load_config(path: Path) -> AgpackConfig:
     if not isinstance(deps, dict):
         raise ConfigError("'dependencies' must be a mapping")
 
-    skills = [
-        _parse_dependency(s, f"dependencies.skills[{i}]")
-        for i, s in enumerate(deps.get("skills") or [])
-    ]
-    commands = [
-        _parse_dependency(c, f"dependencies.commands[{i}]")
-        for i, c in enumerate(deps.get("commands") or [])
-    ]
-    agents = [
-        _parse_dependency(a, f"dependencies.agents[{i}]")
-        for i, a in enumerate(deps.get("agents") or [])
-    ]
-    mcp = [
-        _parse_mcp(m, f"dependencies.mcp[{i}]")
-        for i, m in enumerate(deps.get("mcp") or [])
-    ]
+    skills, commands, agents, mcp = _parse_dependencies(deps)
 
     return AgpackConfig(
         name=str(name),
@@ -271,7 +291,7 @@ def _resolve_global_config_path() -> Path:
     override = os.environ.get("AGPACK_GLOBAL_CONFIG")
     if override:
         return Path(override).resolve()
-    return DEFAULT_GLOBAL_CONFIG_PATH
+    return DEFAULT_GLOBAL_CONFIG_DIR / "agpack.yml"
 
 
 def load_global_config(path: Path | None = None) -> GlobalConfig | None:
@@ -311,22 +331,7 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
     if not isinstance(deps, dict):
         raise ConfigError("Global config 'dependencies' must be a mapping")
 
-    skills = [
-        _parse_dependency(s, f"global dependencies.skills[{i}]")
-        for i, s in enumerate(deps.get("skills") or [])
-    ]
-    commands = [
-        _parse_dependency(c, f"global dependencies.commands[{i}]")
-        for i, c in enumerate(deps.get("commands") or [])
-    ]
-    agents = [
-        _parse_dependency(a, f"global dependencies.agents[{i}]")
-        for i, a in enumerate(deps.get("agents") or [])
-    ]
-    mcp = [
-        _parse_mcp(m, f"global dependencies.mcp[{i}]")
-        for i, m in enumerate(deps.get("mcp") or [])
-    ]
+    skills, commands, agents, mcp = _parse_dependencies(deps, prefix="global ")
 
     return GlobalConfig(
         skills=skills,

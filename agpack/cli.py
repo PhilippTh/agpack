@@ -231,6 +231,31 @@ def _sync_resource_type(
     return sync
 
 
+def _load_and_merge_global(
+    config: AgpackConfig,
+    *,
+    verbose: bool = False,
+) -> tuple[AgpackConfig, GlobalConfig | None]:
+    """Load the global config and merge it into *config*.
+
+    Returns the (possibly merged) config and the raw global config
+    (needed later for ``.env`` resolution).  If the global config
+    doesn't exist or is disabled, the original config is returned
+    unchanged together with ``None``.
+    """
+    try:
+        global_cfg = load_global_config()
+    except ConfigError as exc:
+        raise click.ClickException(f"Global config error: {exc}") from exc
+
+    if global_cfg is not None:
+        if verbose:
+            console.print("  Loaded global config")
+        config = merge_configs(config, global_cfg)
+
+    return config, global_cfg
+
+
 @click.group()
 @click.version_option(version=__version__)
 def main() -> None:
@@ -267,14 +292,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     # 2. Load and merge global config
     global_cfg: GlobalConfig | None = None
     if not no_global and config.use_global:
-        try:
-            global_cfg = load_global_config()
-        except ConfigError as exc:
-            raise click.ClickException(f"Global config error: {exc}") from exc
-        if global_cfg is not None:
-            if verbose:
-                console.print("  Loaded global config")
-            config = merge_configs(config, global_cfg)
+        config, global_cfg = _load_and_merge_global(config, verbose=verbose)
 
     # 3. Resolve ${VAR} references in config values
     try:
@@ -415,12 +433,7 @@ def status(config_path: str, no_global: bool) -> None:
 
     # Load and merge global config
     if not no_global and config.use_global:
-        try:
-            global_cfg = load_global_config()
-        except ConfigError as exc:
-            raise click.ClickException(f"Global config error: {exc}") from exc
-        if global_cfg is not None:
-            config = merge_configs(config, global_cfg)
+        config, _ = _load_and_merge_global(config)
 
     lockfile = read_lockfile(project_root)
 

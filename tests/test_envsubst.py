@@ -394,9 +394,7 @@ def test_three_tier_no_global_config(
     assert config.mcp[0].env["V"] == "from-project"
 
 
-def test_three_tier_global_env_applies_to_deps(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_three_tier_global_env_applies_to_deps(tmp_path: Path) -> None:
     """Global .env vars are available for dependency field substitution too."""
     global_dir = tmp_path / "global"
     global_dir.mkdir()
