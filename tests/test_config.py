@@ -354,27 +354,29 @@ dependencies:
 
 
 def test_dependency_source_name_from_path() -> None:
-    dep = DependencySource(url="https://github.com/org/repo", path="skills/my-skill")
+    dep = DependencySource(urls=["https://github.com/org/repo"], path="skills/my-skill")
     assert dep.name == "my-skill"
 
 
 def test_dependency_source_name_from_path_trailing_slash() -> None:
-    dep = DependencySource(url="https://github.com/org/repo", path="skills/my-skill/")
+    dep = DependencySource(
+        urls=["https://github.com/org/repo"], path="skills/my-skill/"
+    )
     assert dep.name == "my-skill"
 
 
 def test_dependency_source_name_from_url() -> None:
-    dep = DependencySource(url="https://github.com/org/repo-name")
+    dep = DependencySource(urls=["https://github.com/org/repo-name"])
     assert dep.name == "repo-name"
 
 
 def test_dependency_source_name_from_url_with_dotgit() -> None:
-    dep = DependencySource(url="https://github.com/org/repo-name.git")
+    dep = DependencySource(urls=["https://github.com/org/repo-name.git"])
     assert dep.name == "repo-name"
 
 
 def test_dependency_source_name_from_url_trailing_slash() -> None:
-    dep = DependencySource(url="https://github.com/org/repo-name/")
+    dep = DependencySource(urls=["https://github.com/org/repo-name/"])
     assert dep.name == "repo-name"
 
 
@@ -384,17 +386,17 @@ def test_dependency_source_name_from_url_trailing_slash() -> None:
 
 
 def test_dependency_source_identity_without_path() -> None:
-    dep = DependencySource(url="https://github.com/org/repo")
+    dep = DependencySource(urls=["https://github.com/org/repo"])
     assert dep.identity == "https://github.com/org/repo"
 
 
 def test_dependency_source_identity_with_path() -> None:
-    dep = DependencySource(url="https://github.com/org/repo", path="sub/dir")
+    dep = DependencySource(urls=["https://github.com/org/repo"], path="sub/dir")
     assert dep.identity == "https://github.com/org/repo::sub/dir"
 
 
 def test_dependency_source_identity_different_url() -> None:
-    dep = DependencySource(url="https://gitlab.com/org/repo")
+    dep = DependencySource(urls=["https://gitlab.com/org/repo"])
     assert dep.identity == "https://gitlab.com/org/repo"
 
 
@@ -690,11 +692,13 @@ def _make_project_config(**kwargs: object) -> AgpackConfig:
 
 def test_merge_basic() -> None:
     project = _make_project_config(
-        skills=[DependencySource(url="https://github.com/a/b", path="skills/proj")],
+        skills=[DependencySource(urls=["https://github.com/a/b"], path="skills/proj")],
     )
     global_cfg = GlobalConfig(
-        skills=[DependencySource(url="https://github.com/c/d", path="skills/global")],
-        commands=[DependencySource(url="https://github.com/e/f")],
+        skills=[
+            DependencySource(urls=["https://github.com/c/d"], path="skills/global")
+        ],
+        commands=[DependencySource(urls=["https://github.com/e/f"])],
     )
     merged = merge_configs(project, global_cfg)
 
@@ -706,10 +710,12 @@ def test_merge_basic() -> None:
 
 
 def test_merge_project_wins_on_duplicate_dep() -> None:
-    dep = DependencySource(url="https://github.com/a/b", path="skills/shared")
+    dep = DependencySource(urls=["https://github.com/a/b"], path="skills/shared")
     project = _make_project_config(skills=[dep])
     global_cfg = GlobalConfig(
-        skills=[DependencySource(url="https://github.com/a/b", path="skills/shared")],
+        skills=[
+            DependencySource(urls=["https://github.com/a/b"], path="skills/shared")
+        ],
     )
     merged = merge_configs(project, global_cfg)
 
@@ -732,7 +738,7 @@ def test_merge_project_wins_on_duplicate_mcp() -> None:
 
 def test_merge_empty_global() -> None:
     project = _make_project_config(
-        skills=[DependencySource(url="https://github.com/a/b")],
+        skills=[DependencySource(urls=["https://github.com/a/b"])],
     )
     global_cfg = GlobalConfig()
     merged = merge_configs(project, global_cfg)
@@ -744,7 +750,7 @@ def test_merge_empty_global() -> None:
 def test_merge_empty_project_deps() -> None:
     project = _make_project_config()
     global_cfg = GlobalConfig(
-        skills=[DependencySource(url="https://github.com/c/d")],
+        skills=[DependencySource(urls=["https://github.com/c/d"])],
         mcp=[McpServer(name="s1", command="cmd")],
     )
     merged = merge_configs(project, global_cfg)
@@ -757,7 +763,7 @@ def test_merge_empty_project_deps() -> None:
 def test_merge_preserves_project_metadata() -> None:
     project = _make_project_config(targets=["opencode"], use_global=False)
     global_cfg = GlobalConfig(
-        skills=[DependencySource(url="https://github.com/a/b")],
+        skills=[DependencySource(urls=["https://github.com/a/b"])],
     )
     merged = merge_configs(project, global_cfg)
 
@@ -767,10 +773,10 @@ def test_merge_preserves_project_metadata() -> None:
 
 def test_merge_does_not_mutate_inputs() -> None:
     project = _make_project_config(
-        skills=[DependencySource(url="https://github.com/a/b")],
+        skills=[DependencySource(urls=["https://github.com/a/b"])],
     )
     global_cfg = GlobalConfig(
-        skills=[DependencySource(url="https://github.com/c/d")],
+        skills=[DependencySource(urls=["https://github.com/c/d"])],
     )
     orig_project_skills = list(project.skills)
     orig_global_skills = list(global_cfg.skills)
@@ -783,12 +789,104 @@ def test_merge_does_not_mutate_inputs() -> None:
 
 def test_merge_cross_type_identity_not_deduped() -> None:
     """A skill and a command with the same identity are NOT deduped."""
-    dep = DependencySource(url="https://github.com/a/b", path="shared")
+    dep = DependencySource(urls=["https://github.com/a/b"], path="shared")
     project = _make_project_config(skills=[dep])
     global_cfg = GlobalConfig(
-        commands=[DependencySource(url="https://github.com/a/b", path="shared")],
+        commands=[DependencySource(urls=["https://github.com/a/b"], path="shared")],
     )
     merged = merge_configs(project, global_cfg)
 
     assert len(merged.skills) == 1
     assert len(merged.commands) == 1
+
+
+# ---------------------------------------------------------------------------
+# 22. url as list (multiple URLs / fallbacks)
+# ---------------------------------------------------------------------------
+
+
+def test_url_as_list(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url:
+        - https://github.com/owner/repo
+        - git@github.com:owner/repo.git
+      path: skills/foo
+""",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.skills[0].urls == [
+        "https://github.com/owner/repo",
+        "git@github.com:owner/repo.git",
+    ]
+    assert cfg.skills[0].url == "https://github.com/owner/repo"
+
+
+def test_url_as_string(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: https://github.com/owner/repo
+""",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.skills[0].urls == ["https://github.com/owner/repo"]
+
+
+def test_url_empty_list_raises(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: []
+""",
+    )
+    with pytest.raises(ConfigError, match="'url' must not be empty"):
+        load_config(cfg_path)
+
+
+def test_url_invalid_type_raises(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: 42
+""",
+    )
+    with pytest.raises(ConfigError, match="'url' must be a string or list"):
+        load_config(cfg_path)
+
+
+def test_url_as_list_in_global_config(tmp_path: Path) -> None:
+    path = tmp_path / "agpack.yml"
+    path.write_text(
+        """\
+dependencies:
+  skills:
+    - url:
+        - https://github.com/org/repo
+        - git@github.com:org/repo.git
+      path: skills/shared
+"""
+    )
+    cfg = load_global_config(path)
+    assert cfg is not None
+    assert cfg.skills[0].urls == [
+        "https://github.com/org/repo",
+        "git@github.com:org/repo.git",
+    ]

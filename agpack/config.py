@@ -25,11 +25,22 @@ DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
 
 @dataclass
 class DependencySource:
-    """A parsed skill, command, or agent dependency."""
+    """A parsed skill, command, or agent dependency.
 
-    url: str
+    The ``urls`` list contains one or more git clone URLs.  The first
+    entry is the canonical (primary) URL used for identity and display.
+    Remaining entries are fallback URLs tried in order when earlier ones
+    fail.
+    """
+
+    urls: list[str]
     path: str | None = None
     ref: str | None = None
+
+    @property
+    def url(self) -> str:
+        """The primary (first) URL."""
+        return self.urls[0]
 
     @property
     def name(self) -> str:
@@ -116,11 +127,20 @@ def _parse_dependency(raw: dict[str, Any], context: str) -> DependencySource:
             f"{context}: expected an object with 'url' key, got {type(raw).__name__}"
         )
 
-    url = raw.get("url")
-    if not url:
+    raw_url = raw.get("url")
+    if raw_url is None:
         raise ConfigError(f"{context}: missing required field 'url'")
-    if not isinstance(url, str):
-        raise ConfigError(f"{context}: 'url' must be a string")
+
+    if isinstance(raw_url, str):
+        if not raw_url:
+            raise ConfigError(f"{context}: 'url' must not be empty")
+        urls = [raw_url]
+    elif isinstance(raw_url, list):
+        if not raw_url:
+            raise ConfigError(f"{context}: 'url' must not be empty")
+        urls = [str(u) for u in raw_url]
+    else:
+        raise ConfigError(f"{context}: 'url' must be a string or list of strings")
 
     path = raw.get("path")
     if path is not None and not isinstance(path, str):
@@ -130,7 +150,7 @@ def _parse_dependency(raw: dict[str, Any], context: str) -> DependencySource:
     if ref is not None:
         ref = str(ref)
 
-    return DependencySource(url=url, path=path, ref=ref)
+    return DependencySource(urls=urls, path=path, ref=ref)
 
 
 def _parse_mcp(raw: dict[str, Any], context: str) -> McpServer:

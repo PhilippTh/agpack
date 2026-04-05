@@ -198,7 +198,7 @@ def test_resolve_dependency_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("GH_ORG", "my-org")
-    dep = DependencySource(url="https://github.com/${GH_ORG}/repo")
+    dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
     config = _make_config()
     config.skills = [dep]
 
@@ -212,7 +212,7 @@ def test_resolve_dependency_path(
 ) -> None:
     monkeypatch.setenv("SKILL_NAME", "my-skill")
     dep = DependencySource(
-        url="https://github.com/org/repo", path="skills/${SKILL_NAME}"
+        urls=["https://github.com/org/repo"], path="skills/${SKILL_NAME}"
     )
     config = _make_config()
     config.skills = [dep]
@@ -226,7 +226,7 @@ def test_resolve_dependency_ref(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TAG", "v2.0")
-    dep = DependencySource(url="https://github.com/org/repo", ref="${TAG}")
+    dep = DependencySource(urls=["https://github.com/org/repo"], ref="${TAG}")
     config = _make_config()
     config.commands = [dep]
 
@@ -236,7 +236,7 @@ def test_resolve_dependency_ref(
 
 
 def test_resolve_dependency_no_vars_unchanged(tmp_path: Path) -> None:
-    dep = DependencySource(url="https://github.com/org/repo", path="skills/foo")
+    dep = DependencySource(urls=["https://github.com/org/repo"], path="skills/foo")
     config = _make_config()
     config.agents = [dep]
 
@@ -247,7 +247,7 @@ def test_resolve_dependency_no_vars_unchanged(tmp_path: Path) -> None:
 
 
 def test_resolve_dependency_path_none_stays_none(tmp_path: Path) -> None:
-    dep = DependencySource(url="https://github.com/org/repo")
+    dep = DependencySource(urls=["https://github.com/org/repo"])
     config = _make_config()
     config.skills = [dep]
 
@@ -257,7 +257,7 @@ def test_resolve_dependency_path_none_stays_none(tmp_path: Path) -> None:
 
 
 def test_resolve_dependency_ref_none_stays_none(tmp_path: Path) -> None:
-    dep = DependencySource(url="https://github.com/org/repo")
+    dep = DependencySource(urls=["https://github.com/org/repo"])
     config = _make_config()
     config.skills = [dep]
 
@@ -402,10 +402,44 @@ def test_three_tier_global_env_applies_to_deps(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
 
-    dep = DependencySource(url="https://github.com/${GH_ORG}/repo")
+    dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
     config = _make_config()
     config.skills = [dep]
 
     resolve_config(config, project_dir, global_config=global_cfg)
 
     assert config.skills[0].url == "https://github.com/my-global-org/repo"
+
+
+# ---------------------------------------------------------------------------
+# 7. resolve_config – multiple URL substitution
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_multiple_urls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GH_ORG", "my-org")
+    dep = DependencySource(
+        urls=[
+            "https://github.com/${GH_ORG}/repo",
+            "git@github.com:${GH_ORG}/repo.git",
+        ],
+    )
+    config = _make_config()
+    config.skills = [dep]
+
+    resolve_config(config, tmp_path)
+
+    assert config.skills[0].urls == [
+        "https://github.com/my-org/repo",
+        "git@github.com:my-org/repo.git",
+    ]
+
+
+def test_resolve_single_url_unchanged(tmp_path: Path) -> None:
+    dep = DependencySource(urls=["https://github.com/org/repo"])
+    config = _make_config()
+    config.skills = [dep]
+
+    resolve_config(config, tmp_path)
+
+    assert config.skills[0].urls == ["https://github.com/org/repo"]

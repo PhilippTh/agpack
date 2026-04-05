@@ -82,6 +82,24 @@ Use `ref` to pin a dependency to a specific tag or commit:
   ref: abc1234
 ```
 
+### Fallback URLs
+
+`url` can be a list. When it is, agpack tries each URL in order until one succeeds. This is useful when team members use different auth methods (SSH vs HTTPS), or when you want to fall back to a mirror:
+
+```yaml
+# Tried in order -- works for both SSH and HTTPS users
+- url:
+    - https://github.com/owner/repo
+    - git@github.com:owner/repo.git
+  path: skills/my-skill
+
+# Internal mirror with public fallback
+- url:
+    - https://git.internal.company.com/team/repo
+    - https://github.com/company/repo
+  path: skills/my-skill
+```
+
 ### Directory expansion
 
 The `path` field can point to a single file, a single folder, or a parent directory containing multiple items. When it points at a directory, agpack figures out what's inside:
