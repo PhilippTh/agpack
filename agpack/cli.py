@@ -23,7 +23,7 @@ from agpack.assets import RuleHandler
 from agpack.assets import SkillHandler
 from agpack.assets import cleanup_deployed_files
 from agpack.assets import cleanup_rule_append_targets
-from agpack.assets.base import AssetHandler
+from agpack.assets import AssetHandler
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
 from agpack.config import DependencySource

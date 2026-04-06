@@ -10,7 +10,7 @@ from unittest.mock import patch
 import click
 import pytest
 
-from agpack.assets.base import AssetHandler
+from agpack.assets import AssetHandler
 from agpack.cli import _MAX_FETCH_WORKERS
 from agpack.cli import _sync_resource_type
 from agpack.config import AgpackConfig
