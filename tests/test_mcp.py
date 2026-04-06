@@ -11,8 +11,8 @@ import pytest
 import tomli_w
 
 from agpack.config import McpServer
+from agpack.deployer import DeployError
 from agpack.fileutil import atomic_write_text
-from agpack.mcp import McpError
 from agpack.mcp import _merge_json
 from agpack.mcp import _merge_toml
 from agpack.mcp import _remove_from_json
@@ -564,14 +564,14 @@ class TestMergeCorruptFiles:
         config_path = tmp_path / "bad.json"
         config_path.write_text("not valid json {{{{", encoding="utf-8")
 
-        with pytest.raises(McpError, match="Failed to read"):
+        with pytest.raises(DeployError, match="Failed to read"):
             _merge_json(config_path, "mcpServers", {"s": {"command": "x"}})
 
     def test_merge_toml_corrupt_file_raises(self, tmp_path: Path) -> None:
         config_path = tmp_path / "bad.toml"
         config_path.write_text("= invalid toml", encoding="utf-8")
 
-        with pytest.raises(McpError, match="Failed to read"):
+        with pytest.raises(DeployError, match="Failed to read"):
             _merge_toml(config_path, "mcp_servers", {"s": {"command": "x"}})
 
 
@@ -737,25 +737,25 @@ class TestCleanupDryRun:
 
 class TestDeployErrorHandling:
     def test_non_mcp_error_wrapped(self, tmp_path: Path) -> None:
-        """Non-McpError exceptions from file writes are wrapped in McpError."""
+        """Non-DeployError exceptions from file writes are wrapped in DeployError."""
         server = _stdio_server()
 
         with (
             patch("agpack.mcp._merge_json", side_effect=OSError("disk full")),
-            pytest.raises(McpError, match="Failed to write MCP config.*disk full"),
+            pytest.raises(DeployError, match="Failed to write MCP config.*disk full"),
         ):
             deploy_mcp_servers([server], ["claude"], tmp_path)
 
     def test_mcp_error_re_raised_directly(self, tmp_path: Path) -> None:
-        """McpError from _merge_json is re-raised without wrapping."""
+        """DeployError from _merge_json is re-raised without wrapping."""
         server = _stdio_server()
 
         with (
             patch(
                 "agpack.mcp._merge_json",
-                side_effect=McpError("corrupt config"),
+                side_effect=DeployError("corrupt config"),
             ),
-            pytest.raises(McpError, match="corrupt config"),
+            pytest.raises(DeployError, match="corrupt config"),
         ):
             deploy_mcp_servers([server], ["claude"], tmp_path)
 

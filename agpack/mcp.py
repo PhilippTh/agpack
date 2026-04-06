@@ -10,14 +10,11 @@ from typing import Any
 import tomli_w
 
 from agpack.config import McpServer
+from agpack.deployer import DeployError
 from agpack.display import console
 from agpack.fileutil import atomic_write_text
 from agpack.targets import MCP_TARGETS
 from agpack.targets import McpTargetConfig
-
-
-class McpError(Exception):
-    """Raised when an MCP config merge fails."""
 
 
 def _build_server_object(server: McpServer, target: str = "") -> dict[str, Any]:
@@ -70,7 +67,7 @@ def _merge_json(
         try:
             existing = json.loads(config_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
-            raise McpError(f"Failed to read {config_path}: {exc}") from exc
+            raise DeployError(f"Failed to read {config_path}: {exc}") from exc
 
     if servers_key not in existing:
         existing[servers_key] = {}
@@ -91,7 +88,7 @@ def _merge_toml(
         try:
             existing = tomllib.loads(config_path.read_text(encoding="utf-8"))
         except (tomllib.TOMLDecodeError, OSError) as exc:
-            raise McpError(f"Failed to read {config_path}: {exc}") from exc
+            raise DeployError(f"Failed to read {config_path}: {exc}") from exc
 
     if servers_key not in existing:
         existing[servers_key] = {}
@@ -140,10 +137,10 @@ def deploy_mcp_servers(
                     _merge_json(config_path, target_cfg.servers_key, servers_dict)
                 elif target_cfg.format == "toml":
                     _merge_toml(config_path, target_cfg.servers_key, servers_dict)
-            except McpError:
+            except DeployError:
                 raise
             except Exception as exc:
-                raise McpError(
+                raise DeployError(
                     f"Failed to write MCP config to {config_path}: {exc}"
                 ) from exc
 
@@ -243,17 +240,8 @@ def _remove_from_json(
     """Remove a server from a JSON file, trying common server keys."""
     if dry_run:
         return
-    try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return
-
     for key in ("mcpServers", "mcp", "servers"):
-        servers = data.get(key, {})
-        if isinstance(servers, dict) and server_name in servers:
-            del servers[server_name]
-            atomic_write_text(config_path, json.dumps(data, indent=2) + "\n")
-            return
+        _remove_server_from_json(config_path, key, server_name)
 
 
 def _remove_from_toml(
@@ -264,14 +252,5 @@ def _remove_from_toml(
     """Remove a server from a TOML file, trying common server keys."""
     if dry_run:
         return
-    try:
-        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, OSError):
-        return
-
     for key in ("mcp_servers",):
-        servers = data.get(key, {})
-        if isinstance(servers, dict) and server_name in servers:
-            del servers[server_name]
-            atomic_write_text(config_path, tomli_w.dumps(data))
-            return
+        _remove_server_from_toml(config_path, key, server_name)

@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from agpack import __version__
+from agpack.config import make_identity
 from agpack.fileutil import atomic_write_text
 
 LOCKFILE_NAME = ".agpack.lock.yml"
@@ -30,10 +31,7 @@ class InstalledEntry:
     @property
     def identity(self) -> str:
         """Unique key matching DependencySource.identity."""
-        key = self.url
-        if self.path:
-            key = f"{key}::{self.path}"
-        return key
+        return make_identity(self.url, self.path)
 
 
 @dataclass
@@ -136,29 +134,3 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
     path = project_root / LOCKFILE_NAME
     content = yaml.dump(data, default_flow_style=False, sort_keys=False)
     atomic_write_text(path, content)
-
-
-def find_removed_dependencies(
-    old_lockfile: Lockfile | None,
-    current_identities: set[str],
-) -> list[InstalledEntry]:
-    """Find dependencies that were in the old lockfile but are no longer configured."""
-    if old_lockfile is None:
-        return []
-
-    return [
-        entry
-        for entry in old_lockfile.installed
-        if entry.identity not in current_identities
-    ]
-
-
-def find_removed_mcp_servers(
-    old_lockfile: Lockfile | None,
-    current_mcp_names: set[str],
-) -> list[McpLockEntry]:
-    """Find MCP servers that were in the old lockfile but are no longer configured."""
-    if old_lockfile is None:
-        return []
-
-    return [entry for entry in old_lockfile.mcp if entry.name not in current_mcp_names]

@@ -919,10 +919,10 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
 
 
 def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
-    """When deploy_mcp_servers raises McpError, partial lockfile is written."""
+    """When deploy_mcp_servers raises DeployError, partial lockfile is written."""
     from unittest.mock import patch
 
-    from agpack.mcp import McpError
+    from agpack.deployer import DeployError
 
     bare_repo = _create_bare_repo(tmp_path)
 
@@ -952,7 +952,7 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
 
     with patch(
         "agpack.cli.deploy_mcp_servers",
-        side_effect=McpError("corrupt config file"),
+        side_effect=DeployError("corrupt config file"),
     ):
         runner = CliRunner()
         result = runner.invoke(

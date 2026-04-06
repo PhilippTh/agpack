@@ -1,9 +1,7 @@
-"""Rule-specific logic: frontmatter parsing, format generation, managed sections,
-and deployment I/O.
+"""Rule detection, deployment, and cleanup.
 
-Follows the same ownership pattern as ``mcp.py`` — this module owns all
-rule-related deployment and cleanup, while ``deployer.py`` only provides
-the ``detect_rule_items`` helper (reusing ``detect_file_items``).
+Owns all rule-related logic: frontmatter parsing, format generation,
+managed sections, and deployment I/O.
 """
 
 from __future__ import annotations
@@ -13,7 +11,9 @@ from pathlib import Path
 
 import yaml
 
+from agpack.deployer import detect_file_items
 from agpack.display import console
+from agpack.fetcher import FetchResult
 from agpack.fileutil import atomic_write_text
 from agpack.targets import RULE_TARGETS
 
@@ -47,6 +47,20 @@ def parse_rule_frontmatter(content: str) -> tuple[dict[str, object], str]:
         return {}, content
 
     return fm, body
+
+
+# ---------------------------------------------------------------------------
+# Detection
+# ---------------------------------------------------------------------------
+
+
+def detect_rule_items(fetch_result: FetchResult) -> list[tuple[str, Path]]:
+    """Return ``(name, path)`` pairs for rule items in a fetch result.
+
+    A single file is one rule; a directory expands to one rule per
+    non-hidden file.
+    """
+    return detect_file_items(fetch_result, "rule")
 
 
 # ---------------------------------------------------------------------------
@@ -114,11 +128,6 @@ def generate_mdc(frontmatter: dict[str, object], body: str) -> str:
     lines.append("---")
 
     return "\n".join(lines) + "\n" + body
-
-
-def generate_windsurf_rule(body: str) -> str:
-    """Produce a Windsurf rule file (plain markdown, no frontmatter)."""
-    return body
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +236,6 @@ def deploy_single_rule(
     body: str,
     targets: list[str],
     project_root: Path,
-    *,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> list[str]:
@@ -250,7 +258,7 @@ def deploy_single_rule(
             content = generate_mdc(frontmatter, body)
             filename = f"{name}.mdc"
         elif target == "windsurf":
-            content = generate_windsurf_rule(body)
+            content = body
             filename = f"{name}.md"
         else:
             continue
@@ -277,7 +285,6 @@ def deploy_rule_append_targets(
     rule_bodies: list[tuple[str, str]],
     targets: list[str],
     project_root: Path,
-    *,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> list[str]:
@@ -325,7 +332,6 @@ def deploy_rule_append_targets(
 def cleanup_rule_append_targets(
     targets: list[str],
     project_root: Path,
-    *,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> None:

@@ -12,8 +12,8 @@ from agpack.rules import build_managed_section
 from agpack.rules import cleanup_rule_append_targets
 from agpack.rules import deploy_rule_append_targets
 from agpack.rules import deploy_single_rule
+from agpack.rules import detect_rule_items
 from agpack.rules import generate_mdc
-from agpack.rules import generate_windsurf_rule
 from agpack.rules import get_rule_name
 from agpack.rules import merge_into_managed_section
 from agpack.rules import normalize_frontmatter_for_cursor
@@ -187,23 +187,6 @@ class TestGenerateMdc:
         assert "description: Database migrations" in result
         assert "alwaysApply: false" in result
         assert "globs" not in result
-
-
-# ---------------------------------------------------------------------------
-# generate_windsurf_rule
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateWindsurfRule:
-    def test_returns_body_only(self) -> None:
-        body = "# My Rule\n- Do this.\n- Don't do that.\n"
-        result = generate_windsurf_rule(body)
-        assert result == body
-
-    def test_no_frontmatter_in_output(self) -> None:
-        body = "# Rule\nContent\n"
-        result = generate_windsurf_rule(body)
-        assert "---" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +574,6 @@ dependencies:
 class TestDetectRuleItems:
     def test_single_file(self, tmp_path: Path) -> None:
         from agpack.config import DependencySource
-        from agpack.deployer import detect_rule_items
         from agpack.fetcher import FetchResult
 
         src = tmp_path / "src" / "my-rule.md"
@@ -611,7 +593,6 @@ class TestDetectRuleItems:
 
     def test_directory_of_rules(self, tmp_path: Path) -> None:
         from agpack.config import DependencySource
-        from agpack.deployer import detect_rule_items
         from agpack.fetcher import FetchResult
 
         src = tmp_path / "src" / "rules"

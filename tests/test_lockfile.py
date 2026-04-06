@@ -13,8 +13,6 @@ from agpack.lockfile import LOCKFILE_NAME
 from agpack.lockfile import InstalledEntry
 from agpack.lockfile import Lockfile
 from agpack.lockfile import McpLockEntry
-from agpack.lockfile import find_removed_dependencies
-from agpack.lockfile import find_removed_mcp_servers
 from agpack.lockfile import read_lockfile
 from agpack.lockfile import write_lockfile
 
@@ -255,98 +253,6 @@ class TestWriteLockfile:
         assert len(data["mcp"]) == 2
         assert data["mcp"][0] == {"name": "srv-a", "targets": ["claude", "cursor"]}
         assert data["mcp"][1] == {"name": "srv-b", "targets": []}
-
-
-# ---------------------------------------------------------------------------
-# find_removed_dependencies
-# ---------------------------------------------------------------------------
-
-
-class TestFindRemovedDependencies:
-    def test_returns_removed_entries(self):
-        old = Lockfile(
-            installed=[
-                InstalledEntry(
-                    url="https://github.com/owner/keep",
-                    path=None,
-                    resolved_ref="a",
-                    type="skill",
-                ),
-                InstalledEntry(
-                    url="https://github.com/owner/remove",
-                    path=None,
-                    resolved_ref="b",
-                    type="skill",
-                ),
-                InstalledEntry(
-                    url="https://github.com/owner/also-remove",
-                    path="sub",
-                    resolved_ref="c",
-                    type="command",
-                ),
-            ],
-        )
-        current = {"https://github.com/owner/keep"}
-        removed = find_removed_dependencies(old, current)
-
-        assert len(removed) == 2
-        identities = {e.identity for e in removed}
-        assert "https://github.com/owner/remove" in identities
-        assert "https://github.com/owner/also-remove::sub" in identities
-
-    def test_returns_empty_when_nothing_removed(self):
-        old = Lockfile(
-            installed=[
-                InstalledEntry(
-                    url="https://github.com/owner/a",
-                    path=None,
-                    resolved_ref="x",
-                    type="skill",
-                ),
-            ],
-        )
-        current = {"https://github.com/owner/a"}
-        assert find_removed_dependencies(old, current) == []
-
-    def test_returns_empty_when_old_lockfile_is_none(self):
-        assert find_removed_dependencies(None, {"https://github.com/owner/a"}) == []
-
-    def test_returns_empty_for_empty_installed(self):
-        old = Lockfile(installed=[])
-        assert find_removed_dependencies(old, set()) == []
-
-
-# ---------------------------------------------------------------------------
-# find_removed_mcp_servers
-# ---------------------------------------------------------------------------
-
-
-class TestFindRemovedMcpServers:
-    def test_returns_removed_servers(self):
-        old = Lockfile(
-            mcp=[
-                McpLockEntry(name="keep-srv", targets=["claude"]),
-                McpLockEntry(name="remove-srv", targets=[]),
-            ],
-        )
-        current = {"keep-srv"}
-        removed = find_removed_mcp_servers(old, current)
-
-        assert len(removed) == 1
-        assert removed[0].name == "remove-srv"
-
-    def test_returns_empty_when_nothing_removed(self):
-        old = Lockfile(
-            mcp=[McpLockEntry(name="srv", targets=[])],
-        )
-        assert find_removed_mcp_servers(old, {"srv"}) == []
-
-    def test_returns_empty_when_old_lockfile_is_none(self):
-        assert find_removed_mcp_servers(None, {"srv"}) == []
-
-    def test_returns_empty_for_empty_mcp(self):
-        old = Lockfile(mcp=[])
-        assert find_removed_mcp_servers(old, set()) == []
 
 
 # ---------------------------------------------------------------------------

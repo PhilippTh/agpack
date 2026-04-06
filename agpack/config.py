@@ -12,11 +12,24 @@ import yaml
 
 from agpack.targets import VALID_TARGETS
 
+DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
+
 # ---------------------------------------------------------------------------
-# Constants
+# Shared helpers
 # ---------------------------------------------------------------------------
 
-DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
+
+def make_identity(url: str, path: str | None) -> str:
+    """Build a unique identity key from a URL and optional path.
+
+    Used by both :class:`DependencySource` and
+    :class:`~agpack.lockfile.InstalledEntry` so the two stay in sync.
+    """
+    key = url
+    if path:
+        key = f"{key}::{path}"
+    return key
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -56,10 +69,7 @@ class DependencySource:
     @property
     def identity(self) -> str:
         """A unique key for this dependency (used for lockfile matching)."""
-        key = self.url
-        if self.path:
-            key = f"{key}::{self.path}"
-        return key
+        return make_identity(self.url, self.path)
 
 
 @dataclass

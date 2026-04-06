@@ -17,6 +17,10 @@ from rich.rule import Rule
 from rich.table import Table
 
 from agpack import __version__
+from agpack.agents import deploy_single_agent
+from agpack.agents import detect_agent_items
+from agpack.commands import deploy_single_command
+from agpack.commands import detect_command_items
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
 from agpack.config import DependencySource
@@ -24,14 +28,8 @@ from agpack.config import GlobalConfig
 from agpack.config import load_config
 from agpack.config import load_global_config
 from agpack.config import merge_configs
+from agpack.deployer import DeployError
 from agpack.deployer import cleanup_deployed_files
-from agpack.deployer import deploy_single_agent
-from agpack.deployer import deploy_single_command
-from agpack.deployer import deploy_single_skill
-from agpack.deployer import detect_agent_items
-from agpack.deployer import detect_command_items
-from agpack.deployer import detect_rule_items
-from agpack.deployer import detect_skill_items
 from agpack.display import console
 from agpack.display import create_sync_progress
 from agpack.envsubst import resolve_config
@@ -42,20 +40,24 @@ from agpack.fetcher import fetch_dependency
 from agpack.lockfile import InstalledEntry
 from agpack.lockfile import Lockfile
 from agpack.lockfile import McpLockEntry
-from agpack.lockfile import find_removed_dependencies
-from agpack.lockfile import find_removed_mcp_servers
 from agpack.lockfile import read_lockfile
 from agpack.lockfile import write_lockfile
-from agpack.mcp import McpError
 from agpack.mcp import cleanup_mcp_server
 from agpack.mcp import deploy_mcp_servers
 from agpack.rules import cleanup_rule_append_targets
 from agpack.rules import deploy_rule_append_targets
 from agpack.rules import deploy_single_rule
+from agpack.rules import detect_rule_items
 from agpack.rules import get_rule_name
 from agpack.rules import parse_rule_frontmatter
+from agpack.skills import deploy_single_skill
+from agpack.skills import detect_skill_items
 
 _MAX_FETCH_WORKERS = 8
+
+# Type aliases for the callback signatures used by _sync_resource_type
+_DetectFn = Callable[[FetchResult], list[tuple[str, Path]]]
+_DeployItemFn = Callable[[str, Path, list[str], Path, bool, bool], list[str]]
 
 
 def _source_file_count(deployed: list[str]) -> int:
@@ -81,8 +83,8 @@ class SyncResult:
 
 def _sync_resource_type(
     deps: list[DependencySource],
-    detect_fn: Callable[[FetchResult], list[tuple[str, Path]]],
-    deploy_item_fn: Callable[[str, Path, list[str], Path, bool, bool], list[str]],
+    detect_fn: _DetectFn,
+    deploy_item_fn: _DeployItemFn,
     resource_type: str,
     config: AgpackConfig,
     project_root: Path,
@@ -317,7 +319,11 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     current_mcp_names = {m.name for m in config.mcp}
 
     # 6. Clean up removed dependencies
-    removed_deps = find_removed_dependencies(old_lockfile, current_identities)
+    removed_deps = [
+        e
+        for e in (old_lockfile.installed if old_lockfile else [])
+        if e.identity not in current_identities
+    ]
     removed_had_rules = False
     for entry in removed_deps:
         if verbose or dry_run:
@@ -335,7 +341,11 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
         )
 
     # 7. Clean up removed MCP servers
-    removed_mcp = find_removed_mcp_servers(old_lockfile, current_mcp_names)
+    removed_mcp = [
+        e
+        for e in (old_lockfile.mcp if old_lockfile else [])
+        if e.name not in current_mcp_names
+    ]
     for mcp_entry in removed_mcp:
         if verbose or dry_run:
             console.print(f"Removing MCP server '{mcp_entry.name}'...")
@@ -377,15 +387,22 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             body,
             targets,
             project_root,
-            dry_run=dry_run,
-            verbose=verbose,
+            dry_run,
+            verbose,
         )
 
-    resource_types = [
+    resource_types: list[
+        tuple[list[DependencySource], _DetectFn, _DeployItemFn, str]
+    ] = [
         (config.skills, detect_skill_items, deploy_single_skill, "skill"),
         (config.commands, detect_command_items, deploy_single_command, "command"),
         (config.agents, detect_agent_items, deploy_single_agent, "agent"),
-        (config.rules, detect_rule_items, _deploy_rule_item, "rule"),
+        (
+            config.rules,
+            detect_rule_items,
+            _deploy_rule_item,
+            "rule",
+        ),
     ]
 
     all_verbose_lines: list[str] = []
@@ -434,7 +451,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                     dry_run=dry_run,
                     verbose=verbose,
                 )
-            except McpError as exc:
+            except DeployError as exc:
                 if not dry_run:
                     write_lockfile(project_root, new_lockfile)
                 raise click.ClickException(str(exc)) from exc

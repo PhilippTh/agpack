@@ -1,4 +1,4 @@
-"""Tests for agpack.deployer — file copy logic and directory mapping."""
+"""Tests for deployer and asset modules — file copy logic and directory mapping."""
 
 from __future__ import annotations
 
@@ -7,17 +7,17 @@ from unittest.mock import patch
 
 import pytest
 
+from agpack.agents import deploy_single_agent
+from agpack.agents import detect_agent_items
+from agpack.commands import deploy_single_command
+from agpack.commands import detect_command_items
 from agpack.config import DependencySource
 from agpack.deployer import DeployError
 from agpack.deployer import cleanup_deployed_files
-from agpack.deployer import deploy_single_agent
-from agpack.deployer import deploy_single_command
-from agpack.deployer import deploy_single_skill
-from agpack.deployer import detect_agent_items
-from agpack.deployer import detect_command_items
-from agpack.deployer import detect_skill_items
 from agpack.fetcher import FetchResult
 from agpack.fileutil import atomic_copy_file
+from agpack.skills import deploy_single_skill
+from agpack.skills import detect_skill_items
 
 # ---------------------------------------------------------------------------
 # Helpers
