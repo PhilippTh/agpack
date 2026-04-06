@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -13,6 +11,7 @@ import tomli_w
 
 from agpack.config import McpServer
 from agpack.display import console
+from agpack.fileutil import atomic_write_text
 from agpack.targets import MCP_TARGETS
 from agpack.targets import McpTargetConfig
 
@@ -60,22 +59,6 @@ def _build_opencode_server_object(server: McpServer) -> dict[str, Any]:
         return {"type": "remote", "url": server.url}
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    """Write content to a file atomically."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".agpack-mcp-")
-    try:
-        os.close(fd)
-        Path(tmp_path).write_text(content, encoding="utf-8")
-        os.replace(tmp_path, str(path))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
 def _merge_json(
     config_path: Path,
     servers_key: str,
@@ -94,7 +77,7 @@ def _merge_json(
 
     existing[servers_key].update(servers)
 
-    _atomic_write(config_path, json.dumps(existing, indent=2) + "\n")
+    atomic_write_text(config_path, json.dumps(existing, indent=2) + "\n")
 
 
 def _merge_toml(
@@ -115,7 +98,7 @@ def _merge_toml(
 
     existing[servers_key].update(servers)
 
-    _atomic_write(config_path, tomli_w.dumps(existing))
+    atomic_write_text(config_path, tomli_w.dumps(existing))
 
 
 def deploy_mcp_servers(
@@ -232,7 +215,7 @@ def _remove_server_from_json(
     servers = data.get(servers_key, {})
     if server_name in servers:
         del servers[server_name]
-        _atomic_write(config_path, json.dumps(data, indent=2) + "\n")
+        atomic_write_text(config_path, json.dumps(data, indent=2) + "\n")
 
 
 def _remove_server_from_toml(
@@ -249,7 +232,7 @@ def _remove_server_from_toml(
     servers = data.get(servers_key, {})
     if server_name in servers:
         del servers[server_name]
-        _atomic_write(config_path, tomli_w.dumps(data))
+        atomic_write_text(config_path, tomli_w.dumps(data))
 
 
 def _remove_from_json(
@@ -269,7 +252,7 @@ def _remove_from_json(
         servers = data.get(key, {})
         if isinstance(servers, dict) and server_name in servers:
             del servers[server_name]
-            _atomic_write(config_path, json.dumps(data, indent=2) + "\n")
+            atomic_write_text(config_path, json.dumps(data, indent=2) + "\n")
             return
 
 
@@ -290,5 +273,5 @@ def _remove_from_toml(
         servers = data.get(key, {})
         if isinstance(servers, dict) and server_name in servers:
             del servers[server_name]
-            _atomic_write(config_path, tomli_w.dumps(data))
+            atomic_write_text(config_path, tomli_w.dumps(data))
             return

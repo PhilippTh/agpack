@@ -11,8 +11,8 @@ import pytest
 import tomli_w
 
 from agpack.config import McpServer
+from agpack.fileutil import atomic_write_text
 from agpack.mcp import McpError
-from agpack.mcp import _atomic_write
 from agpack.mcp import _merge_json
 from agpack.mcp import _merge_toml
 from agpack.mcp import _remove_from_json
@@ -766,7 +766,7 @@ class TestDeployErrorHandling:
 
 
 # ---------------------------------------------------------------------------
-# 20b. _atomic_write failure cleanup
+# 20b. atomic_write_text failure cleanup
 # ---------------------------------------------------------------------------
 
 
@@ -776,13 +776,13 @@ class TestAtomicWriteFailure:
         target = tmp_path / "output.json"
 
         with (
-            patch("agpack.mcp.os.replace", side_effect=OSError("disk full")),
+            patch("agpack.fileutil.os.replace", side_effect=OSError("disk full")),
             pytest.raises(OSError, match="disk full"),
         ):
-            _atomic_write(target, '{"test": true}\n')
+            atomic_write_text(target, '{"test": true}\n')
 
         # No temp files should be left behind
-        leftover = list(tmp_path.glob(".agpack-mcp-*"))
+        leftover = list(tmp_path.glob(".agpack-tmp-*"))
         assert leftover == []
 
         # The target file should not have been created

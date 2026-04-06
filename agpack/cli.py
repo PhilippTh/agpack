@@ -30,6 +30,7 @@ from agpack.deployer import deploy_single_command
 from agpack.deployer import deploy_single_skill
 from agpack.deployer import detect_agent_items
 from agpack.deployer import detect_command_items
+from agpack.deployer import detect_rule_items
 from agpack.deployer import detect_skill_items
 from agpack.display import console
 from agpack.display import create_sync_progress
@@ -48,6 +49,11 @@ from agpack.lockfile import write_lockfile
 from agpack.mcp import McpError
 from agpack.mcp import cleanup_mcp_server
 from agpack.mcp import deploy_mcp_servers
+from agpack.rules import cleanup_rule_append_targets
+from agpack.rules import deploy_rule_append_targets
+from agpack.rules import deploy_single_rule
+from agpack.rules import get_rule_name
+from agpack.rules import parse_rule_frontmatter
 
 _MAX_FETCH_WORKERS = 8
 
@@ -305,18 +311,27 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
 
     # 5. Build set of current dependency identities
     current_identities: set[str] = set()
-    for dep in [*config.skills, *config.commands, *config.agents]:
+    for dep in [*config.skills, *config.commands, *config.agents, *config.rules]:
         current_identities.add(dep.identity)
 
     current_mcp_names = {m.name for m in config.mcp}
 
     # 6. Clean up removed dependencies
     removed_deps = find_removed_dependencies(old_lockfile, current_identities)
+    removed_had_rules = False
     for entry in removed_deps:
         if verbose or dry_run:
             console.print(f"Removing {entry.type} '{entry.identity}'...")
+        if entry.type == "rule":
+            removed_had_rules = True
         cleanup_deployed_files(
             entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose
+        )
+
+    # If all rules were removed, clean up managed sections from append targets
+    if removed_had_rules and not config.rules:
+        cleanup_rule_append_targets(
+            config.targets, project_root, dry_run=dry_run, verbose=verbose
         )
 
     # 7. Clean up removed MCP servers
@@ -337,10 +352,40 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
 
+    # Rules have a two-phase deploy: file-based targets (Cursor, Windsurf)
+    # deploy per-item, but append targets (CLAUDE.md, AGENTS.md, GEMINI.md)
+    # need all rule bodies collected first so they can be written in one
+    # managed section.  This closure bridges _sync_resource_type's per-item
+    # callback with the batch append step that runs after the loop.
+    collected_rule_bodies: list[tuple[str, str]] = []
+
+    def _deploy_rule_item(
+        filename: str,
+        file_path: Path,
+        targets: list[str],
+        project_root: Path,
+        dry_run: bool,
+        verbose: bool,
+    ) -> list[str]:
+        content = file_path.read_text(encoding="utf-8")
+        fm, body = parse_rule_frontmatter(content)
+        name = get_rule_name(fm, filename)
+        collected_rule_bodies.append((name, body))
+        return deploy_single_rule(
+            name,
+            fm,
+            body,
+            targets,
+            project_root,
+            dry_run=dry_run,
+            verbose=verbose,
+        )
+
     resource_types = [
         (config.skills, detect_skill_items, deploy_single_skill, "skill"),
         (config.commands, detect_command_items, deploy_single_command, "command"),
         (config.agents, detect_agent_items, deploy_single_agent, "agent"),
+        (config.rules, detect_rule_items, _deploy_rule_item, "rule"),
     ]
 
     all_verbose_lines: list[str] = []
@@ -364,6 +409,18 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
 
     for line in all_verbose_lines:
         console.print(line)
+
+    # Rules post-step: batch-deploy all collected rule bodies to append targets
+    if collected_rule_bodies:
+        append_deployed = deploy_rule_append_targets(
+            collected_rule_bodies,
+            config.targets,
+            project_root,
+            dry_run=dry_run,
+            verbose=verbose,
+        )
+        if verbose:
+            all_verbose_lines.extend(f"  {p}" for p in append_deployed)
 
     # MCP servers
     mcp_count = 0
@@ -395,12 +452,13 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     # 10. Summary
     elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
-    items = [
+    summary_items = [
         ("skills", "skill"),
         ("commands", "command"),
         ("agents", "agent"),
+        ("rules", "rule"),
     ]
-    parts = [f"[bold]{counts.get(k, 0)}[/bold] {name}" for name, k in items]
+    parts = [f"[bold]{counts.get(k, 0)}[/bold] {name}" for name, k in summary_items]
     parts.append(f"[bold]{mcp_count}[/bold] MCP servers")
     summary = ", ".join(parts)
     targets = f"[bold]{target_count}[/bold] targets"
@@ -452,6 +510,7 @@ def status(config_path: str, no_global: bool) -> None:
         ("Skills", config.skills),
         ("Commands", config.commands),
         ("Agents", config.agents),
+        ("Rules", config.rules),
     ]
     for label, deps in resource_sections:
         table = Table(
@@ -561,6 +620,11 @@ dependencies:
     # - url: https://github.com/owner/repo
     #   path: agents/my-agent.md
 
+  rules:
+    # Shared rules available in all projects:
+    # - url: https://github.com/owner/repo
+    #   path: rules/my-rule.md
+
   mcp:
     # Shared MCP servers available in all projects:
     # - name: my-server
@@ -613,6 +677,11 @@ dependencies:
     # Point to a single file or a directory of agent files:
     # - url: https://github.com/owner/repo
     #   path: agents/my-agent.md
+
+  rules:
+    # Point to a single rule file or a directory of rule files:
+    # - url: https://github.com/owner/repo
+    #   path: rules/my-rule.md
 
   mcp:
     # - name: my-server

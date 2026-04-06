@@ -82,6 +82,7 @@ class AgpackConfig:
     skills: list[DependencySource] = field(default_factory=list)
     commands: list[DependencySource] = field(default_factory=list)
     agents: list[DependencySource] = field(default_factory=list)
+    rules: list[DependencySource] = field(default_factory=list)
     mcp: list[McpServer] = field(default_factory=list)
     use_global: bool = True
 
@@ -96,6 +97,7 @@ class GlobalConfig:
     skills: list[DependencySource] = field(default_factory=list)
     commands: list[DependencySource] = field(default_factory=list)
     agents: list[DependencySource] = field(default_factory=list)
+    rules: list[DependencySource] = field(default_factory=list)
     mcp: list[McpServer] = field(default_factory=list)
     config_dir: Path = field(default_factory=lambda: DEFAULT_GLOBAL_CONFIG_DIR)
     """Directory containing the global config (used to locate .env)."""
@@ -202,6 +204,7 @@ def _parse_dependencies(
     list[DependencySource],
     list[DependencySource],
     list[DependencySource],
+    list[DependencySource],
     list[McpServer],
 ]:
     """Parse all dependency lists from a ``dependencies`` mapping.
@@ -211,7 +214,7 @@ def _parse_dependencies(
         prefix: Optional prefix for error context (e.g. ``"global "``).
 
     Returns:
-        A tuple of (skills, commands, agents, mcp).
+        A tuple of (skills, commands, agents, rules, mcp).
     """
     skills = [
         _parse_dependency(s, f"{prefix}dependencies.skills[{i}]")
@@ -225,11 +228,15 @@ def _parse_dependencies(
         _parse_dependency(a, f"{prefix}dependencies.agents[{i}]")
         for i, a in enumerate(deps.get("agents") or [])
     ]
+    rules = [
+        _parse_dependency(r, f"{prefix}dependencies.rules[{i}]")
+        for i, r in enumerate(deps.get("rules") or [])
+    ]
     mcp = [
         _parse_mcp(m, f"{prefix}dependencies.mcp[{i}]")
         for i, m in enumerate(deps.get("mcp") or [])
     ]
-    return skills, commands, agents, mcp
+    return skills, commands, agents, rules, mcp
 
 
 def load_config(path: Path) -> AgpackConfig:
@@ -276,13 +283,14 @@ def load_config(path: Path) -> AgpackConfig:
     if not isinstance(deps, dict):
         raise ConfigError("'dependencies' must be a mapping")
 
-    skills, commands, agents, mcp = _parse_dependencies(deps)
+    skills, commands, agents, rules, mcp = _parse_dependencies(deps)
 
     return AgpackConfig(
         targets=targets,
         skills=skills,
         commands=commands,
         agents=agents,
+        rules=rules,
         mcp=mcp,
         use_global=use_global,
     )
@@ -337,12 +345,13 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
     if not isinstance(deps, dict):
         raise ConfigError("Global config 'dependencies' must be a mapping")
 
-    skills, commands, agents, mcp = _parse_dependencies(deps, prefix="global ")
+    skills, commands, agents, rules, mcp = _parse_dependencies(deps, prefix="global ")
 
     return GlobalConfig(
         skills=skills,
         commands=commands,
         agents=agents,
+        rules=rules,
         mcp=mcp,
         config_dir=path.parent,
     )
@@ -376,6 +385,7 @@ def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConf
     skills = _merge_deps(project.skills, global_cfg.skills)
     commands = _merge_deps(project.commands, global_cfg.commands)
     agents = _merge_deps(project.agents, global_cfg.agents)
+    rules = _merge_deps(project.rules, global_cfg.rules)
 
     # Merge MCP — project names take precedence
     mcp = list(project.mcp)
@@ -388,6 +398,7 @@ def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConf
         skills=skills,
         commands=commands,
         agents=agents,
+        rules=rules,
         mcp=mcp,
         use_global=project.use_global,
     )

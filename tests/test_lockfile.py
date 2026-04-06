@@ -455,13 +455,13 @@ class TestWriteLockfileAtomicFailure:
         lf = Lockfile()
 
         with (
-            patch("agpack.lockfile.os.replace", side_effect=OSError("disk full")),
+            patch("agpack.fileutil.os.replace", side_effect=OSError("disk full")),
             pytest.raises(OSError, match="disk full"),
         ):
             write_lockfile(tmp_path, lf)
 
         # No temp files should be left behind
-        leftover = list(tmp_path.glob(".agpack-lock-tmp-*"))
+        leftover = list(tmp_path.glob(".agpack-tmp-*"))
         assert leftover == []
 
         # The lockfile should not have been created

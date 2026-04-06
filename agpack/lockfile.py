@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC
@@ -14,6 +12,7 @@ from typing import Any
 import yaml
 
 from agpack import __version__
+from agpack.fileutil import atomic_write_text
 
 LOCKFILE_NAME = ".agpack.lock.yml"
 
@@ -25,7 +24,7 @@ class InstalledEntry:
     url: str
     path: str | None
     resolved_ref: str
-    type: str  # "skill", "command", "agent"
+    type: str  # "skill", "command", "agent", "rule"
     deployed_files: list[str] = field(default_factory=list)
 
     @property
@@ -136,19 +135,7 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
 
     path = project_root / LOCKFILE_NAME
     content = yaml.dump(data, default_flow_style=False, sort_keys=False)
-
-    # Atomic write
-    fd, tmp_path = tempfile.mkstemp(dir=project_root, prefix=".agpack-lock-tmp-")
-    try:
-        os.close(fd)
-        Path(tmp_path).write_text(content, encoding="utf-8")
-        os.replace(tmp_path, str(path))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(path, content)
 
 
 def find_removed_dependencies(

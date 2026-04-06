@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 # Recognised target names
 VALID_TARGETS = frozenset(
@@ -109,4 +110,33 @@ MCP_TARGETS: dict[str, McpTargetConfig] = {
         format="json",
         servers_key="mcpServers",
     ),
+}
+
+# ---------------------------------------------------------------------------
+# Rules
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RuleTargetConfig:
+    """Describes how a target consumes rule files."""
+
+    strategy: Literal["append", "file"]
+    """Either ``"append"`` (managed section in a shared file) or
+    ``"file"`` (one generated file per rule)."""
+
+    path: str
+    """For ``append`` targets: the path to the shared file (e.g. ``AGENTS.md``).
+    For ``file`` targets: the directory to place generated files in."""
+
+
+RULE_TARGETS: dict[str, RuleTargetConfig] = {
+    "claude": RuleTargetConfig(strategy="append", path="CLAUDE.md"),
+    "codex": RuleTargetConfig(strategy="append", path="AGENTS.md"),
+    "opencode": RuleTargetConfig(strategy="append", path="AGENTS.md"),
+    "copilot": RuleTargetConfig(strategy="append", path="AGENTS.md"),
+    "cursor": RuleTargetConfig(strategy="file", path=".cursor/rules"),
+    "windsurf": RuleTargetConfig(strategy="file", path=".windsurf/rules"),
+    "gemini": RuleTargetConfig(strategy="append", path=".gemini/GEMINI.md"),
+    "antigravity": RuleTargetConfig(strategy="append", path=".gemini/GEMINI.md"),
 }
