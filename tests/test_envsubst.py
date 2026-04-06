@@ -125,9 +125,7 @@ def test_resolve_config_from_dotenv(tmp_path: Path) -> None:
     assert config.mcp[0].env["API_KEY"] == "secret-from-dotenv"
 
 
-def test_resolve_config_from_shell(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_config_from_shell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHELL_VAR", "from-shell")
     server = McpServer(name="s", command="cmd", env={"KEY": "${SHELL_VAR}"})
     config = _make_config([server])
@@ -137,9 +135,7 @@ def test_resolve_config_from_shell(
     assert config.mcp[0].env["KEY"] == "from-shell"
 
 
-def test_resolve_config_dotenv_takes_precedence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_config_dotenv_takes_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MY_VAR", "from-shell")
     (tmp_path / ".env").write_text("MY_VAR=from-dotenv\n")
     server = McpServer(name="s", command="cmd", env={"V": "${MY_VAR}"})
@@ -172,9 +168,7 @@ def test_resolve_config_empty_mcp_list(tmp_path: Path) -> None:
     resolve_config(config, tmp_path)  # should not raise
 
 
-def test_resolve_config_multiple_servers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_config_multiple_servers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TOKEN_A", "aaa")
     monkeypatch.setenv("TOKEN_B", "bbb")
     servers = [
@@ -194,9 +188,7 @@ def test_resolve_config_multiple_servers(
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_dependency_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_dependency_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GH_ORG", "my-org")
     dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
     config = _make_config()
@@ -207,13 +199,9 @@ def test_resolve_dependency_url(
     assert config.skills[0].url == "https://github.com/my-org/repo"
 
 
-def test_resolve_dependency_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_dependency_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SKILL_NAME", "my-skill")
-    dep = DependencySource(
-        urls=["https://github.com/org/repo"], path="skills/${SKILL_NAME}"
-    )
+    dep = DependencySource(urls=["https://github.com/org/repo"], path="skills/${SKILL_NAME}")
     config = _make_config()
     config.skills = [dep]
 
@@ -222,9 +210,7 @@ def test_resolve_dependency_path(
     assert config.skills[0].path == "skills/my-skill"
 
 
-def test_resolve_dependency_ref(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_dependency_ref(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TAG", "v2.0")
     dep = DependencySource(urls=["https://github.com/org/repo"], ref="${TAG}")
     config = _make_config()
@@ -306,9 +292,7 @@ def test_resolve_mcp_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_three_tier_project_dotenv_wins(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_three_tier_project_dotenv_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Project .env takes highest priority."""
     monkeypatch.setenv("MY_VAR", "from-shell")
 
@@ -331,9 +315,7 @@ def test_three_tier_project_dotenv_wins(
     assert config.mcp[0].env["V"] == "from-project"
 
 
-def test_three_tier_global_dotenv_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_three_tier_global_dotenv_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Global .env used when project .env doesn't define the var."""
     monkeypatch.setenv("MY_VAR", "from-shell")
 
@@ -354,9 +336,7 @@ def test_three_tier_global_dotenv_fallback(
     assert config.mcp[0].env["V"] == "from-global"
 
 
-def test_three_tier_shell_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_three_tier_shell_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Shell env used when neither .env defines the var."""
     monkeypatch.setenv("MY_VAR", "from-shell")
 
@@ -377,9 +357,7 @@ def test_three_tier_shell_fallback(
     assert config.mcp[0].env["V"] == "from-shell"
 
 
-def test_three_tier_no_global_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_three_tier_no_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When no global config is provided, only project .env + shell are used."""
     monkeypatch.setenv("MY_VAR", "from-shell")
     (tmp_path / ".env").write_text("MY_VAR=from-project\n")

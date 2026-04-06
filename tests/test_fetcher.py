@@ -26,16 +26,12 @@ from agpack.fetcher import fetch_dependency
 
 def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
     """Return a successful CompletedProcess."""
-    return subprocess.CompletedProcess(
-        args=["git"], returncode=0, stdout=stdout, stderr=""
-    )
+    return subprocess.CompletedProcess(args=["git"], returncode=0, stdout=stdout, stderr="")
 
 
 def _fail(stderr: str = "error") -> subprocess.CompletedProcess[str]:
     """Return a failed CompletedProcess."""
-    return subprocess.CompletedProcess(
-        args=["git"], returncode=1, stdout="", stderr=stderr
-    )
+    return subprocess.CompletedProcess(args=["git"], returncode=1, stdout="", stderr=stderr)
 
 
 FAKE_SHA_FULL = "a" * 40
@@ -119,9 +115,7 @@ class TestFetchDependency:
         assert "main" in clone_args
 
     @patch("agpack.fetcher._run_git")
-    def test_clone_fails_raises_fetch_error(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_clone_fails_raises_fetch_error(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """When clone fails, FetchError is raised."""
         source = DependencySource(urls=["https://github.com/owner/repo"], ref="main")
 
@@ -134,13 +128,9 @@ class TestFetchDependency:
             fetch_dependency(source)
 
     @patch("agpack.fetcher._run_git")
-    def test_sparse_checkout_when_path_set(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_sparse_checkout_when_path_set(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """When source.path is set, sparse checkout is attempted."""
-        source = DependencySource(
-            urls=["https://github.com/owner/repo"], ref="main", path="skills/foo"
-        )
+        source = DependencySource(urls=["https://github.com/owner/repo"], ref="main", path="skills/foo")
 
         def side_effect(args: list[str], cwd=None):  # noqa: ARG001
             if args[0] == "clone":
@@ -170,20 +160,14 @@ class TestFetchDependency:
         assert "--filter=blob:none" in clone_args
 
         # Verify sparse-checkout set was called
-        sparse_calls = [
-            c for c in mock_git.call_args_list if c[0][0][0] == "sparse-checkout"
-        ]
+        sparse_calls = [c for c in mock_git.call_args_list if c[0][0][0] == "sparse-checkout"]
         assert len(sparse_calls) == 1
         assert sparse_calls[0][0][0] == ["sparse-checkout", "set", "skills/foo"]
 
     @patch("agpack.fetcher._run_git")
-    def test_sparse_checkout_fallback_to_full_clone(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_sparse_checkout_fallback_to_full_clone(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """When sparse checkout fails, a full clone is performed."""
-        source = DependencySource(
-            urls=["https://github.com/owner/repo"], ref="main", path="lib/bar"
-        )
+        source = DependencySource(urls=["https://github.com/owner/repo"], ref="main", path="lib/bar")
         clone_attempt = {"count": 0}
 
         def side_effect(args: list[str], cwd=None):  # noqa: ARG001
@@ -195,11 +179,10 @@ class TestFetchDependency:
                     # First clone (sparse) succeeds
                     clone_dir.mkdir(parents=True, exist_ok=True)
                     return _ok()
-                else:
-                    # Second clone (full) succeeds
-                    clone_dir.mkdir(parents=True, exist_ok=True)
-                    (clone_dir / "lib" / "bar").mkdir(parents=True, exist_ok=True)
-                    return _ok()
+                # Second clone (full) succeeds
+                clone_dir.mkdir(parents=True, exist_ok=True)
+                (clone_dir / "lib" / "bar").mkdir(parents=True, exist_ok=True)
+                return _ok()
 
             if args[0] == "sparse-checkout":
                 return _fail(stderr="sparse-checkout not supported")
@@ -264,20 +247,14 @@ class TestFetchDependency:
         assert len(fetch_calls) >= 1
         assert sha in fetch_calls[0][0][0]
 
-        checkout_calls = [
-            c for c in mock_git.call_args_list if c[0][0][0] == "checkout"
-        ]
+        checkout_calls = [c for c in mock_git.call_args_list if c[0][0][0] == "checkout"]
         assert len(checkout_calls) == 1
         assert sha in checkout_calls[0][0][0]
 
     @patch("agpack.fetcher._run_git")
-    def test_path_not_found_raises_fetch_error(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_path_not_found_raises_fetch_error(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """When source.path does not exist after clone, FetchError is raised."""
-        source = DependencySource(
-            urls=["https://github.com/owner/repo"], ref="main", path="does/not/exist"
-        )
+        source = DependencySource(urls=["https://github.com/owner/repo"], ref="main", path="does/not/exist")
 
         def side_effect(args: list[str], cwd=None):  # noqa: ARG001
             if args[0] == "clone":
@@ -299,9 +276,7 @@ class TestFetchDependency:
             fetch_dependency(source)
 
     @patch("agpack.fetcher._run_git")
-    def test_clone_dir_cleanup_on_fallback_url(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_clone_dir_cleanup_on_fallback_url(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """When a fallback URL is tried, the previous clone dir is cleaned up."""
         source = DependencySource(
             urls=["https://primary.com/repo", "https://fallback.com/repo"],
@@ -364,9 +339,7 @@ class TestCheckoutShaFallback:
         assert ["checkout", sha] in call_log
 
     @patch("agpack.fetcher._run_git")
-    def test_unshallow_fails_falls_back_to_fetch_origin(
-        self, mock_git: MagicMock
-    ) -> None:
+    def test_unshallow_fails_falls_back_to_fetch_origin(self, mock_git: MagicMock) -> None:
         """When unshallow fails (already full), falls back to fetch origin."""
         sha = "b" * 40
         call_log: list[list[str]] = []
@@ -444,9 +417,7 @@ class TestCleanupFetch:
         content_dir.mkdir(parents=True)
         (content_dir / "SKILL.md").write_text("hello")
 
-        source = DependencySource(
-            urls=["https://github.com/owner/repo"], path="skills/foo"
-        )
+        source = DependencySource(urls=["https://github.com/owner/repo"], path="skills/foo")
         result = FetchResult(
             source=source,
             local_path=content_dir,
@@ -533,9 +504,7 @@ class TestUrlFallback:
     """Tests for fallback URLs when the primary URL fails."""
 
     @patch("agpack.fetcher._run_git")
-    def test_primary_succeeds_no_fallback_tried(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_primary_succeeds_no_fallback_tried(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """When the primary URL works, fallback URLs are not attempted."""
         source = DependencySource(
             urls=["https://github.com/owner/repo", "git@github.com:owner/repo.git"],
@@ -564,9 +533,7 @@ class TestUrlFallback:
         assert "https://github.com/owner/repo" in clone_calls[0][0][0]
 
     @patch("agpack.fetcher._run_git")
-    def test_primary_fails_fallback_succeeds(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_primary_fails_fallback_succeeds(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """When the primary URL fails, the fallback URL is tried and succeeds."""
         source = DependencySource(
             urls=["https://github.com/owner/repo", "git@github.com:owner/repo.git"],
@@ -603,9 +570,7 @@ class TestUrlFallback:
         assert "git@github.com:owner/repo.git" in clone_calls[1][0][0]
 
     @patch("agpack.fetcher._run_git")
-    def test_all_urls_fail_raises_last_error(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_all_urls_fail_raises_last_error(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """When all URLs fail, the last FetchError is raised."""
         source = DependencySource(
             urls=["https://github.com/owner/repo", "git@github.com:owner/repo.git"],
@@ -621,9 +586,7 @@ class TestUrlFallback:
             fetch_dependency(source)
 
     @patch("agpack.fetcher._run_git")
-    def test_multiple_urls_tried_in_order(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_multiple_urls_tried_in_order(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """Multiple URLs are tried in order until one succeeds."""
         source = DependencySource(
             urls=[
@@ -683,9 +646,7 @@ class TestUrlFallback:
         assert len(clone_calls) == 1
 
     @patch("agpack.fetcher._run_git")
-    def test_fallback_with_sparse_checkout(
-        self, mock_git: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_fallback_with_sparse_checkout(self, mock_git: MagicMock, tmp_path: Path) -> None:
         """URL fallback works together with sparse checkout."""
         source = DependencySource(
             urls=["https://github.com/owner/repo", "git@github.com:owner/repo.git"],

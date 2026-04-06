@@ -227,11 +227,7 @@ class TestMergeIntoManagedSection:
         assert "## rule-a" in result
 
     def test_replace_existing_managed_section(self) -> None:
-        existing = (
-            "# Project\n\n"
-            f"{RULES_START_MARKER}\nold content\n{RULES_END_MARKER}\n\n"
-            "# Footer\n"
-        )
+        existing = f"# Project\n\n{RULES_START_MARKER}\nold content\n{RULES_END_MARKER}\n\n# Footer\n"
         result = merge_into_managed_section(existing, [("new-rule", "- New.")])
         assert "old content" not in result
         assert "## new-rule" in result
@@ -239,9 +235,7 @@ class TestMergeIntoManagedSection:
         assert result.count(RULES_START_MARKER) == 1
 
     def test_preserves_content_outside_markers(self) -> None:
-        existing = (
-            f"# Header\n\n{RULES_START_MARKER}\nold\n{RULES_END_MARKER}\n\n# Footer\n"
-        )
+        existing = f"# Header\n\n{RULES_START_MARKER}\nold\n{RULES_END_MARKER}\n\n# Footer\n"
         result = merge_into_managed_section(existing, [("rule", "- Content.")])
         assert "# Header" in result
         assert "# Footer" in result
@@ -249,12 +243,7 @@ class TestMergeIntoManagedSection:
 
 class TestRemoveManagedSection:
     def test_removes_section(self) -> None:
-        content = (
-            "# Header\n\n"
-            f"{RULES_START_MARKER}\n## rule\n- Content.\n"
-            f"{RULES_END_MARKER}\n\n"
-            "# Footer\n"
-        )
+        content = f"# Header\n\n{RULES_START_MARKER}\n## rule\n- Content.\n{RULES_END_MARKER}\n\n# Footer\n"
         result = remove_managed_section(content)
         assert RULES_START_MARKER not in result
         assert RULES_END_MARKER not in result
@@ -535,14 +524,10 @@ dependencies:
 
         project = AgpackConfig(
             targets=["claude"],
-            rules=[
-                DependencySource(urls=["https://github.com/a/b"], path="rules/proj")
-            ],
+            rules=[DependencySource(urls=["https://github.com/a/b"], path="rules/proj")],
         )
         global_cfg = GlobalConfig(
-            rules=[
-                DependencySource(urls=["https://github.com/c/d"], path="rules/global")
-            ],
+            rules=[DependencySource(urls=["https://github.com/c/d"], path="rules/global")],
         )
         merged = merge_configs(project, global_cfg)
         assert len(merged.rules) == 2
@@ -558,9 +543,7 @@ dependencies:
         dep = DependencySource(urls=["https://github.com/a/b"], path="rules/shared")
         project = AgpackConfig(targets=["claude"], rules=[dep])
         global_cfg = GlobalConfig(
-            rules=[
-                DependencySource(urls=["https://github.com/a/b"], path="rules/shared")
-            ],
+            rules=[DependencySource(urls=["https://github.com/a/b"], path="rules/shared")],
         )
         merged = merge_configs(project, global_cfg)
         assert len(merged.rules) == 1

@@ -33,8 +33,7 @@ def _find_asset_subfolders(path: Path) -> list[Path]:
     for item in sorted(path.iterdir()):
         if item.is_dir() and not item.name.startswith(".git"):
             has_files = any(
-                f.is_file()
-                and not any(p.startswith(".git") for p in f.relative_to(item).parts)
+                f.is_file() and not any(p.startswith(".git") for p in f.relative_to(item).parts)
                 for f in item.rglob("*")
             )
             if has_files:
@@ -44,11 +43,7 @@ def _find_asset_subfolders(path: Path) -> list[Path]:
 
 def _find_top_level_files(path: Path) -> list[Path]:
     """Return non-hidden files at the top level of a directory."""
-    return sorted(
-        item
-        for item in path.iterdir()
-        if item.is_file() and not item.name.startswith(".")
-    )
+    return sorted(item for item in path.iterdir() if item.is_file() and not item.name.startswith("."))
 
 
 # ---------------------------------------------------------------------------
@@ -61,8 +56,7 @@ def _list_tree_files(src_dir: Path) -> list[Path]:
     return sorted(
         f
         for f in src_dir.rglob("*")
-        if f.is_file()
-        and not any(part.startswith(".git") for part in f.relative_to(src_dir).parts)
+        if f.is_file() and not any(part.startswith(".git") for part in f.relative_to(src_dir).parts)
     )
 
 
@@ -87,9 +81,7 @@ def _copy_tree(src_dir: Path, dst_dir: Path, *, dry_run: bool = False) -> list[s
 # ---------------------------------------------------------------------------
 
 
-def detect_file_items(
-    fetch_result: FetchResult, asset_type: str
-) -> list[tuple[str, Path]]:
+def detect_file_items(fetch_result: FetchResult, asset_type: str) -> list[tuple[str, Path]]:
     """Return ``(name, path)`` pairs for file assets (commands, agents, rules)."""
     local_path = fetch_result.local_path
 

@@ -270,9 +270,7 @@ class TestDeployMultipleTargets:
 class TestDeployDryRun:
     def test_dry_run_does_not_create_files(self, tmp_path: Path) -> None:
         server = _stdio_server()
-        result = deploy_mcp_servers(
-            [server], ["claude", "codex"], tmp_path, dry_run=True
-        )
+        result = deploy_mcp_servers([server], ["claude", "codex"], tmp_path, dry_run=True)
 
         assert ".mcp.json" in result["my-server"]
         assert ".codex/config.toml" in result["my-server"]
@@ -406,8 +404,7 @@ class TestCleanupPreservesOthers:
         config_dir.mkdir()
         config_path = config_dir / "config.toml"
         config_path.write_text(
-            '[mcp_servers.keep-me]\ncommand = "keep"\n\n'
-            '[mcp_servers.remove-me]\ncommand = "bye"\n',
+            '[mcp_servers.keep-me]\ncommand = "keep"\n\n[mcp_servers.remove-me]\ncommand = "bye"\n',
             encoding="utf-8",
         )
 
@@ -489,9 +486,7 @@ class TestCopilotFormat:
 
 
 class TestOpencodeFormat:
-    def test_stdio_server_uses_local_type_and_array_command(
-        self, tmp_path: Path
-    ) -> None:
+    def test_stdio_server_uses_local_type_and_array_command(self, tmp_path: Path) -> None:
         server = _stdio_server(env={"API_KEY": "secret"})
         deploy_mcp_servers([server], ["opencode"], tmp_path)
 
@@ -627,9 +622,7 @@ class TestRemoveFromJsonFuzzyKeys:
 class TestRemoveFromTomlFuzzyKeys:
     def test_removes_server_under_mcp_servers_key(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
-        data = {
-            "mcp_servers": {"my-server": {"command": "npx"}, "keep": {"command": "y"}}
-        }
+        data = {"mcp_servers": {"my-server": {"command": "npx"}, "keep": {"command": "y"}}}
         config_path.write_text(tomli_w.dumps(data), encoding="utf-8")
 
         _remove_from_toml(config_path, "my-server", dry_run=False)

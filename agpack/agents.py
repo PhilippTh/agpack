@@ -24,6 +24,4 @@ def deploy_single_agent(
     verbose: bool,
 ) -> list[str]:
     """Deploy a single agent file to all applicable target directories."""
-    return deploy_single_file(
-        filename, file_path, targets, AGENT_DIRS, project_root, dry_run, verbose
-    )
+    return deploy_single_file(filename, file_path, targets, AGENT_DIRS, project_root, dry_run, verbose)

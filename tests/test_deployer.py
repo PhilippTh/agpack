@@ -50,9 +50,7 @@ def _make_file_fetch(
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text(content)
     return FetchResult(
-        source=DependencySource(
-            urls=[f"https://github.com/org/{source_name}"], path=source_name
-        ),
+        source=DependencySource(urls=[f"https://github.com/org/{source_name}"], path=source_name),
         local_path=src,
         resolved_ref="abc1234",
     )
@@ -141,9 +139,7 @@ class TestDeploySingleSkill:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_skill(n, p, ALL_TARGETS, project, False, False)
-            )
+            all_deployed.extend(deploy_single_skill(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
 
         from agpack.targets import SKILL_DIRS
 
@@ -170,9 +166,7 @@ class TestDeploySingleSkill:
             },
         )
         items = detect_skill_items(fr)
-        deployed = deploy_single_skill(
-            items[0][0], items[0][1], ["claude"], project, False, False
-        )
+        deployed = deploy_single_skill(items[0][0], items[0][1], ["claude"], project, dry_run=False, verbose=False)
 
         assert len(deployed) == 1
         assert deployed[0].endswith("SKILL.md")
@@ -186,7 +180,7 @@ class TestDeploySingleSkill:
         fr = _make_dir_fetch(tmp_path)
         items = detect_skill_items(fr)
 
-        deploy_single_skill(items[0][0], items[0][1], ["claude"], project, False, False)
+        deploy_single_skill(items[0][0], items[0][1], ["claude"], project, dry_run=False, verbose=False)
 
         assert (project / ".claude" / "skills" / "my-skill").is_dir()
 
@@ -198,9 +192,7 @@ class TestDeploySingleSkill:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_skill(n, p, ALL_TARGETS, project, True, False)
-            )
+            all_deployed.extend(deploy_single_skill(n, p, ALL_TARGETS, project, dry_run=True, verbose=False))
 
         assert len(all_deployed) > 0
         for rel in all_deployed:
@@ -209,9 +201,7 @@ class TestDeploySingleSkill:
     def test_skill_name_derived_from_source_path(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
-        source = DependencySource(
-            urls=["https://github.com/org/repo"], path="skills/custom-name"
-        )
+        source = DependencySource(urls=["https://github.com/org/repo"], path="skills/custom-name")
         src_dir = tmp_path / "src" / "custom-name"
         src_dir.mkdir(parents=True)
         (src_dir / "README.md").write_text("hi")
@@ -220,9 +210,7 @@ class TestDeploySingleSkill:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_skill(n, p, ["opencode"], project, False, False)
-            )
+            all_deployed.extend(deploy_single_skill(n, p, ["opencode"], project, dry_run=False, verbose=False))
 
         assert any("custom-name" in p for p in all_deployed)
         assert (project / ".opencode" / "skills" / "custom-name" / "README.md").exists()
@@ -236,9 +224,7 @@ class TestDeploySingleSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill(
-            "my-skill", skill_file, ["claude"], project, False, False
-        )
+        result = deploy_single_skill("my-skill", skill_file, ["claude"], project, dry_run=False, verbose=False)
 
         assert len(result) == 1
         deployed = project / result[0]
@@ -246,9 +232,7 @@ class TestDeploySingleSkill:
         assert deployed.read_text() == "# My Skill"
         assert "my-skill" in str(deployed)
 
-    def test_deploys_single_file_skill_to_multiple_targets(
-        self, tmp_path: Path
-    ) -> None:
+    def test_deploys_single_file_skill_to_multiple_targets(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
 
@@ -256,9 +240,7 @@ class TestDeploySingleSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill(
-            "my-skill", skill_file, ALL_TARGETS, project, False, False
-        )
+        result = deploy_single_skill("my-skill", skill_file, ALL_TARGETS, project, dry_run=False, verbose=False)
 
         from agpack.targets import SKILL_DIRS
 
@@ -274,9 +256,7 @@ class TestDeploySingleSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill(
-            "my-skill", skill_file, ["claude"], project, True, False
-        )
+        result = deploy_single_skill("my-skill", skill_file, ["claude"], project, dry_run=True, verbose=False)
 
         assert len(result) == 1
         assert not (project / result[0]).exists()
@@ -296,9 +276,7 @@ class TestDeploySingleCommand:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_command(n, p, ALL_TARGETS, project, False, False)
-            )
+            all_deployed.extend(deploy_single_command(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
 
         from agpack.targets import COMMAND_DIRS
 
@@ -316,9 +294,7 @@ class TestDeploySingleCommand:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_command(n, p, ["codex", "cursor"], project, False, False)
-            )
+            all_deployed.extend(deploy_single_command(n, p, ["codex", "cursor"], project, dry_run=False, verbose=False))
 
         assert all_deployed == []
 
@@ -330,9 +306,7 @@ class TestDeploySingleCommand:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_command(n, p, ["claude"], project, True, False)
-            )
+            all_deployed.extend(deploy_single_command(n, p, ["claude"], project, dry_run=True, verbose=False))
 
         assert len(all_deployed) == 1
         assert not (project / all_deployed[0]).exists()
@@ -352,9 +326,7 @@ class TestDeploySingleAgent:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_agent(n, p, ALL_TARGETS, project, False, False)
-            )
+            all_deployed.extend(deploy_single_agent(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
 
         from agpack.targets import AGENT_DIRS
 
@@ -372,9 +344,7 @@ class TestDeploySingleAgent:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_agent(n, p, ["codex"], project, False, False)
-            )
+            all_deployed.extend(deploy_single_agent(n, p, ["codex"], project, dry_run=False, verbose=False))
 
         assert all_deployed == []
 
@@ -386,9 +356,7 @@ class TestDeploySingleAgent:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_agent(n, p, ["claude", "cursor"], project, True, False)
-            )
+            all_deployed.extend(deploy_single_agent(n, p, ["claude", "cursor"], project, dry_run=True, verbose=False))
 
         assert len(all_deployed) == 2
         for rel in all_deployed:
@@ -409,9 +377,7 @@ class TestCleanupDeployedFiles:
         items = detect_skill_items(fr)
         deployed: list[str] = []
         for n, p in items:
-            deployed.extend(
-                deploy_single_skill(n, p, ["claude"], project, False, False)
-            )
+            deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         for rel in deployed:
             assert (project / rel).exists()
@@ -432,9 +398,7 @@ class TestCleanupDeployedFiles:
         items = detect_skill_items(fr)
         deployed: list[str] = []
         for n, p in items:
-            deployed.extend(
-                deploy_single_skill(n, p, ["claude"], project, False, False)
-            )
+            deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         extra = project / ".claude" / "skills" / "my-skill" / "KEEP.md"
         extra.write_text("keep me")
@@ -453,9 +417,7 @@ class TestCleanupDeployedFiles:
         items = detect_skill_items(fr)
         deployed: list[str] = []
         for n, p in items:
-            deployed.extend(
-                deploy_single_skill(n, p, ["claude"], project, False, False)
-            )
+            deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         cleanup_deployed_files(deployed, project, dry_run=True)
 
@@ -553,9 +515,7 @@ class TestDetectSkillItems:
         src = tmp_path / "src" / "empty"
         src.mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/empty"], path="empty"
-            ),
+            source=DependencySource(urls=["https://github.com/org/empty"], path="empty"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -568,9 +528,7 @@ class TestDetectSkillItems:
         (src / "empty-a").mkdir(parents=True)
         (src / "empty-b").mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/parent"], path="parent"
-            ),
+            source=DependencySource(urls=["https://github.com/org/parent"], path="parent"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -590,9 +548,7 @@ class TestDeploySkillFolderIntegration:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_skill(n, p, ["claude"], project, False, False)
-            )
+            all_deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         skill_a = project / ".claude" / "skills" / "skill-a" / "SKILL.md"
         skill_b = project / ".claude" / "skills" / "skill-b" / "SKILL.md"
@@ -611,9 +567,7 @@ class TestDeploySkillFolderIntegration:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_skill(n, p, ALL_TARGETS, project, False, False)
-            )
+            all_deployed.extend(deploy_single_skill(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
 
         from agpack.targets import SKILL_DIRS
 
@@ -630,9 +584,7 @@ class TestDeploySkillFolderIntegration:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_skill(n, p, ["claude"], project, True, False)
-            )
+            all_deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=True, verbose=False))
 
         assert len(all_deployed) == 3
         for rel in all_deployed:
@@ -679,9 +631,7 @@ class TestDetectCommandItems:
         src = tmp_path / "src" / "empty"
         src.mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/empty"], path="empty"
-            ),
+            source=DependencySource(urls=["https://github.com/org/empty"], path="empty"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -699,9 +649,7 @@ class TestDeployCommandFolderIntegration:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_command(n, p, ["claude"], project, False, False)
-            )
+            all_deployed.extend(deploy_single_command(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         assert (project / ".claude" / "commands" / "lint.md").exists()
         assert (project / ".claude" / "commands" / "format.md").exists()
@@ -724,9 +672,7 @@ class TestDeployCommandFolderIntegration:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_command(n, p, ["claude"], project, False, False)
-            )
+            all_deployed.extend(deploy_single_command(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         assert (project / ".claude" / "commands" / "lint.md").exists()
         assert (project / ".claude" / "commands" / "format.md").exists()
@@ -739,9 +685,7 @@ class TestDeployCommandFolderIntegration:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_command(n, p, ["claude"], project, True, False)
-            )
+            all_deployed.extend(deploy_single_command(n, p, ["claude"], project, dry_run=True, verbose=False))
 
         assert len(all_deployed) == 2
         for rel in all_deployed:
@@ -766,9 +710,7 @@ class TestDetectAgentItems:
         (src / "reviewer.md").write_text("# Reviewer")
         (src / "planner.md").write_text("# Planner")
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/agents"], path="agents"
-            ),
+            source=DependencySource(urls=["https://github.com/org/agents"], path="agents"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -781,9 +723,7 @@ class TestDetectAgentItems:
         (src / "group").mkdir(parents=True)
         (src / "group" / "reviewer.md").write_text("# Reviewer")
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/agents"], path="agents"
-            ),
+            source=DependencySource(urls=["https://github.com/org/agents"], path="agents"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -795,9 +735,7 @@ class TestDetectAgentItems:
         src = tmp_path / "src" / "empty"
         src.mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/empty"], path="empty"
-            ),
+            source=DependencySource(urls=["https://github.com/org/empty"], path="empty"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -815,9 +753,7 @@ class TestDeployAgentFolderIntegration:
         (src / "reviewer.md").write_text("# Reviewer")
         (src / "planner.md").write_text("# Planner")
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/agents"], path="agents"
-            ),
+            source=DependencySource(urls=["https://github.com/org/agents"], path="agents"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -825,9 +761,7 @@ class TestDeployAgentFolderIntegration:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_agent(n, p, ["claude"], project, False, False)
-            )
+            all_deployed.extend(deploy_single_agent(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         assert (project / ".claude" / "agents" / "reviewer.md").exists()
         assert (project / ".claude" / "agents" / "planner.md").exists()
@@ -839,9 +773,7 @@ class TestDeployAgentFolderIntegration:
         (src / "group").mkdir(parents=True)
         (src / "group" / "reviewer.md").write_text("# Reviewer")
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/agents"], path="agents"
-            ),
+            source=DependencySource(urls=["https://github.com/org/agents"], path="agents"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -849,8 +781,6 @@ class TestDeployAgentFolderIntegration:
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(
-                deploy_single_agent(n, p, ["claude"], project, False, False)
-            )
+            all_deployed.extend(deploy_single_agent(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         assert (project / ".claude" / "agents" / "reviewer.md").exists()

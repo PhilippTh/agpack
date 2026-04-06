@@ -40,9 +40,7 @@ def _is_sha(ref: str) -> bool:
     return bool(_SHA_RE.match(ref))
 
 
-def _run_git(
-    args: list[str], cwd: str | Path | None = None
-) -> subprocess.CompletedProcess[str]:
+def _run_git(args: list[str], cwd: str | Path | None = None) -> subprocess.CompletedProcess[str]:
     """Run a git command and return the result.
 
     The subprocess inherits the current environment with
@@ -53,8 +51,8 @@ def _run_git(
     """
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
-        return subprocess.run(
-            ["git", *args],
+        return subprocess.run(  # noqa: S603
+            ["git", *args],  # noqa: S607
             cwd=cwd,
             capture_output=True,
             text=True,

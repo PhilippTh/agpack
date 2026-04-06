@@ -63,8 +63,7 @@ def resolve_env_vars(value: str, env: dict[str, str], *, context: str = "") -> s
         except KeyError:
             hint = context + ": " if context else ""
             raise ConfigError(
-                f"{hint}environment variable '{var_name}' is not set. "
-                f"Define it in .env or your shell environment."
+                f"{hint}environment variable '{var_name}' is not set. Define it in .env or your shell environment."
             ) from None
 
     return _VAR_PATTERN.sub(_replace, value)
@@ -96,9 +95,7 @@ def _build_env(
         if global_dotenv:
             console.print(f"  Loaded {len(global_dotenv)} variable(s) from global .env")
         if project_dotenv:
-            console.print(
-                f"  Loaded {len(project_dotenv)} variable(s) from project .env"
-            )
+            console.print(f"  Loaded {len(project_dotenv)} variable(s) from project .env")
 
     return merged
 

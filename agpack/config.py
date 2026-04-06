@@ -135,9 +135,7 @@ def _parse_dependency(raw: dict[str, Any], context: str) -> DependencySource:
         context: Human-readable location for error messages (e.g. "skills[0]").
     """
     if not isinstance(raw, dict):
-        raise ConfigError(
-            f"{context}: expected an object with 'url' key, got {type(raw).__name__}"
-        )
+        raise ConfigError(f"{context}: expected an object with 'url' key, got {type(raw).__name__}")
 
     raw_url = raw.get("url")
     if raw_url is None:
@@ -176,17 +174,12 @@ def _parse_mcp(raw: dict[str, Any], context: str) -> McpServer:
 
     server_type = str(raw.get("type", "stdio"))
     if server_type not in ("stdio", "sse", "http"):
-        raise ConfigError(
-            f"{context}: 'type' must be 'stdio', 'sse', or 'http', got '{server_type}'"
-        )
+        raise ConfigError(f"{context}: 'type' must be 'stdio', 'sse', or 'http', got '{server_type}'")
 
     if server_type == "stdio":
         command = raw.get("command")
         if not command:
-            raise ConfigError(
-                f"{context}: stdio MCP server '{name}'"
-                " is missing required field 'command'"
-            )
+            raise ConfigError(f"{context}: stdio MCP server '{name}' is missing required field 'command'")
         return McpServer(
             name=name,
             type=server_type,
@@ -194,18 +187,14 @@ def _parse_mcp(raw: dict[str, Any], context: str) -> McpServer:
             args=[str(a) for a in raw.get("args", [])],
             env={str(k): str(v) for k, v in raw.get("env", {}).items()},
         )
-    else:
-        url = raw.get("url")
-        if not url:
-            raise ConfigError(
-                f"{context}: {server_type} MCP server '{name}'"
-                " is missing required field 'url'"
-            )
-        return McpServer(
-            name=name,
-            type=server_type,
-            url=str(url),
-        )
+    url = raw.get("url")
+    if not url:
+        raise ConfigError(f"{context}: {server_type} MCP server '{name}' is missing required field 'url'")
+    return McpServer(
+        name=name,
+        type=server_type,
+        url=str(url),
+    )
 
 
 def _parse_dependencies(
@@ -226,26 +215,13 @@ def _parse_dependencies(
     Returns:
         A tuple of (skills, commands, agents, rules, mcp).
     """
-    skills = [
-        _parse_dependency(s, f"{prefix}dependencies.skills[{i}]")
-        for i, s in enumerate(deps.get("skills") or [])
-    ]
+    skills = [_parse_dependency(s, f"{prefix}dependencies.skills[{i}]") for i, s in enumerate(deps.get("skills") or [])]
     commands = [
-        _parse_dependency(c, f"{prefix}dependencies.commands[{i}]")
-        for i, c in enumerate(deps.get("commands") or [])
+        _parse_dependency(c, f"{prefix}dependencies.commands[{i}]") for i, c in enumerate(deps.get("commands") or [])
     ]
-    agents = [
-        _parse_dependency(a, f"{prefix}dependencies.agents[{i}]")
-        for i, a in enumerate(deps.get("agents") or [])
-    ]
-    rules = [
-        _parse_dependency(r, f"{prefix}dependencies.rules[{i}]")
-        for i, r in enumerate(deps.get("rules") or [])
-    ]
-    mcp = [
-        _parse_mcp(m, f"{prefix}dependencies.mcp[{i}]")
-        for i, m in enumerate(deps.get("mcp") or [])
-    ]
+    agents = [_parse_dependency(a, f"{prefix}dependencies.agents[{i}]") for i, a in enumerate(deps.get("agents") or [])]
+    rules = [_parse_dependency(r, f"{prefix}dependencies.rules[{i}]") for i, r in enumerate(deps.get("rules") or [])]
+    mcp = [_parse_mcp(m, f"{prefix}dependencies.mcp[{i}]") for i, m in enumerate(deps.get("mcp") or [])]
     return skills, commands, agents, rules, mcp
 
 
@@ -279,9 +255,7 @@ def load_config(path: Path) -> AgpackConfig:
 
     for t in targets:
         if t not in VALID_TARGETS:
-            raise ConfigError(
-                f"Unrecognised target '{t}'. Valid targets: {sorted(VALID_TARGETS)}"
-            )
+            raise ConfigError(f"Unrecognised target '{t}'. Valid targets: {sorted(VALID_TARGETS)}")
 
     # Global config opt-out
     use_global = data.get("global", True)

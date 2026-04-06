@@ -24,6 +24,4 @@ def deploy_single_command(
     verbose: bool,
 ) -> list[str]:
     """Deploy a single command file to all applicable target directories."""
-    return deploy_single_file(
-        filename, file_path, targets, COMMAND_DIRS, project_root, dry_run, verbose
-    )
+    return deploy_single_file(filename, file_path, targets, COMMAND_DIRS, project_root, dry_run, verbose)

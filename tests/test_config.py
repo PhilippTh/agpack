@@ -359,9 +359,7 @@ def test_dependency_source_name_from_path() -> None:
 
 
 def test_dependency_source_name_from_path_trailing_slash() -> None:
-    dep = DependencySource(
-        urls=["https://github.com/org/repo"], path="skills/my-skill/"
-    )
+    dep = DependencySource(urls=["https://github.com/org/repo"], path="skills/my-skill/")
     assert dep.name == "my-skill"
 
 
@@ -629,21 +627,15 @@ def test_load_global_config_not_a_mapping(tmp_path: Path) -> None:
 
 def test_load_global_config_dependencies_not_a_mapping(tmp_path: Path) -> None:
     path = _write_global_config(tmp_path, "dependencies: [bad]\n")
-    with pytest.raises(
-        ConfigError, match="Global config 'dependencies' must be a mapping"
-    ):
+    with pytest.raises(ConfigError, match="Global config 'dependencies' must be a mapping"):
         load_global_config(path)
 
 
-def test_load_global_config_env_var_override(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_global_config_env_var_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     custom_dir = tmp_path / "custom"
     custom_dir.mkdir()
     custom_path = custom_dir / "my-global.yml"
-    custom_path.write_text(
-        "dependencies:\n  skills:\n    - url: https://example.com/repo\n"
-    )
+    custom_path.write_text("dependencies:\n  skills:\n    - url: https://example.com/repo\n")
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(custom_path))
 
     cfg = load_global_config()
@@ -652,9 +644,7 @@ def test_load_global_config_env_var_override(
     assert cfg.config_dir == custom_dir
 
 
-def test_load_global_config_env_var_nonexistent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_global_config_env_var_nonexistent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(tmp_path / "nope.yml"))
     assert load_global_config() is None
 
@@ -695,9 +685,7 @@ def test_merge_basic() -> None:
         skills=[DependencySource(urls=["https://github.com/a/b"], path="skills/proj")],
     )
     global_cfg = GlobalConfig(
-        skills=[
-            DependencySource(urls=["https://github.com/c/d"], path="skills/global")
-        ],
+        skills=[DependencySource(urls=["https://github.com/c/d"], path="skills/global")],
         commands=[DependencySource(urls=["https://github.com/e/f"])],
     )
     merged = merge_configs(project, global_cfg)
@@ -713,9 +701,7 @@ def test_merge_project_wins_on_duplicate_dep() -> None:
     dep = DependencySource(urls=["https://github.com/a/b"], path="skills/shared")
     project = _make_project_config(skills=[dep])
     global_cfg = GlobalConfig(
-        skills=[
-            DependencySource(urls=["https://github.com/a/b"], path="skills/shared")
-        ],
+        skills=[DependencySource(urls=["https://github.com/a/b"], path="skills/shared")],
     )
     merged = merge_configs(project, global_cfg)
 

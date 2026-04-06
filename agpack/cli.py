@@ -81,7 +81,7 @@ class SyncResult:
     verbose_lines: list[str] = field(default_factory=list)
 
 
-def _sync_resource_type(
+def _sync_resource_type(  # noqa: C901
     deps: list[DependencySource],
     detect_fn: _DetectFn,
     deploy_item_fn: _DeployItemFn,
@@ -134,9 +134,7 @@ def _sync_resource_type(
             cleanup_fetch(result)
         if not dry_run:
             write_lockfile(project_root, new_lockfile)
-        raise click.ClickException(
-            "\n".join([f"Failed to fetch {len(errors)} {resource_type}(s):"] + errors)
-        )
+        raise click.ClickException("\n".join([f"Failed to fetch {len(errors)} {resource_type}(s):"] + errors))
 
     # Phase 3: sequential deploy — update progress rows, collect verbose output
     sync = SyncResult()
@@ -150,9 +148,7 @@ def _sync_resource_type(
             cleanup_fetch(result)
             if not dry_run:
                 write_lockfile(project_root, new_lockfile)
-            raise click.ClickException(
-                f"Error deploying {resource_type} '{dep.name}': {exc}"
-            ) from exc
+            raise click.ClickException(f"Error deploying {resource_type} '{dep.name}': {exc}") from exc
 
         is_expanded = len(items) > 1
 
@@ -180,7 +176,7 @@ def _sync_resource_type(
                     config.targets,
                     project_root,
                     dry_run,
-                    False,
+                    False,  # noqa: FBT003
                 )
             except Exception as exc:
                 if is_expanded:
@@ -194,9 +190,7 @@ def _sync_resource_type(
                 cleanup_fetch(result)
                 if not dry_run:
                     write_lockfile(project_root, new_lockfile)
-                raise click.ClickException(
-                    f"Error deploying {resource_type} '{dep.name}': {exc}"
-                ) from exc
+                raise click.ClickException(f"Error deploying {resource_type} '{dep.name}': {exc}") from exc
 
             all_deployed.extend(files)
 
@@ -285,7 +279,7 @@ def main() -> None:
     is_flag=True,
     help="Ignore the global config file.",
 )
-def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> None:
+def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> None:  # noqa: C901
     """Fetch all dependencies and deploy to all target directories."""
     cfg_path = Path(config_path).resolve()
     project_root = cfg_path.parent
@@ -319,33 +313,21 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     current_mcp_names = {m.name for m in config.mcp}
 
     # 6. Clean up removed dependencies
-    removed_deps = [
-        e
-        for e in (old_lockfile.installed if old_lockfile else [])
-        if e.identity not in current_identities
-    ]
+    removed_deps = [e for e in (old_lockfile.installed if old_lockfile else []) if e.identity not in current_identities]
     removed_had_rules = False
     for entry in removed_deps:
         if verbose or dry_run:
             console.print(f"Removing {entry.type} '{entry.identity}'...")
         if entry.type == "rule":
             removed_had_rules = True
-        cleanup_deployed_files(
-            entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose
-        )
+        cleanup_deployed_files(entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose)
 
     # If all rules were removed, clean up managed sections from append targets
     if removed_had_rules and not config.rules:
-        cleanup_rule_append_targets(
-            config.targets, project_root, dry_run=dry_run, verbose=verbose
-        )
+        cleanup_rule_append_targets(config.targets, project_root, dry_run=dry_run, verbose=verbose)
 
     # 7. Clean up removed MCP servers
-    removed_mcp = [
-        e
-        for e in (old_lockfile.mcp if old_lockfile else [])
-        if e.name not in current_mcp_names
-    ]
+    removed_mcp = [e for e in (old_lockfile.mcp if old_lockfile else []) if e.name not in current_mcp_names]
     for mcp_entry in removed_mcp:
         if verbose or dry_run:
             console.print(f"Removing MCP server '{mcp_entry.name}'...")
@@ -391,9 +373,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             verbose,
         )
 
-    resource_types: list[
-        tuple[list[DependencySource], _DetectFn, _DeployItemFn, str]
-    ] = [
+    resource_types: list[tuple[list[DependencySource], _DetectFn, _DeployItemFn, str]] = [
         (config.skills, detect_skill_items, deploy_single_skill, "skill"),
         (config.commands, detect_command_items, deploy_single_command, "command"),
         (config.agents, detect_agent_items, deploy_single_agent, "agent"),
@@ -457,9 +437,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                 raise click.ClickException(str(exc)) from exc
 
         for server_name, target_paths in mcp_result.items():
-            new_lockfile.mcp.append(
-                McpLockEntry(name=server_name, targets=target_paths)
-            )
+            new_lockfile.mcp.append(McpLockEntry(name=server_name, targets=target_paths))
             mcp_count += 1
 
     # 9. Write lockfile
@@ -496,7 +474,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     is_flag=True,
     help="Ignore the global config file.",
 )
-def status(config_path: str, no_global: bool) -> None:
+def status(config_path: str, no_global: bool) -> None:  # noqa: C901
     """Show the current state of installed resources vs the config."""
     cfg_path = Path(config_path).resolve()
     project_root = cfg_path.parent

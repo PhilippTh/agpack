@@ -36,9 +36,7 @@ def _build_server_object(server: McpServer, target: str = "") -> dict[str, Any]:
         if server.env:
             obj["env"] = server.env
         return obj
-    else:
-        obj = {"url": server.url, "type": server.type}
-        return obj
+    return {"url": server.url, "type": server.type}
 
 
 def _build_opencode_server_object(server: McpServer) -> dict[str, Any]:
@@ -52,8 +50,7 @@ def _build_opencode_server_object(server: McpServer) -> dict[str, Any]:
         if server.env:
             obj["environment"] = server.env
         return obj
-    else:
-        return {"type": "remote", "url": server.url}
+    return {"type": "remote", "url": server.url}
 
 
 def _merge_json(
@@ -98,7 +95,7 @@ def _merge_toml(
     atomic_write_text(config_path, tomli_w.dumps(existing))
 
 
-def deploy_mcp_servers(
+def deploy_mcp_servers(  # noqa: C901
     mcp_servers: list[McpServer],
     targets: list[str],
     project_root: Path,
@@ -140,9 +137,7 @@ def deploy_mcp_servers(
             except DeployError:
                 raise
             except Exception as exc:
-                raise DeployError(
-                    f"Failed to write MCP config to {config_path}: {exc}"
-                ) from exc
+                raise DeployError(f"Failed to write MCP config to {config_path}: {exc}") from exc
 
             if verbose:
                 console.print(f"  MCP '{server.name}' → {rel_path}")
@@ -154,7 +149,7 @@ def deploy_mcp_servers(
     return result
 
 
-def cleanup_mcp_server(
+def cleanup_mcp_server(  # noqa: C901
     server_name: str,
     target_paths: list[str],
     project_root: Path,

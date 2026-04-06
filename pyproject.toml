@@ -34,33 +34,58 @@ Funding = "https://github.com/sponsors/PhilippTh"
 agpack = "agpack.cli:main"
 
 [tool.ruff]
-# Enable pycodestyle (`E`), Pyflakes (`F`), and import sorting (`I`)
-lint.select = ["E", "F", "I", "B", "C4", "ARG", "N", "COM", "UP", "W"]
-lint.ignore = ["B008", "COM812"]  # Ignore explicit function call in function decorator
-lint.fixable = ["ALL"]
-lint.unfixable = []
+line-length = 120
 
-# Same as Black
-line-length = 88
-indent-width = 4
+[tool.ruff.lint]
+fixable = ["ALL"]
+select = [
 
-# Assume Python 3.12
-target-version = "py312"
+  # Level 1
+  "E",    # pycodestyle
+  "F",    # pyflakes
+  "W",    # warnings
+  "C901", # McCabe
+  "I",    # isort
+  "N",    # pep8-naming
+  "UP",   # pyupgrade
 
-[tool.ruff.lint.isort]
-force-single-line = true
+  # Level 2
+  "B",   # flake8-bugbear (common bugs)
+  "S",   # bandit (security)
+  "C4",  # flake8-comprehensions
+  "SIM", # flake8-simplify
+  "ARG", # flake8-unused-arguments
+  "PTH", # flake8-use-pathlib
+  "RET", # flake8-return
+  "FBT", # flake8-boolean-trap
+
+  # Level 3
+  "PT",  # flake8-pytest-style (if you use pytest)
+  "G",   # flake8-logging-format
+  "ISC", # flake8-implicit-str-concat
+  "Q",   # flake8-quotes (consistent quote style)
+
+]
+ignore = [
+  "S101",   # Use of assert (common in tests)
+  "FBT001", # Boolean positional arg in function definition
+  "FBT002", # Boolean default arg in function definition
+]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "auto"
+docstring-code-format = true
 
-[tool.ruff.lint.pydocstyle]
-convention = "google"
+[tool.ruff.lint.isort]
+force-single-line = true
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # Ignore unused imports in __init__.py files
+"tests/*" = ["S105", "S106", "S108", "FBT003"]  # Ignore hardcoded passwords, tmp paths, boolean positional values in tests
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -77,13 +102,24 @@ dev = [
     "pytest>=9.0.2",
     "pytest-cov>=6.0",
     "diff-cover>=9.0",
-    "mypy>=1.15",
+    "mypy>=1.17.1",
     "types-PyYAML>=6.0",
-    "ruff>=0.15.7",
+    "ruff>=0.12.7",
 ]
 
+[tool.coverage.run]
+source = ["agpack"]
+branch = true
+omit = [
+  "*/tests/*",
+  "*/__init__.py",
+]
+
+[tool.coverage.report]
+# fail_under = 80  # Uncomment once the total coverage is above 80%
+exclude_lines = ["no cov", "if __name__ == .__main__.:", "if TYPE_CHECKING:"]
+
 [tool.mypy]
-python_version = "3.12"
 strict = true
-warn_return_any = true
-warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["tests"]

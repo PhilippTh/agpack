@@ -15,8 +15,8 @@ from agpack.cli import main
 
 def _run_git(args: list[str], cwd: Path) -> None:
     """Run a git command in a directory."""
-    result = subprocess.run(
-        ["git", *args],
+    result = subprocess.run(  # noqa: S603
+        ["git", *args],  # noqa: S607
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -387,9 +387,7 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
     assert "other-server" in mcp_data["mcpServers"]
 
     # Remove filesystem from config
-    config["dependencies"]["mcp"] = [
-        {"name": "other-server", "command": "node", "args": ["server.js"]}
-    ]
+    config["dependencies"]["mcp"] = [{"name": "other-server", "command": "node", "args": ["server.js"]}]
     config_path.write_text(yaml.dump(config, default_flow_style=False))
 
     # Re-sync
@@ -411,9 +409,7 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sync_with_global_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sync_with_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Global config dependencies are included in sync."""
     bare_repo = _create_bare_repo(tmp_path)
 
@@ -517,9 +513,7 @@ def test_sync_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert not (project_dir / ".claude/agents/backend-expert.md").exists()
 
 
-def test_sync_global_false_in_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sync_global_false_in_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """'global: false' in project config prevents global config from loading."""
     bare_repo = _create_bare_repo(tmp_path)
 
@@ -569,9 +563,7 @@ dependencies:
     assert not (project_dir / ".claude/agents/backend-expert.md").exists()
 
 
-def test_sync_global_mcp_merged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sync_global_mcp_merged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Global MCP servers are merged and deployed alongside project ones."""
     _create_bare_repo(tmp_path)
 
@@ -624,9 +616,7 @@ def test_sync_global_mcp_merged(
     assert "global-server" in mcp_data["mcpServers"]
 
 
-def test_sync_global_mcp_project_wins_duplicate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sync_global_mcp_project_wins_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When project and global define the same MCP server name, project wins."""
     _create_bare_repo(tmp_path)
 
@@ -702,9 +692,7 @@ def test_init_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert "\ntargets:" not in content
 
 
-def test_init_global_already_exists(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_init_global_already_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test 'agpack init --global' when file already exists."""
     global_path = tmp_path / "agpack.yml"
     global_path.write_text("existing content\n")
@@ -720,9 +708,7 @@ def test_init_global_already_exists(
     assert global_path.read_text() == "existing content\n"
 
 
-def test_status_with_global_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_status_with_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Status command includes global config dependencies."""
     bare_repo = _create_bare_repo(tmp_path)
 
