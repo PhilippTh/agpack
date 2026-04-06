@@ -11,7 +11,7 @@
 
 Declare your AI agent resources in a YAML file, run `agpack sync`, and they get deployed to every coding tool you use.
 
-agpack fetches skills, commands, agents, and MCP server configs from git repos and copies them to the right places for Claude Code, OpenCode, Codex, Cursor, and GitHub Copilot.
+agpack fetches skills, commands, agents, and MCP server configs from git repos and copies them to the right places for Claude Code, OpenCode, Codex, Cursor, GitHub Copilot, Gemini CLI, Windsurf, and Google Antigravity.
 
 ## Why
 
@@ -190,8 +190,11 @@ To skip the global config, either pass `--no-global` on the command line or add 
 | Codex | `.agents/skills/<name>/` | -- | -- | `.codex/config.toml` |
 | Cursor | `.cursor/skills/<name>/` | -- | `.cursor/agents/<file>` | `.cursor/mcp.json` |
 | Copilot | `.github/skills/<name>/` | `.github/prompts/<file>` | `.github/agents/<file>` | `.vscode/mcp.json` |
+| Gemini CLI | `.gemini/skills/<name>/` | `.gemini/commands/<file>` | -- | `.gemini/settings.json` |
+| Windsurf | `.windsurf/skills/<name>/` | -- | -- | -- *(global only)* |
+| Antigravity | `.gemini/skills/<name>/` | `.gemini/commands/<file>` | -- | `.gemini/settings.json` |
 
-Unsupported resource types are skipped silently. MCP definitions are merged into each tool's config file without touching servers agpack didn't create.
+Unsupported resource types are skipped silently. MCP definitions are merged into each tool's config file without touching servers agpack didn't create. Windsurf's MCP config is global (`~/.codeium/windsurf/mcp_config.json`) rather than per-project, so agpack does not manage it.
 
 ## Commands
 

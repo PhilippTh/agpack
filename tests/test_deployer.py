@@ -22,7 +22,16 @@ from agpack.fetcher import FetchResult
 # Helpers
 # ---------------------------------------------------------------------------
 
-ALL_TARGETS = ["claude", "opencode", "codex", "cursor", "copilot"]
+ALL_TARGETS = [
+    "claude",
+    "opencode",
+    "codex",
+    "cursor",
+    "copilot",
+    "gemini",
+    "windsurf",
+    "antigravity",
+]
 
 
 def _make_source(name: str = "my-skill") -> DependencySource:
