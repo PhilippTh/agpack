@@ -436,6 +436,7 @@ class TestServersKeyPerTarget:
             ("opencode", "opencode.json", "mcp"),
             ("cursor", ".cursor/mcp.json", "mcpServers"),
             ("copilot", ".vscode/mcp.json", "servers"),
+            ("gemini", ".gemini/settings.json", "mcpServers"),
         ],
     )
     def test_json_targets_use_correct_key(
@@ -526,7 +527,7 @@ class TestOpencodeFormat:
     def test_deploy_and_cleanup_roundtrip(self, tmp_path: Path) -> None:
         """Deploy to all targets then clean up – verify all files are cleaned."""
         server = _stdio_server()
-        targets = ["claude", "opencode", "cursor", "copilot", "codex"]
+        targets = ["claude", "opencode", "cursor", "copilot", "codex", "gemini"]
         result = deploy_mcp_servers([server], targets, tmp_path)
 
         cleanup_mcp_server(
@@ -542,6 +543,7 @@ class TestOpencodeFormat:
             ("opencode", "opencode.json"),
             ("cursor", ".cursor/mcp.json"),
             ("copilot", ".vscode/mcp.json"),
+            ("gemini", ".gemini/settings.json"),
         ]:
             cfg = _read_json(tmp_path / rel)
             for key in cfg.values():

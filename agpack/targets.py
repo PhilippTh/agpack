@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Recognised target names
-VALID_TARGETS = frozenset({"claude", "opencode", "codex", "cursor", "copilot"})
+VALID_TARGETS = frozenset(
+    {"claude", "opencode", "codex", "cursor", "copilot", "gemini", "windsurf"}
+)
 
 # ---------------------------------------------------------------------------
 # Skills
@@ -17,6 +19,8 @@ SKILL_DIRS: dict[str, str] = {
     "codex": ".agents/skills",
     "cursor": ".cursor/skills",
     "copilot": ".github/skills",
+    "gemini": ".gemini/skills",
+    "windsurf": ".windsurf/skills",
 }
 
 # ---------------------------------------------------------------------------
@@ -26,8 +30,9 @@ SKILL_DIRS: dict[str, str] = {
 COMMAND_DIRS: dict[str, str] = {
     "claude": ".claude/commands",
     "opencode": ".opencode/commands",
-    # codex and cursor do not support commands
+    # codex, cursor, and windsurf do not support commands
     "copilot": ".github/prompts",
+    "gemini": ".gemini/commands",
 }
 
 # ---------------------------------------------------------------------------
@@ -37,7 +42,7 @@ COMMAND_DIRS: dict[str, str] = {
 AGENT_DIRS: dict[str, str] = {
     "claude": ".claude/agents",
     "opencode": ".opencode/agents",
-    # codex does not support agents
+    # codex, gemini, and windsurf do not support agents
     "cursor": ".cursor/agents",
     "copilot": ".github/agents",
 }
@@ -81,5 +86,10 @@ MCP_TARGETS: dict[str, McpTargetConfig] = {
         config_path=".vscode/mcp.json",
         format="json",
         servers_key="servers",
+    ),
+    "gemini": McpTargetConfig(
+        config_path=".gemini/settings.json",
+        format="json",
+        servers_key="mcpServers",
     ),
 }
