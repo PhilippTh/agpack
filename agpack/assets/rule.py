@@ -1,4 +1,4 @@
-"""Rule detection, deployment, and cleanup.
+"""Rule asset handler and rule-specific logic.
 
 Owns all rule-related logic: frontmatter parsing, format generation,
 managed sections, and deployment I/O.
@@ -11,9 +11,9 @@ from pathlib import Path
 
 import yaml
 
-from agpack.deployer import detect_file_items
+from agpack.assets.base import AssetHandler
+from agpack.config import DependencySource
 from agpack.display import console
-from agpack.fetcher import FetchResult
 from agpack.fileutil import atomic_write_text
 from agpack.targets import RULE_TARGETS
 
@@ -47,20 +47,6 @@ def parse_rule_frontmatter(content: str) -> tuple[dict[str, object], str]:
         return {}, content
 
     return fm, body
-
-
-# ---------------------------------------------------------------------------
-# Detection
-# ---------------------------------------------------------------------------
-
-
-def detect_rule_items(fetch_result: FetchResult) -> list[tuple[str, Path]]:
-    """Return ``(name, path)`` pairs for rule items in a fetch result.
-
-    A single file is one rule; a directory expands to one rule per
-    non-hidden file.
-    """
-    return detect_file_items(fetch_result, "rule")
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +227,7 @@ def deploy_single_rule(
 ) -> list[str]:
     """Deploy a single rule to file-based targets (Cursor, Windsurf).
 
-    Append-based targets are handled separately by
-    :func:`deploy_rule_append_targets`.
+    Append-based targets are handled by :meth:`RuleHandler.finalize`.
 
     Returns:
         List of relative paths of deployed files.
@@ -364,3 +349,64 @@ def cleanup_rule_append_targets(
 
         if verbose:
             console.print(f"  cleaned managed section in {cfg.path}")
+
+
+# ---------------------------------------------------------------------------
+# Handler
+# ---------------------------------------------------------------------------
+
+
+class RuleHandler(AssetHandler):
+    """Handler for rule assets with two-phase deployment.
+
+    File-based targets (Cursor, Windsurf) receive individual files
+    during ``deploy_item``.  Append-based targets (CLAUDE.md, AGENTS.md,
+    GEMINI.md) are batch-written during ``finalize``.
+    """
+
+    resource_type = "rule"
+
+    def __init__(self, deps: list[DependencySource]) -> None:
+        super().__init__(deps)
+        self._collected_rule_bodies: list[tuple[str, str]] = []
+
+    def deploy_item(
+        self,
+        name: str,
+        path: Path,
+        targets: list[str],
+        project_root: Path,
+        dry_run: bool,
+        verbose: bool,
+    ) -> list[str]:
+        content = path.read_text(encoding="utf-8")
+        fm, body = parse_rule_frontmatter(content)
+        rule_name = get_rule_name(fm, name)
+        self._collected_rule_bodies.append((rule_name, body))
+        return deploy_single_rule(
+            rule_name,
+            fm,
+            body,
+            targets,
+            project_root,
+            dry_run,
+            verbose,
+        )
+
+    def finalize(
+        self,
+        targets: list[str],
+        project_root: Path,
+        dry_run: bool,
+        verbose: bool,
+    ) -> list[str]:
+        """Batch-write all collected rule bodies to append-based targets."""
+        if not self._collected_rule_bodies:
+            return []
+        return deploy_rule_append_targets(
+            self._collected_rule_bodies,
+            targets,
+            project_root,
+            dry_run=dry_run,
+            verbose=verbose,
+        )

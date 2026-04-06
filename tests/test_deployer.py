@@ -7,17 +7,18 @@ from unittest.mock import patch
 
 import pytest
 
-from agpack.agents import deploy_single_agent
-from agpack.agents import detect_agent_items
-from agpack.commands import deploy_single_command
-from agpack.commands import detect_command_items
+from agpack.assets import AgentHandler
+from agpack.assets import CommandHandler
+from agpack.assets import DeployError
+from agpack.assets import cleanup_deployed_files
+from agpack.assets import SkillHandler
 from agpack.config import DependencySource
-from agpack.deployer import DeployError
-from agpack.deployer import cleanup_deployed_files
 from agpack.fetcher import FetchResult
 from agpack.fileutil import atomic_copy_file
-from agpack.skills import deploy_single_skill
-from agpack.skills import detect_skill_items
+
+_skill_handler = SkillHandler([])
+_command_handler = CommandHandler([])
+_agent_handler = AgentHandler([])
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -133,13 +134,13 @@ class TestDeploySingleSkill:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_dir_fetch(tmp_path, name="my-skill")
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
         assert len(items) == 1
         name, path = items[0]
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_skill(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
+            all_deployed.extend(_skill_handler.deploy_item(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
 
         from agpack.targets import SKILL_DIRS
 
@@ -165,8 +166,10 @@ class TestDeploySingleSkill:
                 "sub/.gitkeep": "also skipped",
             },
         )
-        items = detect_skill_items(fr)
-        deployed = deploy_single_skill(items[0][0], items[0][1], ["claude"], project, dry_run=False, verbose=False)
+        items = _skill_handler.detect_items(fr)
+        deployed = _skill_handler.deploy_item(
+            items[0][0], items[0][1], ["claude"], project, dry_run=False, verbose=False
+        )
 
         assert len(deployed) == 1
         assert deployed[0].endswith("SKILL.md")
@@ -178,9 +181,9 @@ class TestDeploySingleSkill:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_dir_fetch(tmp_path)
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
 
-        deploy_single_skill(items[0][0], items[0][1], ["claude"], project, dry_run=False, verbose=False)
+        _skill_handler.deploy_item(items[0][0], items[0][1], ["claude"], project, dry_run=False, verbose=False)
 
         assert (project / ".claude" / "skills" / "my-skill").is_dir()
 
@@ -188,11 +191,11 @@ class TestDeploySingleSkill:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_dir_fetch(tmp_path)
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_skill(n, p, ALL_TARGETS, project, dry_run=True, verbose=False))
+            all_deployed.extend(_skill_handler.deploy_item(n, p, ALL_TARGETS, project, dry_run=True, verbose=False))
 
         assert len(all_deployed) > 0
         for rel in all_deployed:
@@ -206,11 +209,11 @@ class TestDeploySingleSkill:
         src_dir.mkdir(parents=True)
         (src_dir / "README.md").write_text("hi")
         fr = FetchResult(source=source, local_path=src_dir, resolved_ref="aaa")
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_skill(n, p, ["opencode"], project, dry_run=False, verbose=False))
+            all_deployed.extend(_skill_handler.deploy_item(n, p, ["opencode"], project, dry_run=False, verbose=False))
 
         assert any("custom-name" in p for p in all_deployed)
         assert (project / ".opencode" / "skills" / "custom-name" / "README.md").exists()
@@ -224,7 +227,7 @@ class TestDeploySingleSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill("my-skill", skill_file, ["claude"], project, dry_run=False, verbose=False)
+        result = _skill_handler.deploy_item("my-skill", skill_file, ["claude"], project, dry_run=False, verbose=False)
 
         assert len(result) == 1
         deployed = project / result[0]
@@ -240,7 +243,7 @@ class TestDeploySingleSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill("my-skill", skill_file, ALL_TARGETS, project, dry_run=False, verbose=False)
+        result = _skill_handler.deploy_item("my-skill", skill_file, ALL_TARGETS, project, dry_run=False, verbose=False)
 
         from agpack.targets import SKILL_DIRS
 
@@ -256,7 +259,7 @@ class TestDeploySingleSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill("my-skill", skill_file, ["claude"], project, dry_run=True, verbose=False)
+        result = _skill_handler.deploy_item("my-skill", skill_file, ["claude"], project, dry_run=True, verbose=False)
 
         assert len(result) == 1
         assert not (project / result[0]).exists()
@@ -272,11 +275,11 @@ class TestDeploySingleCommand:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="lint.md")
-        items = detect_command_items(fr)
+        items = _command_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_command(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
+            all_deployed.extend(_command_handler.deploy_item(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
 
         from agpack.targets import COMMAND_DIRS
 
@@ -290,11 +293,13 @@ class TestDeploySingleCommand:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="lint.md")
-        items = detect_command_items(fr)
+        items = _command_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_command(n, p, ["codex", "cursor"], project, dry_run=False, verbose=False))
+            all_deployed.extend(
+                _command_handler.deploy_item(n, p, ["codex", "cursor"], project, dry_run=False, verbose=False)
+            )
 
         assert all_deployed == []
 
@@ -302,11 +307,11 @@ class TestDeploySingleCommand:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="lint.md")
-        items = detect_command_items(fr)
+        items = _command_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_command(n, p, ["claude"], project, dry_run=True, verbose=False))
+            all_deployed.extend(_command_handler.deploy_item(n, p, ["claude"], project, dry_run=True, verbose=False))
 
         assert len(all_deployed) == 1
         assert not (project / all_deployed[0]).exists()
@@ -322,11 +327,11 @@ class TestDeploySingleAgent:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="reviewer.md")
-        items = detect_agent_items(fr)
+        items = _agent_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_agent(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
+            all_deployed.extend(_agent_handler.deploy_item(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
 
         from agpack.targets import AGENT_DIRS
 
@@ -340,11 +345,11 @@ class TestDeploySingleAgent:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="reviewer.md")
-        items = detect_agent_items(fr)
+        items = _agent_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_agent(n, p, ["codex"], project, dry_run=False, verbose=False))
+            all_deployed.extend(_agent_handler.deploy_item(n, p, ["codex"], project, dry_run=False, verbose=False))
 
         assert all_deployed == []
 
@@ -352,11 +357,13 @@ class TestDeploySingleAgent:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="reviewer.md")
-        items = detect_agent_items(fr)
+        items = _agent_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_agent(n, p, ["claude", "cursor"], project, dry_run=True, verbose=False))
+            all_deployed.extend(
+                _agent_handler.deploy_item(n, p, ["claude", "cursor"], project, dry_run=True, verbose=False)
+            )
 
         assert len(all_deployed) == 2
         for rel in all_deployed:
@@ -374,10 +381,10 @@ class TestCleanupDeployedFiles:
         project.mkdir()
 
         fr = _make_dir_fetch(tmp_path)
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
         deployed: list[str] = []
         for n, p in items:
-            deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=False, verbose=False))
+            deployed.extend(_skill_handler.deploy_item(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         for rel in deployed:
             assert (project / rel).exists()
@@ -395,10 +402,10 @@ class TestCleanupDeployedFiles:
         project.mkdir()
 
         fr = _make_dir_fetch(tmp_path)
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
         deployed: list[str] = []
         for n, p in items:
-            deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=False, verbose=False))
+            deployed.extend(_skill_handler.deploy_item(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         extra = project / ".claude" / "skills" / "my-skill" / "KEEP.md"
         extra.write_text("keep me")
@@ -414,10 +421,10 @@ class TestCleanupDeployedFiles:
         project.mkdir()
 
         fr = _make_dir_fetch(tmp_path)
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
         deployed: list[str] = []
         for n, p in items:
-            deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=False, verbose=False))
+            deployed.extend(_skill_handler.deploy_item(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         cleanup_deployed_files(deployed, project, dry_run=True)
 
@@ -497,7 +504,7 @@ class TestDetectSkillItems:
     def test_single_skill_directory(self, tmp_path: Path) -> None:
         """A directory with top-level files is detected as a single skill."""
         fr = _make_dir_fetch(tmp_path, name="my-skill")
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
 
         assert len(items) == 1
         assert items[0][0] == "my-skill"
@@ -505,7 +512,7 @@ class TestDetectSkillItems:
     def test_folder_of_skills(self, tmp_path: Path) -> None:
         """A directory with only subdirectories expands to one skill per subfolder."""
         fr = _make_folder_of_skills_fetch(tmp_path)
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
 
         assert len(items) == 2
         names = [n for n, _ in items]
@@ -521,7 +528,7 @@ class TestDetectSkillItems:
         )
 
         with pytest.raises(DeployError, match="does not contain any skill folders"):
-            detect_skill_items(fr)
+            _skill_handler.detect_items(fr)
 
     def test_errors_on_dir_with_only_empty_subdirs(self, tmp_path: Path) -> None:
         src = tmp_path / "src" / "parent"
@@ -534,21 +541,21 @@ class TestDetectSkillItems:
         )
 
         with pytest.raises(DeployError, match="does not contain any skill folders"):
-            detect_skill_items(fr)
+            _skill_handler.detect_items(fr)
 
 
 class TestDeploySkillFolderIntegration:
-    """Test detect + deploy_single_skill together for folder-of-skills."""
+    """Test detect + deploy_item together for folder-of-skills."""
 
     def test_deploys_each_subfolder_as_separate_skill(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_folder_of_skills_fetch(tmp_path)
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=False, verbose=False))
+            all_deployed.extend(_skill_handler.deploy_item(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         skill_a = project / ".claude" / "skills" / "skill-a" / "SKILL.md"
         skill_b = project / ".claude" / "skills" / "skill-b" / "SKILL.md"
@@ -563,11 +570,11 @@ class TestDeploySkillFolderIntegration:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_folder_of_skills_fetch(tmp_path)
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_skill(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
+            all_deployed.extend(_skill_handler.deploy_item(n, p, ALL_TARGETS, project, dry_run=False, verbose=False))
 
         from agpack.targets import SKILL_DIRS
 
@@ -580,11 +587,11 @@ class TestDeploySkillFolderIntegration:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_folder_of_skills_fetch(tmp_path)
-        items = detect_skill_items(fr)
+        items = _skill_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_skill(n, p, ["claude"], project, dry_run=True, verbose=False))
+            all_deployed.extend(_skill_handler.deploy_item(n, p, ["claude"], project, dry_run=True, verbose=False))
 
         assert len(all_deployed) == 3
         for rel in all_deployed:
@@ -599,13 +606,13 @@ class TestDeploySkillFolderIntegration:
 class TestDetectCommandItems:
     def test_single_file(self, tmp_path: Path) -> None:
         fr = _make_file_fetch(tmp_path, source_name="lint.md")
-        items = detect_command_items(fr)
+        items = _command_handler.detect_items(fr)
         assert len(items) == 1
         assert items[0][0] == "lint.md"
 
     def test_directory_of_files(self, tmp_path: Path) -> None:
         fr = _make_dir_command_fetch(tmp_path)
-        items = detect_command_items(fr)
+        items = _command_handler.detect_items(fr)
         assert len(items) == 2
         names = sorted(n for n, _ in items)
         assert names == ["format.md", "lint.md"]
@@ -623,7 +630,7 @@ class TestDetectCommandItems:
             resolved_ref="abc1234",
         )
 
-        items = detect_command_items(fr)
+        items = _command_handler.detect_items(fr)
         names = sorted(n for n, _ in items)
         assert names == ["format.md", "lint.md"]
 
@@ -637,7 +644,7 @@ class TestDetectCommandItems:
         )
 
         with pytest.raises(DeployError, match="does not contain any command files"):
-            detect_command_items(fr)
+            _command_handler.detect_items(fr)
 
 
 class TestDeployCommandFolderIntegration:
@@ -645,11 +652,11 @@ class TestDeployCommandFolderIntegration:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_dir_command_fetch(tmp_path)
-        items = detect_command_items(fr)
+        items = _command_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_command(n, p, ["claude"], project, dry_run=False, verbose=False))
+            all_deployed.extend(_command_handler.deploy_item(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         assert (project / ".claude" / "commands" / "lint.md").exists()
         assert (project / ".claude" / "commands" / "format.md").exists()
@@ -668,11 +675,11 @@ class TestDeployCommandFolderIntegration:
             local_path=src,
             resolved_ref="abc1234",
         )
-        items = detect_command_items(fr)
+        items = _command_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_command(n, p, ["claude"], project, dry_run=False, verbose=False))
+            all_deployed.extend(_command_handler.deploy_item(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         assert (project / ".claude" / "commands" / "lint.md").exists()
         assert (project / ".claude" / "commands" / "format.md").exists()
@@ -681,11 +688,11 @@ class TestDeployCommandFolderIntegration:
         project = tmp_path / "project"
         project.mkdir()
         fr = _make_dir_command_fetch(tmp_path)
-        items = detect_command_items(fr)
+        items = _command_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_command(n, p, ["claude"], project, dry_run=True, verbose=False))
+            all_deployed.extend(_command_handler.deploy_item(n, p, ["claude"], project, dry_run=True, verbose=False))
 
         assert len(all_deployed) == 2
         for rel in all_deployed:
@@ -700,7 +707,7 @@ class TestDeployCommandFolderIntegration:
 class TestDetectAgentItems:
     def test_single_file(self, tmp_path: Path) -> None:
         fr = _make_file_fetch(tmp_path, source_name="reviewer.md")
-        items = detect_agent_items(fr)
+        items = _agent_handler.detect_items(fr)
         assert len(items) == 1
         assert items[0][0] == "reviewer.md"
 
@@ -714,7 +721,7 @@ class TestDetectAgentItems:
             local_path=src,
             resolved_ref="abc1234",
         )
-        items = detect_agent_items(fr)
+        items = _agent_handler.detect_items(fr)
         names = sorted(n for n, _ in items)
         assert names == ["planner.md", "reviewer.md"]
 
@@ -727,7 +734,7 @@ class TestDetectAgentItems:
             local_path=src,
             resolved_ref="abc1234",
         )
-        items = detect_agent_items(fr)
+        items = _agent_handler.detect_items(fr)
         assert len(items) == 1
         assert items[0][0] == "reviewer.md"
 
@@ -741,7 +748,7 @@ class TestDetectAgentItems:
         )
 
         with pytest.raises(DeployError, match="does not contain any agent files"):
-            detect_agent_items(fr)
+            _agent_handler.detect_items(fr)
 
 
 class TestDeployAgentFolderIntegration:
@@ -757,11 +764,11 @@ class TestDeployAgentFolderIntegration:
             local_path=src,
             resolved_ref="abc1234",
         )
-        items = detect_agent_items(fr)
+        items = _agent_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_agent(n, p, ["claude"], project, dry_run=False, verbose=False))
+            all_deployed.extend(_agent_handler.deploy_item(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         assert (project / ".claude" / "agents" / "reviewer.md").exists()
         assert (project / ".claude" / "agents" / "planner.md").exists()
@@ -777,10 +784,10 @@ class TestDeployAgentFolderIntegration:
             local_path=src,
             resolved_ref="abc1234",
         )
-        items = detect_agent_items(fr)
+        items = _agent_handler.detect_items(fr)
 
         all_deployed: list[str] = []
         for n, p in items:
-            all_deployed.extend(deploy_single_agent(n, p, ["claude"], project, dry_run=False, verbose=False))
+            all_deployed.extend(_agent_handler.deploy_item(n, p, ["claude"], project, dry_run=False, verbose=False))
 
         assert (project / ".claude" / "agents" / "reviewer.md").exists()

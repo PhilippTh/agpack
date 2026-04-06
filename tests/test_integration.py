@@ -887,7 +887,7 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     def failing_detect(fetch_result):  # noqa: ARG001
         raise RuntimeError("detection failed")
 
-    with patch("agpack.cli.detect_command_items", side_effect=failing_detect):
+    with patch("agpack.assets.command.CommandHandler.detect_items", side_effect=failing_detect):
         result = runner.invoke(
             main,
             ["sync", "--config", str(config_path), "--no-global"],
@@ -908,7 +908,7 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     """When deploy_mcp_servers raises DeployError, partial lockfile is written."""
     from unittest.mock import patch
 
-    from agpack.deployer import DeployError
+    from agpack.assets import DeployError
 
     bare_repo = _create_bare_repo(tmp_path)
 

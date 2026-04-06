@@ -10,8 +10,8 @@ from unittest.mock import patch
 import pytest
 import tomli_w
 
+from agpack.assets import DeployError
 from agpack.config import McpServer
-from agpack.deployer import DeployError
 from agpack.fileutil import atomic_write_text
 from agpack.mcp import _merge_json
 from agpack.mcp import _merge_toml

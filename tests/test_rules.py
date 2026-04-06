@@ -6,19 +6,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agpack.rules import RULES_END_MARKER
-from agpack.rules import RULES_START_MARKER
-from agpack.rules import build_managed_section
-from agpack.rules import cleanup_rule_append_targets
-from agpack.rules import deploy_rule_append_targets
-from agpack.rules import deploy_single_rule
-from agpack.rules import detect_rule_items
-from agpack.rules import generate_mdc
-from agpack.rules import get_rule_name
-from agpack.rules import merge_into_managed_section
-from agpack.rules import normalize_frontmatter_for_cursor
-from agpack.rules import parse_rule_frontmatter
-from agpack.rules import remove_managed_section
+from agpack.assets.rule import RULES_END_MARKER
+from agpack.assets.rule import RULES_START_MARKER
+from agpack.assets.rule import RuleHandler
+from agpack.assets.rule import build_managed_section
+from agpack.assets.rule import cleanup_rule_append_targets
+from agpack.assets.rule import deploy_rule_append_targets
+from agpack.assets.rule import deploy_single_rule
+from agpack.assets.rule import generate_mdc
+from agpack.assets.rule import get_rule_name
+from agpack.assets.rule import merge_into_managed_section
+from agpack.assets.rule import normalize_frontmatter_for_cursor
+from agpack.assets.rule import parse_rule_frontmatter
+from agpack.assets.rule import remove_managed_section
 
 # ---------------------------------------------------------------------------
 # parse_rule_frontmatter
@@ -570,7 +570,7 @@ class TestDetectRuleItems:
             local_path=src,
             resolved_ref="abc1234",
         )
-        items = detect_rule_items(fr)
+        items = RuleHandler([]).detect_items(fr)
         assert len(items) == 1
         assert items[0][0] == "my-rule.md"
 
@@ -587,7 +587,7 @@ class TestDetectRuleItems:
             local_path=src,
             resolved_ref="abc1234",
         )
-        items = detect_rule_items(fr)
+        items = RuleHandler([]).detect_items(fr)
         assert len(items) == 2
         names = {name for name, _ in items}
         assert "ts.md" in names

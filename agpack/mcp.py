@@ -9,8 +9,8 @@ from typing import Any
 
 import tomli_w
 
+from agpack.assets import DeployError
 from agpack.config import McpServer
-from agpack.deployer import DeployError
 from agpack.display import console
 from agpack.fileutil import atomic_write_text
 from agpack.targets import MCP_TARGETS

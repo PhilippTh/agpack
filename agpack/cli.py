@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from dataclasses import dataclass
@@ -17,10 +16,14 @@ from rich.rule import Rule
 from rich.table import Table
 
 from agpack import __version__
-from agpack.agents import deploy_single_agent
-from agpack.agents import detect_agent_items
-from agpack.commands import deploy_single_command
-from agpack.commands import detect_command_items
+from agpack.assets import AgentHandler
+from agpack.assets import CommandHandler
+from agpack.assets import DeployError
+from agpack.assets import RuleHandler
+from agpack.assets import SkillHandler
+from agpack.assets import cleanup_deployed_files
+from agpack.assets import cleanup_rule_append_targets
+from agpack.assets.base import AssetHandler
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
 from agpack.config import DependencySource
@@ -28,8 +31,6 @@ from agpack.config import GlobalConfig
 from agpack.config import load_config
 from agpack.config import load_global_config
 from agpack.config import merge_configs
-from agpack.deployer import DeployError
-from agpack.deployer import cleanup_deployed_files
 from agpack.display import console
 from agpack.display import create_sync_progress
 from agpack.envsubst import resolve_config
@@ -44,20 +45,8 @@ from agpack.lockfile import read_lockfile
 from agpack.lockfile import write_lockfile
 from agpack.mcp import cleanup_mcp_server
 from agpack.mcp import deploy_mcp_servers
-from agpack.rules import cleanup_rule_append_targets
-from agpack.rules import deploy_rule_append_targets
-from agpack.rules import deploy_single_rule
-from agpack.rules import detect_rule_items
-from agpack.rules import get_rule_name
-from agpack.rules import parse_rule_frontmatter
-from agpack.skills import deploy_single_skill
-from agpack.skills import detect_skill_items
 
 _MAX_FETCH_WORKERS = 8
-
-# Type aliases for the callback signatures used by _sync_resource_type
-_DetectFn = Callable[[FetchResult], list[tuple[str, Path]]]
-_DeployItemFn = Callable[[str, Path, list[str], Path, bool, bool], list[str]]
 
 
 def _source_file_count(deployed: list[str]) -> int:
@@ -82,10 +71,7 @@ class SyncResult:
 
 
 def _sync_resource_type(  # noqa: C901
-    deps: list[DependencySource],
-    detect_fn: _DetectFn,
-    deploy_item_fn: _DeployItemFn,
-    resource_type: str,
+    handler: AssetHandler,
     config: AgpackConfig,
     project_root: Path,
     new_lockfile: Lockfile,
@@ -99,6 +85,9 @@ def _sync_resource_type(  # noqa: C901
     On error, writes a partial lockfile (with what has been synced so far)
     before raising ClickException.
     """
+    deps = handler.deps
+    resource_type = handler.resource_type
+
     if not deps:
         return SyncResult()
 
@@ -142,7 +131,7 @@ def _sync_resource_type(  # noqa: C901
         tid = task_ids[dep.identity]
 
         try:
-            items = detect_fn(result)
+            items = handler.detect_items(result)
         except Exception as exc:
             progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
             cleanup_fetch(result)
@@ -170,13 +159,13 @@ def _sync_resource_type(  # noqa: C901
         all_deployed: list[str] = []
         for idx, (item_name, item_path) in enumerate(items):
             try:
-                files = deploy_item_fn(
+                files = handler.deploy_item(
                     item_name,
                     item_path,
                     config.targets,
                     project_root,
-                    dry_run,
-                    False,  # noqa: FBT003
+                    dry_run=dry_run,
+                    verbose=False,
                 )
             except Exception as exc:
                 if is_expanded:
@@ -344,56 +333,19 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
 
-    # Rules have a two-phase deploy: file-based targets (Cursor, Windsurf)
-    # deploy per-item, but append targets (CLAUDE.md, AGENTS.md, GEMINI.md)
-    # need all rule bodies collected first so they can be written in one
-    # managed section.  This closure bridges _sync_resource_type's per-item
-    # callback with the batch append step that runs after the loop.
-    collected_rule_bodies: list[tuple[str, str]] = []
-
-    def _deploy_rule_item(
-        filename: str,
-        file_path: Path,
-        targets: list[str],
-        project_root: Path,
-        dry_run: bool,
-        verbose: bool,
-    ) -> list[str]:
-        content = file_path.read_text(encoding="utf-8")
-        fm, body = parse_rule_frontmatter(content)
-        name = get_rule_name(fm, filename)
-        collected_rule_bodies.append((name, body))
-        return deploy_single_rule(
-            name,
-            fm,
-            body,
-            targets,
-            project_root,
-            dry_run,
-            verbose,
-        )
-
-    resource_types: list[tuple[list[DependencySource], _DetectFn, _DeployItemFn, str]] = [
-        (config.skills, detect_skill_items, deploy_single_skill, "skill"),
-        (config.commands, detect_command_items, deploy_single_command, "command"),
-        (config.agents, detect_agent_items, deploy_single_agent, "agent"),
-        (
-            config.rules,
-            detect_rule_items,
-            _deploy_rule_item,
-            "rule",
-        ),
+    handlers: list[AssetHandler] = [
+        SkillHandler(config.skills),
+        CommandHandler(config.commands),
+        AgentHandler(config.agents),
+        RuleHandler(config.rules),
     ]
 
     all_verbose_lines: list[str] = []
 
     with create_sync_progress() as progress:
-        for deps, detect_fn, deploy_item_fn, resource_type in resource_types:
+        for handler in handlers:
             sync = _sync_resource_type(
-                deps,
-                detect_fn,
-                deploy_item_fn,
-                resource_type,
+                handler,
                 config,
                 project_root,
                 new_lockfile,
@@ -401,23 +353,22 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                 dry_run=dry_run,
                 verbose=verbose,
             )
-            counts[resource_type] = sync.count
+            counts[handler.resource_type] = sync.count
             all_verbose_lines.extend(sync.verbose_lines)
 
     for line in all_verbose_lines:
         console.print(line)
 
-    # Rules post-step: batch-deploy all collected rule bodies to append targets
-    if collected_rule_bodies:
-        append_deployed = deploy_rule_append_targets(
-            collected_rule_bodies,
+    # Post-deploy hooks (e.g. rules batch-write to append targets)
+    for handler in handlers:
+        finalize_deployed = handler.finalize(
             config.targets,
             project_root,
             dry_run=dry_run,
             verbose=verbose,
         )
-        if verbose:
-            all_verbose_lines.extend(f"  {p}" for p in append_deployed)
+        if verbose and finalize_deployed:
+            all_verbose_lines.extend(f"  {p}" for p in finalize_deployed)
 
     # MCP servers
     mcp_count = 0
