@@ -25,7 +25,7 @@ class InstalledEntry:
     url: str
     path: str | None
     resolved_ref: str
-    type: str  # "skill", "command", "agent", "rule"
+    type: str  # "skill", "command", "agent", "rule", "ignore"
     deployed_files: list[str] = field(default_factory=list)
 
     @property

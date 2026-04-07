@@ -15,21 +15,14 @@ import tomli_w
 
 from agpack.display import console
 from agpack.fileutil import atomic_write_text
+from agpack.targets import IGNORE_FILES
 from agpack.targets import MCP_TARGETS
 from agpack.targets import RULE_TARGETS
 from agpack.targets import McpTargetConfig
-
-# ---------------------------------------------------------------------------
-# Managed-section markers (must match writer.py)
-# ---------------------------------------------------------------------------
-
-RULES_START_MARKER = "<!-- agpack-managed-rules-start -->"
-RULES_END_MARKER = "<!-- agpack-managed-rules-end -->"
-
-_MANAGED_SECTION_RE = re.compile(
-    re.escape(RULES_START_MARKER) + r".*?" + re.escape(RULES_END_MARKER),
-    re.DOTALL,
-)
+from agpack.writer import IGNORE_START_MARKER
+from agpack.writer import IGNORE_END_MARKER
+from agpack.writer import RULES_START_MARKER
+from agpack.writer import RULES_END_MARKER
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +72,12 @@ def _cleanup_empty_dirs(deployed_files: list[str], project_root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+_MANAGED_SECTION_RE = re.compile(
+    re.escape(RULES_START_MARKER) + r".*?" + re.escape(RULES_END_MARKER),
+    re.DOTALL,
+)
+
+
 def _remove_managed_section(content: str) -> str:
     """Remove the managed section from file content."""
     result = _MANAGED_SECTION_RE.sub("", content)
@@ -121,6 +120,60 @@ def cleanup_rule_append_targets(
 
         if verbose:
             console.print(f"  cleaned managed section in {cfg.path}")
+
+
+# ---------------------------------------------------------------------------
+# Ignore file cleanup
+# ---------------------------------------------------------------------------
+
+_IGNORE_SECTION_RE = re.compile(
+    re.escape(IGNORE_START_MARKER) + r".*?" + re.escape(IGNORE_END_MARKER),
+    re.DOTALL,
+)
+
+
+def _remove_ignore_section(content: str) -> str:
+    """Remove the managed ignore section from file content."""
+    result = _IGNORE_SECTION_RE.sub("", content)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.rstrip("\n") + "\n" if result.strip() else ""
+
+
+def cleanup_ignore_files(
+    targets: list[str],
+    project_root: Path,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> None:
+    """Remove managed ignore sections from all target ignore files.
+
+    Called when all ignore dependencies have been removed.
+    """
+    seen_paths: set[str] = set()
+
+    for target in targets:
+        ignore_file = IGNORE_FILES.get(target)
+        if ignore_file is None:
+            continue
+        if ignore_file in seen_paths:
+            continue
+        seen_paths.add(ignore_file)
+
+        target_path = project_root / ignore_file
+        if not target_path.exists():
+            continue
+
+        if dry_run:
+            if verbose:
+                console.print(f"  [dry-run] clean managed section in {ignore_file}")
+            continue
+
+        content = target_path.read_text(encoding="utf-8")
+        cleaned = _remove_ignore_section(content)
+        atomic_write_text(target_path, cleaned if cleaned else "")
+
+        if verbose:
+            console.print(f"  cleaned managed section in {ignore_file}")
 
 
 # ---------------------------------------------------------------------------

@@ -348,6 +348,7 @@ def test_empty_dependencies(tmp_path: Path) -> None:
     assert cfg.skills == []
     assert cfg.commands == []
     assert cfg.agents == []
+    assert cfg.ignores == []
     assert cfg.mcp == []
 
 
@@ -356,6 +357,7 @@ def test_no_dependencies_key(tmp_path: Path) -> None:
     assert cfg.skills == []
     assert cfg.commands == []
     assert cfg.agents == []
+    assert cfg.ignores == []
     assert cfg.mcp == []
 
 

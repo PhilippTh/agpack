@@ -18,6 +18,7 @@ from rich.table import Table
 
 from agpack import __version__
 from agpack.cleanup import cleanup_deployed_files
+from agpack.cleanup import cleanup_ignore_files
 from agpack.cleanup import cleanup_mcp_server
 from agpack.cleanup import cleanup_rule_append_targets
 from agpack.config import AgpackConfig
@@ -38,6 +39,8 @@ from agpack.lockfile import write_lockfile
 from agpack.resolvers import ResolveError
 from agpack.resolvers import resolve_agents
 from agpack.resolvers import resolve_commands
+from agpack.resolvers import resolve_ignores
+from agpack.resolvers import resolve_ignores_append
 from agpack.resolvers import resolve_mcp
 from agpack.resolvers import resolve_rules
 from agpack.resolvers import resolve_rules_append
@@ -94,6 +97,7 @@ def _fetch_and_resolve(  # noqa: C901
     dry_run: bool,
     verbose: bool,
     all_rule_bodies: list[tuple[str, str]] | None = None,
+    all_ignore_patterns: list[str] | None = None,
 ) -> int:
     """Fetch, resolve, and write dependencies of a single resource type.
 
@@ -151,6 +155,10 @@ def _fetch_and_resolve(  # noqa: C901
                 all_rule_bodies.extend(bodies)
                 # Count items by number of rule bodies (one per detected rule file)
                 items_count = len(bodies)
+            elif resource_type == "ignore" and all_ignore_patterns is not None:
+                ops, patterns = resolve_ignores(result, config.targets)
+                all_ignore_patterns.extend(patterns)
+                items_count = len(patterns)
             else:
                 ops = resolve_fn(result, config.targets)
                 # Estimate items: for skills, count unique second-level paths;
@@ -331,7 +339,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
 
     # 5. Build set of current dependency identities
     current_identities: set[str] = set()
-    for dep in [*config.skills, *config.commands, *config.agents, *config.rules]:
+    for dep in [*config.skills, *config.commands, *config.agents, *config.rules, *config.ignores]:
         current_identities.add(dep.identity)
 
     current_mcp_names = {m.name for m in config.mcp}
@@ -339,16 +347,23 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     # 6. Clean up removed dependencies
     removed_deps = [e for e in (old_lockfile.installed if old_lockfile else []) if e.identity not in current_identities]
     removed_had_rules = False
+    removed_had_ignores = False
     for entry in removed_deps:
         if verbose or dry_run:
             console.print(f"Removing {entry.type} '{entry.identity}'...")
         if entry.type == "rule":
             removed_had_rules = True
+        if entry.type == "ignore":
+            removed_had_ignores = True
         cleanup_deployed_files(entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose)
 
     # If all rules were removed, clean up managed sections from append targets
     if removed_had_rules and not config.rules:
         cleanup_rule_append_targets(config.targets, project_root, dry_run=dry_run, verbose=verbose)
+
+    # If all ignores were removed, clean up managed sections from ignore files
+    if removed_had_ignores and not config.ignores:
+        cleanup_ignore_files(config.targets, project_root, dry_run=dry_run, verbose=verbose)
 
     # 7. Clean up removed MCP servers
     removed_mcp = [e for e in (old_lockfile.mcp if old_lockfile else []) if e.name not in current_mcp_names]
@@ -368,12 +383,14 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
     all_rule_bodies: list[tuple[str, str]] = []
+    all_ignore_patterns: list[str] = []
 
     resource_types: list[tuple[str, list[DependencySource]]] = [
         ("skill", config.skills),
         ("command", config.commands),
         ("agent", config.agents),
         ("rule", config.rules),
+        ("ignore", config.ignores),
     ]
 
     with create_sync_progress() as progress:
@@ -390,6 +407,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                 dry_run=dry_run,
                 verbose=verbose,
                 all_rule_bodies=all_rule_bodies if resource_type == "rule" else None,
+                all_ignore_patterns=all_ignore_patterns if resource_type == "ignore" else None,
             )
             counts[resource_type] = count
 
@@ -414,6 +432,28 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             for entry in reversed(new_lockfile.installed):
                 if entry.type == "rule":
                     entry.deployed_files.extend(append_deployed)
+                    break
+
+    # 9b. Write ignore files (same pattern as rules append)
+    if all_ignore_patterns:
+        ignore_ops = resolve_ignores_append(all_ignore_patterns, config.targets)
+        try:
+            ignore_deployed = execute_write_ops(
+                ignore_ops,
+                project_root,
+                dry_run=dry_run,
+                verbose=verbose,
+            )
+        except WriteError as exc:
+            if not dry_run:
+                write_lockfile(project_root, new_lockfile)
+            raise click.ClickException(str(exc)) from exc
+
+        # Track ignore file paths in the lockfile under the last ignore entry
+        if ignore_deployed and new_lockfile.installed:
+            for entry in reversed(new_lockfile.installed):
+                if entry.type == "ignore":
+                    entry.deployed_files.extend(ignore_deployed)
                     break
 
     # 10. MCP servers — now resolved uniformly into WriteOps
@@ -449,6 +489,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
         ("commands", "command"),
         ("agents", "agent"),
         ("rules", "rule"),
+        ("ignores", "ignore"),
     ]
     parts = [f"[bold]{counts.get(k, 0)}[/bold] {name}" for name, k in summary_items]
     parts.append(f"[bold]{mcp_count}[/bold] MCP servers")
@@ -524,6 +565,7 @@ def status(config_path: str, no_global: bool) -> None:  # noqa: C901
         ("Commands", config.commands),
         ("Agents", config.agents),
         ("Rules", config.rules),
+        ("Ignores", config.ignores),
     ]
     for label, deps in resource_sections:
         table = Table(
@@ -638,6 +680,11 @@ dependencies:
     # - url: https://github.com/owner/repo
     #   path: rules/my-rule.md
 
+  ignores:
+    # Shared ignore patterns available in all projects:
+    # - url: https://github.com/owner/repo
+    #   path: ignores/ai-security.ignore
+
   mcp:
     # Shared MCP servers available in all projects:
     # - name: my-server
@@ -695,6 +742,11 @@ dependencies:
     # Point to a single rule file or a directory of rule files:
     # - url: https://github.com/owner/repo
     #   path: rules/my-rule.md
+
+  ignores:
+    # Point to a file or directory of ignore pattern files:
+    # - url: https://github.com/owner/repo
+    #   path: ignores/ai-security.ignore
 
   mcp:
     # - name: my-server

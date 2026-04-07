@@ -25,7 +25,7 @@ DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
 
 # Dependency field names on AgpackConfig that hold list[DependencySource].
 # Used to drive parsing, merging, and env resolution generically.
-_DEP_FIELDS = ("skills", "commands", "agents", "rules")
+_DEP_FIELDS = ("skills", "commands", "agents", "rules", "ignores")
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -106,6 +106,7 @@ class AgpackConfig:
     commands: list[DependencySource] = field(default_factory=list)
     agents: list[DependencySource] = field(default_factory=list)
     rules: list[DependencySource] = field(default_factory=list)
+    ignores: list[DependencySource] = field(default_factory=list)
     mcp: list[McpServer] = field(default_factory=list)
     use_global: bool = True
 

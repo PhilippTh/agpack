@@ -20,11 +20,13 @@ from agpack.config import McpServer
 from agpack.fetcher import FetchResult
 from agpack.targets import AGENT_DIRS
 from agpack.targets import COMMAND_DIRS
+from agpack.targets import IGNORE_FILES
 from agpack.targets import MCP_TARGETS
 from agpack.targets import RULE_TARGETS
 from agpack.targets import SKILL_DIRS
 from agpack.writer import CopyFileOp
 from agpack.writer import CopyTreeOp
+from agpack.writer import IgnoreSectionOp
 from agpack.writer import ManagedSectionOp
 from agpack.writer import MergeJsonOp
 from agpack.writer import MergeTomlOp
@@ -353,6 +355,61 @@ def resolve_rules_append(
             continue
         seen.add(cfg.path)
         ops.append(ManagedSectionOp(entries=all_bodies, dst_rel=cfg.path))
+
+    return ops
+
+
+# ---------------------------------------------------------------------------
+# Ignore resolver
+# ---------------------------------------------------------------------------
+
+
+def resolve_ignores(
+    fetch_result: FetchResult,
+    targets: list[str],
+) -> tuple[list[WriteOp], list[str]]:
+    """Read ignore pattern content from a fetched source.
+
+    Returns:
+        A tuple of (write_ops, patterns) where write_ops is always empty
+        (ignore files are written via ``resolve_ignores_append``) and
+        patterns is a list of pattern strings to aggregate.
+    """
+    local_path = fetch_result.local_path
+    items = detect_single_file_items(fetch_result, "ignore")
+
+    patterns: list[str] = []
+    for _name, path in items:
+        content = path.read_text(encoding="utf-8").strip()
+        if content:
+            patterns.append(content)
+
+    return [], patterns
+
+
+def resolve_ignores_append(
+    all_patterns: list[str],
+    targets: list[str],
+) -> list[WriteOp]:
+    """Produce IgnoreSectionOps for all targets that have ignore files.
+
+    Deduplicates shared output files.
+    """
+    if not all_patterns:
+        return []
+
+    combined = "\n".join(all_patterns)
+    ops: list[WriteOp] = []
+    seen: set[str] = set()
+
+    for target in targets:
+        ignore_file = IGNORE_FILES.get(target)
+        if ignore_file is None:
+            continue
+        if ignore_file in seen:
+            continue
+        seen.add(ignore_file)
+        ops.append(IgnoreSectionOp(patterns=combined, dst_rel=ignore_file))
 
     return ops
 

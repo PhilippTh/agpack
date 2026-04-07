@@ -126,7 +126,7 @@ def test_full_sync_flow(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0, f"sync failed:\n{result.output}"
-    assert "1 skills, 1 commands, 1 agents, 0 rules, 1 MCP servers" in result.output
+    assert "1 skills, 1 commands, 1 agents, 0 rules, 0 ignores, 1 MCP servers" in result.output
 
     # Verify skill files
     for target_dir in [".claude/skills/my-skill", ".opencode/skills/my-skill"]:

@@ -130,6 +130,21 @@ class RuleTargetConfig:
     For ``file`` targets: the directory to place generated files in."""
 
 
+# ---------------------------------------------------------------------------
+# Ignore files
+# ---------------------------------------------------------------------------
+
+# Maps target name to the ignore file it uses.
+# Only targets with a dedicated tool-specific ignore file are listed.
+# Copilot and Codex use .gitignore which is skipped by default.
+# OpenCode and Gemini/Antigravity have no dedicated ignore file.
+IGNORE_FILES: dict[str, str] = {
+    "claude": ".claudeignore",
+    "cursor": ".cursorignore",
+    "windsurf": ".codeiumignore",
+}
+
+
 RULE_TARGETS: dict[str, RuleTargetConfig] = {
     "claude": RuleTargetConfig(strategy="append", path="CLAUDE.md"),
     "codex": RuleTargetConfig(strategy="append", path="AGENTS.md"),

@@ -72,6 +72,14 @@ class ManagedSectionOp:
 
 
 @dataclass(frozen=True)
+class IgnoreSectionOp:
+    """Merge ignore patterns into a managed section of an ignore file."""
+
+    patterns: str = ""  # newline-separated ignore patterns
+    dst_rel: str = ""  # relative to project_root
+
+
+@dataclass(frozen=True)
 class MergeJsonOp:
     """Merge a dict into a key of a JSON config file."""
 
@@ -89,7 +97,7 @@ class MergeTomlOp:
     key: str = ""  # top-level key to merge into
 
 
-WriteOp = CopyFileOp | CopyTreeOp | WriteTextOp | ManagedSectionOp | MergeJsonOp | MergeTomlOp
+WriteOp = CopyFileOp | CopyTreeOp | WriteTextOp | ManagedSectionOp | IgnoreSectionOp | MergeJsonOp | MergeTomlOp
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +171,54 @@ def remove_managed_section(content: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Ignore section logic
+# ---------------------------------------------------------------------------
+
+IGNORE_START_MARKER = "# agpack-managed-ignores-start"
+IGNORE_END_MARKER = "# agpack-managed-ignores-end"
+IGNORE_HEADER = "# DO NOT EDIT between these markers -- managed by agpack"
+
+_IGNORE_SECTION_RE = re.compile(
+    re.escape(IGNORE_START_MARKER) + r".*?" + re.escape(IGNORE_END_MARKER),
+    re.DOTALL,
+)
+
+
+def build_ignore_section(patterns: str) -> str:
+    """Build the full managed ignore section from pattern content."""
+    lines = [IGNORE_START_MARKER, IGNORE_HEADER]
+    stripped = patterns.strip()
+    if stripped:
+        lines.append(stripped)
+    lines.append(IGNORE_END_MARKER)
+    return "\n".join(lines)
+
+
+def merge_into_ignore_section(existing_content: str, patterns: str) -> str:
+    """Merge ignore patterns into a file's managed ignore section.
+
+    If the managed section already exists, it is replaced.
+    If not, the section is appended to the end of the file.
+    """
+    new_section = build_ignore_section(patterns)
+
+    if _IGNORE_SECTION_RE.search(existing_content):
+        return _IGNORE_SECTION_RE.sub(new_section, existing_content)
+
+    sep = "\n\n" if existing_content and not existing_content.endswith("\n\n") else ""
+    if existing_content and not existing_content.endswith("\n"):
+        sep = "\n\n"
+    return existing_content + sep + new_section + "\n"
+
+
+def remove_ignore_section(content: str) -> str:
+    """Remove the managed ignore section from file content."""
+    result = _IGNORE_SECTION_RE.sub("", content)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.rstrip("\n") + "\n" if result.strip() else ""
+
+
+# ---------------------------------------------------------------------------
 # Writer
 # ---------------------------------------------------------------------------
 
@@ -218,6 +274,19 @@ def execute_write_ops(
                     if target_path.exists():
                         existing = target_path.read_text(encoding="utf-8")
                     new_content = merge_into_managed_section(existing, entries)
+                    atomic_write_text(target_path, new_content)
+                deployed.append(dst_rel)
+                if verbose:
+                    prefix = "[dry-run]   " if dry_run else "  "
+                    console.print(f"{prefix}{dst_rel}")
+
+            case IgnoreSectionOp(patterns=patterns, dst_rel=dst_rel):
+                target_path = project_root / dst_rel
+                if not dry_run:
+                    existing = ""
+                    if target_path.exists():
+                        existing = target_path.read_text(encoding="utf-8")
+                    new_content = merge_into_ignore_section(existing, patterns)
                     atomic_write_text(target_path, new_content)
                 deployed.append(dst_rel)
                 if verbose:
