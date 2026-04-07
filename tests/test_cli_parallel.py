@@ -1,4 +1,4 @@
-"""Tests for parallel fetch behaviour in _sync_resource_type."""
+"""Tests for parallel fetch behaviour in _fetch_and_resolve."""
 
 from __future__ import annotations
 
@@ -10,15 +10,16 @@ from unittest.mock import patch
 import click
 import pytest
 
-from agpack.assets import AssetHandler
 from agpack.cli import _MAX_FETCH_WORKERS
-from agpack.cli import _sync_resource_type
+from agpack.cli import _fetch_and_resolve
 from agpack.config import AgpackConfig
 from agpack.config import DependencySource
 from agpack.display import create_sync_progress
 from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
 from agpack.lockfile import Lockfile
+from agpack.writer import CopyFileOp
+from agpack.writer import WriteOp
 
 
 def _make_dep(name: str) -> DependencySource:
@@ -28,7 +29,10 @@ def _make_dep(name: str) -> DependencySource:
 def _make_result(dep: DependencySource, tmp_path: Path) -> FetchResult:
     d = tmp_path / dep.name
     d.mkdir(exist_ok=True)
-    return FetchResult(source=dep, local_path=d, resolved_ref="abc1234", _tmpdir=d)
+    # Create a file so the resolver has something to detect
+    f = d / f"{dep.name}.md"
+    f.write_text("content")
+    return FetchResult(source=dep, local_path=f, resolved_ref="abc1234", _tmpdir=d)
 
 
 def _make_config(targets: list[str] | None = None) -> AgpackConfig:
@@ -37,25 +41,15 @@ def _make_config(targets: list[str] | None = None) -> AgpackConfig:
     )
 
 
-class FakeHandler(AssetHandler):
-    """Fake handler for testing _sync_resource_type."""
-
-    resource_type = "skill"
-
-    def detect_items(self, fetch_result: FetchResult) -> list[tuple[str, Path]]:
-        return [(fetch_result.source.name, fetch_result.local_path)]
-
-    def deploy_item(
-        self,
-        name: str,
-        path: Path,  # noqa: ARG002
-        targets: list[str],  # noqa: ARG002
-        project_root: Path,  # noqa: ARG002
-        *,
-        dry_run: bool,  # noqa: ARG002
-        verbose: bool,  # noqa: ARG002
-    ) -> list[str]:
-        return [f"{name}.md"]
+def _fake_resolver(fetch_result: FetchResult, targets: list[str]) -> list[WriteOp]:
+    """Simple resolver that produces one CopyFileOp per target."""
+    return [
+        CopyFileOp(
+            src=fetch_result.local_path,
+            dst_rel=f".claude/commands/{fetch_result.source.name}",
+        )
+        for _ in targets
+    ]
 
 
 class TestParallelFetchAllSucceed:
@@ -68,16 +62,16 @@ class TestParallelFetchAllSucceed:
         def fake_fetch(dep: DependencySource) -> FetchResult:
             return fake_results[dep.name]
 
-        handler = FakeHandler(deps)
-        handler.deploy_item = MagicMock(side_effect=handler.deploy_item)
-
         with (
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.cleanup_fetch"),
+            patch("agpack.cli.execute_write_ops", return_value=["a.md"]) as mock_write,
             create_sync_progress() as progress,
         ):
-            sync = _sync_resource_type(
-                handler,
+            count = _fetch_and_resolve(
+                deps,
+                "command",
+                _fake_resolver,
                 config,
                 tmp_path,
                 new_lockfile,
@@ -86,8 +80,8 @@ class TestParallelFetchAllSucceed:
                 verbose=False,
             )
 
-        assert sync.count == 3
-        assert handler.deploy_item.call_count == 3
+        assert count == 3
+        assert mock_write.call_count == 3
         assert len(new_lockfile.installed) == 3
 
     def test_lockfile_entries_added(self, tmp_path: Path) -> None:
@@ -95,15 +89,17 @@ class TestParallelFetchAllSucceed:
         fake_result = _make_result(deps[0], tmp_path)
         config = _make_config()
         new_lockfile = Lockfile()
-        handler = FakeHandler(deps)
 
         with (
             patch("agpack.cli.fetch_dependency", return_value=fake_result),
             patch("agpack.cli.cleanup_fetch"),
+            patch("agpack.cli.execute_write_ops", return_value=["x.md"]),
             create_sync_progress() as progress,
         ):
-            _sync_resource_type(
-                handler,
+            _fetch_and_resolve(
+                deps,
+                "command",
+                _fake_resolver,
                 config,
                 tmp_path,
                 new_lockfile,
@@ -125,18 +121,17 @@ class TestParallelFetchCollectAllErrors:
         def fake_fetch(dep: DependencySource) -> FetchResult:
             raise FetchError(f"failed {dep.name}")
 
-        handler = FakeHandler(deps)
-        handler.detect_items = MagicMock()
-        handler.deploy_item = MagicMock()
-
         with (
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.write_lockfile") as mock_write,
+            patch("agpack.cli.execute_write_ops") as mock_execute,
             create_sync_progress() as progress,
             pytest.raises(click.ClickException) as exc_info,
         ):
-            _sync_resource_type(
-                handler,
+            _fetch_and_resolve(
+                deps,
+                "skill",
+                _fake_resolver,
                 config,
                 tmp_path,
                 new_lockfile,
@@ -150,8 +145,7 @@ class TestParallelFetchCollectAllErrors:
         assert "failed b" in msg
         assert "failed c" in msg
         assert "3" in msg
-        handler.detect_items.assert_not_called()
-        handler.deploy_item.assert_not_called()
+        mock_execute.assert_not_called()
         mock_write.assert_called_once()
 
     def test_partial_failure_cleans_up_successes(self, tmp_path: Path) -> None:
@@ -164,8 +158,6 @@ class TestParallelFetchCollectAllErrors:
                 raise FetchError("boom")
             return fake_result
 
-        handler = FakeHandler(deps)
-
         with (
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.cleanup_fetch") as mock_cleanup,
@@ -173,8 +165,10 @@ class TestParallelFetchCollectAllErrors:
             create_sync_progress() as progress,
             pytest.raises(click.ClickException),
         ):
-            _sync_resource_type(
-                handler,
+            _fetch_and_resolve(
+                deps,
+                "skill",
+                _fake_resolver,
                 config,
                 tmp_path,
                 Lockfile(),
@@ -188,7 +182,6 @@ class TestParallelFetchCollectAllErrors:
     def test_dry_run_skips_lockfile_write(self, tmp_path: Path) -> None:
         deps = [_make_dep("bad")]
         config = _make_config()
-        handler = FakeHandler(deps)
 
         with (
             patch("agpack.cli.fetch_dependency", side_effect=FetchError("boom")),
@@ -197,8 +190,10 @@ class TestParallelFetchCollectAllErrors:
             create_sync_progress() as progress,
             pytest.raises(click.ClickException),
         ):
-            _sync_resource_type(
-                handler,
+            _fetch_and_resolve(
+                deps,
+                "skill",
+                _fake_resolver,
                 config,
                 tmp_path,
                 Lockfile(),
@@ -214,10 +209,6 @@ class TestParallelFetchCollectAllErrors:
         fake_result = _make_result(deps[0], tmp_path)
         config = _make_config()
 
-        handler = FakeHandler(deps)
-        handler.detect_items = MagicMock()
-        handler.deploy_item = MagicMock()
-
         def fake_fetch(dep: DependencySource) -> FetchResult:
             if dep.name == "b":
                 raise FetchError("nope")
@@ -227,11 +218,14 @@ class TestParallelFetchCollectAllErrors:
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.cleanup_fetch"),
             patch("agpack.cli.write_lockfile"),
+            patch("agpack.cli.execute_write_ops") as mock_execute,
             create_sync_progress() as progress,
             pytest.raises(click.ClickException),
         ):
-            _sync_resource_type(
-                handler,
+            _fetch_and_resolve(
+                deps,
+                "skill",
+                _fake_resolver,
                 config,
                 tmp_path,
                 Lockfile(),
@@ -240,19 +234,19 @@ class TestParallelFetchCollectAllErrors:
                 verbose=False,
             )
 
-        handler.detect_items.assert_not_called()
-        handler.deploy_item.assert_not_called()
+        mock_execute.assert_not_called()
 
 
 class TestParallelFetchEdgeCases:
     def test_empty_deps_returns_zero(self, tmp_path: Path) -> None:
-        handler = FakeHandler([])
         with (
             patch("agpack.cli.fetch_dependency") as mock_fetch,
             create_sync_progress() as progress,
         ):
-            sync = _sync_resource_type(
-                handler,
+            count = _fetch_and_resolve(
+                [],
+                "skill",
+                _fake_resolver,
                 _make_config(),
                 tmp_path,
                 Lockfile(),
@@ -260,13 +254,12 @@ class TestParallelFetchEdgeCases:
                 dry_run=False,
                 verbose=False,
             )
-        assert sync.count == 0
+        assert count == 0
         mock_fetch.assert_not_called()
 
     def test_concurrency_capped_at_max_workers(self, tmp_path: Path) -> None:
         deps = [_make_dep(str(i)) for i in range(20)]
         config = _make_config()
-        handler = FakeHandler(deps)
 
         captured: list[int] = []
         real_init = ThreadPoolExecutor.__init__
@@ -282,11 +275,14 @@ class TestParallelFetchEdgeCases:
         with (
             patch("agpack.cli.fetch_dependency", side_effect=fake_fetch),
             patch("agpack.cli.cleanup_fetch"),
+            patch("agpack.cli.execute_write_ops", return_value=["file.md"]),
             patch.object(ThreadPoolExecutor, "__init__", capturing_init),
             create_sync_progress() as progress,
         ):
-            _sync_resource_type(
-                handler,
+            _fetch_and_resolve(
+                deps,
+                "command",
+                _fake_resolver,
                 config,
                 tmp_path,
                 Lockfile(),
@@ -298,12 +294,13 @@ class TestParallelFetchEdgeCases:
         assert captured, "ThreadPoolExecutor was not constructed"
         assert all(w <= _MAX_FETCH_WORKERS for w in captured)
 
-    def test_deploy_error_writes_lockfile(self, tmp_path: Path) -> None:
+    def test_resolve_error_writes_lockfile(self, tmp_path: Path) -> None:
         deps = [_make_dep("a")]
         fake_result = _make_result(deps[0], tmp_path)
         config = _make_config()
-        handler = FakeHandler(deps)
-        handler.deploy_item = MagicMock(side_effect=RuntimeError("disk full"))
+
+        def bad_resolver(fetch_result: FetchResult, targets: list[str]) -> list[WriteOp]:
+            raise RuntimeError("disk full")
 
         with (
             patch("agpack.cli.fetch_dependency", return_value=fake_result),
@@ -312,8 +309,10 @@ class TestParallelFetchEdgeCases:
             create_sync_progress() as progress,
             pytest.raises(Exception, match="Error deploying"),
         ):
-            _sync_resource_type(
-                handler,
+            _fetch_and_resolve(
+                deps,
+                "skill",
+                bad_resolver,
                 config,
                 tmp_path,
                 Lockfile(),

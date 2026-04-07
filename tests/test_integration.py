@@ -883,11 +883,11 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0
 
-    # Now make detect_command_items raise on second sync
-    def failing_detect(fetch_result):  # noqa: ARG001
+    # Now make resolve_commands raise on second sync
+    def failing_resolve(fetch_result, targets):  # noqa: ARG001
         raise RuntimeError("detection failed")
 
-    with patch("agpack.assets.command.CommandHandler.detect_items", side_effect=failing_detect):
+    with patch.dict("agpack.cli._SIMPLE_RESOLVERS", {"command": failing_resolve}):
         result = runner.invoke(
             main,
             ["sync", "--config", str(config_path), "--no-global"],
@@ -905,10 +905,10 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
 
 
 def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
-    """When deploy_mcp_servers raises DeployError, partial lockfile is written."""
+    """When MCP write ops raise WriteError, partial lockfile is written."""
     from unittest.mock import patch
 
-    from agpack.assets import DeployError
+    from agpack.writer import WriteError
 
     bare_repo = _create_bare_repo(tmp_path)
 
@@ -936,10 +936,17 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     config_path = project_dir / "agpack.yml"
     config_path.write_text(yaml.dump(config, default_flow_style=False))
 
-    with patch(
-        "agpack.cli.deploy_mcp_servers",
-        side_effect=DeployError("corrupt config file"),
-    ):
+    # The real execute_write_ops is used for skills; we only want MCP to fail.
+    # We patch execute_write_ops to fail only when called with MergeJsonOp ops.
+    from agpack.writer import MergeJsonOp
+    from agpack.writer import execute_write_ops as real_execute
+
+    def selective_fail(ops, project_root, **kwargs):
+        if any(isinstance(op, MergeJsonOp) for op in ops):
+            raise WriteError("corrupt config file")
+        return real_execute(ops, project_root, **kwargs)
+
+    with patch("agpack.cli.execute_write_ops", side_effect=selective_fail):
         runner = CliRunner()
         result = runner.invoke(
             main,

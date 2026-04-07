@@ -1,4 +1,4 @@
-"""Tests for agpack.config – YAML loading, validation, and data classes."""
+"""Tests for agpack.config – YAML loading, validation, merging, and resolution."""
 
 from __future__ import annotations
 
@@ -9,11 +9,8 @@ import pytest
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
 from agpack.config import DependencySource
-from agpack.config import GlobalConfig
 from agpack.config import McpServer
-from agpack.config import load_config
-from agpack.config import load_global_config
-from agpack.config import merge_configs
+from agpack.config import load_resolved_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -27,13 +24,18 @@ def _write_config(tmp_path: Path, text: str) -> Path:
     return p
 
 
+def _load(tmp_path: Path, text: str) -> AgpackConfig:
+    """Shortcut: write config and load with global config disabled."""
+    return load_resolved_config(_write_config(tmp_path, text), no_global=True)
+
+
 # ---------------------------------------------------------------------------
 # 1. Valid config with all fields
 # ---------------------------------------------------------------------------
 
 
 def test_load_valid_full_config(tmp_path: Path) -> None:
-    cfg_path = _write_config(
+    cfg = _load(
         tmp_path,
         """\
 targets:
@@ -57,7 +59,6 @@ dependencies:
         TOKEN: abc
 """,
     )
-    cfg = load_config(cfg_path)
 
     assert isinstance(cfg, AgpackConfig)
     assert cfg.targets == ["claude", "opencode"]
@@ -88,37 +89,18 @@ dependencies:
 
 
 def test_missing_targets(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-name: pack
-version: "1"
-""",
-    )
     with pytest.raises(ConfigError, match="Missing or invalid 'targets'"):
-        load_config(cfg_path)
+        _load(tmp_path, "name: pack\nversion: '1'\n")
 
 
 def test_targets_not_a_list(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets: claude
-""",
-    )
     with pytest.raises(ConfigError, match="Missing or invalid 'targets'"):
-        load_config(cfg_path)
+        _load(tmp_path, "targets: claude\n")
 
 
 def test_empty_targets(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets: []
-""",
-    )
     with pytest.raises(ConfigError, match="Missing or invalid 'targets'"):
-        load_config(cfg_path)
+        _load(tmp_path, "targets: []\n")
 
 
 # ---------------------------------------------------------------------------
@@ -127,15 +109,8 @@ targets: []
 
 
 def test_unrecognised_target(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - not-a-target
-""",
-    )
     with pytest.raises(ConfigError, match="Unrecognised target 'not-a-target'"):
-        load_config(cfg_path)
+        _load(tmp_path, "targets:\n  - not-a-target\n")
 
 
 # ---------------------------------------------------------------------------
@@ -144,18 +119,11 @@ targets:
 
 
 def test_dependency_missing_url(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  skills:
-    - path: some/path
-""",
-    )
     with pytest.raises(ConfigError, match="missing required field 'url'"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  skills:\n    - path: some/path\n",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -164,18 +132,11 @@ dependencies:
 
 
 def test_dependency_url_must_be_string(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  skills:
-    - url: 123
-""",
-    )
     with pytest.raises(ConfigError, match="'url' must be a string"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  skills:\n    - url: 123\n",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +145,7 @@ dependencies:
 
 
 def test_dependency_all_optional_fields(tmp_path: Path) -> None:
-    cfg_path = _write_config(
+    cfg = _load(
         tmp_path,
         """\
 targets:
@@ -196,7 +157,6 @@ dependencies:
       ref: main
 """,
     )
-    cfg = load_config(cfg_path)
     dep = cfg.commands[0]
     assert dep.url == "https://gitlab.com/org/repo"
     assert dep.path == "sub/dir"
@@ -209,7 +169,7 @@ dependencies:
 
 
 def test_mcp_stdio_valid(tmp_path: Path) -> None:
-    cfg_path = _write_config(
+    cfg = _load(
         tmp_path,
         """\
 targets:
@@ -224,7 +184,6 @@ dependencies:
         PORT: "8080"
 """,
     )
-    cfg = load_config(cfg_path)
     srv = cfg.mcp[0]
     assert srv.name == "stdio-srv"
     assert srv.type == "stdio"
@@ -240,9 +199,10 @@ dependencies:
 
 
 def test_mcp_stdio_missing_command(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
+    with pytest.raises(ConfigError, match="missing required field 'command'"):
+        _load(
+            tmp_path,
+            """\
 targets:
   - claude
 dependencies:
@@ -250,9 +210,7 @@ dependencies:
     - name: bad-stdio
       type: stdio
 """,
-    )
-    with pytest.raises(ConfigError, match="missing required field 'command'"):
-        load_config(cfg_path)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +219,7 @@ dependencies:
 
 
 def test_mcp_sse_valid(tmp_path: Path) -> None:
-    cfg_path = _write_config(
+    cfg = _load(
         tmp_path,
         """\
 targets:
@@ -273,7 +231,6 @@ dependencies:
       url: http://localhost:3000/sse
 """,
     )
-    cfg = load_config(cfg_path)
     srv = cfg.mcp[0]
     assert srv.name == "sse-srv"
     assert srv.type == "sse"
@@ -287,19 +244,11 @@ dependencies:
 
 
 def test_mcp_sse_missing_url(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  mcp:
-    - name: bad-sse
-      type: sse
-""",
-    )
     with pytest.raises(ConfigError, match="missing required field 'url'"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  mcp:\n    - name: bad-sse\n      type: sse\n",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +257,7 @@ dependencies:
 
 
 def test_mcp_http_valid(tmp_path: Path) -> None:
-    cfg_path = _write_config(
+    cfg = _load(
         tmp_path,
         """\
 targets:
@@ -320,7 +269,6 @@ dependencies:
       url: http://localhost:9000/api
 """,
     )
-    cfg = load_config(cfg_path)
     srv = cfg.mcp[0]
     assert srv.name == "http-srv"
     assert srv.type == "http"
@@ -333,19 +281,11 @@ dependencies:
 
 
 def test_mcp_missing_name(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  mcp:
-    - type: stdio
-      command: node
-""",
-    )
     with pytest.raises(ConfigError, match="missing required field 'name'"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  mcp:\n    - type: stdio\n      command: node\n",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -404,15 +344,7 @@ def test_dependency_source_identity_different_url() -> None:
 
 
 def test_empty_dependencies(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies: {}
-""",
-    )
-    cfg = load_config(cfg_path)
+    cfg = _load(tmp_path, "targets:\n  - claude\ndependencies: {}\n")
     assert cfg.skills == []
     assert cfg.commands == []
     assert cfg.agents == []
@@ -420,14 +352,7 @@ dependencies: {}
 
 
 def test_no_dependencies_key(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-""",
-    )
-    cfg = load_config(cfg_path)
+    cfg = _load(tmp_path, "targets:\n  - claude\n")
     assert cfg.skills == []
     assert cfg.commands == []
     assert cfg.agents == []
@@ -440,7 +365,7 @@ targets:
 
 
 def test_mixed_dependencies(tmp_path: Path) -> None:
-    cfg_path = _write_config(
+    cfg = _load(
         tmp_path,
         """\
 targets:
@@ -465,7 +390,6 @@ dependencies:
       url: http://example.com
 """,
     )
-    cfg = load_config(cfg_path)
 
     assert len(cfg.skills) == 2
     assert cfg.skills[0].url == "https://github.com/a/b"
@@ -490,76 +414,60 @@ dependencies:
 
 
 def test_use_global_defaults_to_true(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-""",
-    )
-    cfg = load_config(cfg_path)
+    cfg = _load(tmp_path, "targets:\n  - claude\n")
     assert cfg.use_global is True
 
 
 def test_use_global_false(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-name: pack
-version: "1"
-global: false
-targets:
-  - claude
-""",
-    )
-    cfg = load_config(cfg_path)
+    cfg = _load(tmp_path, "global: false\ntargets:\n  - claude\n")
     assert cfg.use_global is False
 
 
 def test_use_global_true_explicit(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-name: pack
-version: "1"
-global: true
-targets:
-  - claude
-""",
-    )
-    cfg = load_config(cfg_path)
+    cfg = _load(tmp_path, "global: true\ntargets:\n  - claude\n")
     assert cfg.use_global is True
 
 
 def test_use_global_non_bool_raises(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-name: pack
-version: "1"
-global: "yes"
-targets:
-  - claude
-""",
-    )
     with pytest.raises(ConfigError, match="'global' must be true or false"):
-        load_config(cfg_path)
+        _load(tmp_path, 'global: "yes"\ntargets:\n  - claude\n')
 
 
 # ---------------------------------------------------------------------------
-# 20. load_global_config
+# 20. Global config loading (tested through load_resolved_config)
 # ---------------------------------------------------------------------------
 
 
-def _write_global_config(tmp_path: Path, text: str) -> Path:
-    """Write *text* to a global config file inside *tmp_path*."""
-    p = tmp_path / "agpack.yml"
-    p.write_text(text, encoding="utf-8")
-    return p
+def _setup_global(
+    tmp_path: Path,
+    global_text: str,
+    project_text: str = "targets:\n  - claude\n",
+) -> AgpackConfig:
+    """Write a project config and a global config, then load with merging."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "agpack.yml").write_text(project_text, encoding="utf-8")
+
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    global_path = global_dir / "agpack.yml"
+    global_path.write_text(global_text, encoding="utf-8")
+
+    import os
+
+    old = os.environ.get("AGPACK_GLOBAL_CONFIG")
+    os.environ["AGPACK_GLOBAL_CONFIG"] = str(global_path)
+    try:
+        return load_resolved_config(project_dir / "agpack.yml")
+    finally:
+        if old is None:
+            os.environ.pop("AGPACK_GLOBAL_CONFIG", None)
+        else:
+            os.environ["AGPACK_GLOBAL_CONFIG"] = old
 
 
-def test_load_global_config_full(tmp_path: Path) -> None:
-    path = _write_global_config(
+def test_global_config_full(tmp_path: Path) -> None:
+    cfg = _setup_global(
         tmp_path,
         """\
 dependencies:
@@ -579,8 +487,6 @@ dependencies:
         KEY: value
 """,
     )
-    cfg = load_global_config(path)
-    assert cfg is not None
     assert len(cfg.skills) == 1
     assert cfg.skills[0].url == "https://github.com/org/skills"
     assert cfg.skills[0].path == "skills/shared"
@@ -588,69 +494,67 @@ dependencies:
     assert len(cfg.agents) == 1
     assert len(cfg.mcp) == 1
     assert cfg.mcp[0].name == "global-server"
-    assert cfg.config_dir == tmp_path
 
 
-def test_load_global_config_missing_file(tmp_path: Path) -> None:
-    path = tmp_path / "nonexistent.yml"
-    assert load_global_config(path) is None
+def test_global_config_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the global config file doesn't exist, loading succeeds with no extras."""
+    monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(tmp_path / "nonexistent.yml"))
+    cfg = _load(tmp_path, "targets:\n  - claude\n")
+    # No error, no global deps merged
+    assert cfg.skills == []
 
 
-def test_load_global_config_empty_file(tmp_path: Path) -> None:
-    path = _write_global_config(tmp_path, "")
-    cfg = load_global_config(path)
-    assert cfg is not None
+def test_global_config_empty_file(tmp_path: Path) -> None:
+    cfg = _setup_global(tmp_path, "")
     assert cfg.skills == []
     assert cfg.commands == []
     assert cfg.agents == []
     assert cfg.mcp == []
 
 
-def test_load_global_config_empty_dependencies(tmp_path: Path) -> None:
-    path = _write_global_config(tmp_path, "dependencies: {}\n")
-    cfg = load_global_config(path)
-    assert cfg is not None
+def test_global_config_empty_dependencies(tmp_path: Path) -> None:
+    cfg = _setup_global(tmp_path, "dependencies: {}\n")
     assert cfg.skills == []
 
 
-def test_load_global_config_malformed_yaml(tmp_path: Path) -> None:
-    path = _write_global_config(tmp_path, ":\n  - [invalid yaml")
+def test_global_config_malformed_yaml(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="Failed to parse global config YAML"):
-        load_global_config(path)
+        _setup_global(tmp_path, ":\n  - [invalid yaml")
 
 
-def test_load_global_config_not_a_mapping(tmp_path: Path) -> None:
-    path = _write_global_config(tmp_path, "- a list\n- not a mapping\n")
+def test_global_config_not_a_mapping(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="Global config file must be a YAML mapping"):
-        load_global_config(path)
+        _setup_global(tmp_path, "- a list\n- not a mapping\n")
 
 
-def test_load_global_config_dependencies_not_a_mapping(tmp_path: Path) -> None:
-    path = _write_global_config(tmp_path, "dependencies: [bad]\n")
+def test_global_config_dependencies_not_a_mapping(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="Global config 'dependencies' must be a mapping"):
-        load_global_config(path)
+        _setup_global(tmp_path, "dependencies: [bad]\n")
 
 
-def test_load_global_config_env_var_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_global_config_env_var_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     custom_dir = tmp_path / "custom"
     custom_dir.mkdir()
     custom_path = custom_dir / "my-global.yml"
     custom_path.write_text("dependencies:\n  skills:\n    - url: https://example.com/repo\n")
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(custom_path))
 
-    cfg = load_global_config()
-    assert cfg is not None
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "agpack.yml").write_text("targets:\n  - claude\n")
+
+    cfg = load_resolved_config(project_dir / "agpack.yml")
     assert len(cfg.skills) == 1
-    assert cfg.config_dir == custom_dir
 
 
-def test_load_global_config_env_var_nonexistent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_global_config_env_var_nonexistent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(tmp_path / "nope.yml"))
-    assert load_global_config() is None
+    cfg = _load(tmp_path, "targets:\n  - claude\n")
+    assert cfg.skills == []
 
 
-def test_load_global_config_skills_only(tmp_path: Path) -> None:
-    path = _write_global_config(
+def test_global_config_skills_only(tmp_path: Path) -> None:
+    cfg = _setup_global(
         tmp_path,
         """\
 dependencies:
@@ -659,8 +563,6 @@ dependencies:
       path: skills/only
 """,
     )
-    cfg = load_global_config(path)
-    assert cfg is not None
     assert len(cfg.skills) == 1
     assert cfg.commands == []
     assert cfg.agents == []
@@ -668,122 +570,147 @@ dependencies:
 
 
 # ---------------------------------------------------------------------------
-# 21. merge_configs
+# 21. Merge behaviour (tested through load_resolved_config)
 # ---------------------------------------------------------------------------
 
 
-def _make_project_config(**kwargs: object) -> AgpackConfig:
-    defaults: dict[str, object] = {
-        "targets": ["claude"],
-    }
-    defaults.update(kwargs)
-    return AgpackConfig(**defaults)  # type: ignore[arg-type]
-
-
-def test_merge_basic() -> None:
-    project = _make_project_config(
-        skills=[DependencySource(urls=["https://github.com/a/b"], path="skills/proj")],
+def test_merge_basic(tmp_path: Path) -> None:
+    cfg = _setup_global(
+        tmp_path,
+        global_text="""\
+dependencies:
+  skills:
+    - url: https://github.com/c/d
+      path: skills/global
+  commands:
+    - url: https://github.com/e/f
+""",
+        project_text="""\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: https://github.com/a/b
+      path: skills/proj
+""",
     )
-    global_cfg = GlobalConfig(
-        skills=[DependencySource(urls=["https://github.com/c/d"], path="skills/global")],
-        commands=[DependencySource(urls=["https://github.com/e/f"])],
+    assert len(cfg.skills) == 2
+    assert cfg.skills[0].url == "https://github.com/a/b"  # project first
+    assert cfg.skills[1].url == "https://github.com/c/d"  # global appended
+    assert len(cfg.commands) == 1
+    assert cfg.commands[0].url == "https://github.com/e/f"
+
+
+def test_merge_project_wins_on_duplicate_dep(tmp_path: Path) -> None:
+    cfg = _setup_global(
+        tmp_path,
+        global_text="""\
+dependencies:
+  skills:
+    - url: https://github.com/a/b
+      path: skills/shared
+""",
+        project_text="""\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: https://github.com/a/b
+      path: skills/shared
+""",
     )
-    merged = merge_configs(project, global_cfg)
-
-    assert len(merged.skills) == 2
-    assert merged.skills[0].url == "https://github.com/a/b"  # project first
-    assert merged.skills[1].url == "https://github.com/c/d"  # global appended
-    assert len(merged.commands) == 1
-    assert merged.commands[0].url == "https://github.com/e/f"
+    # Duplicate deduped — only the project entry survives
+    assert len(cfg.skills) == 1
 
 
-def test_merge_project_wins_on_duplicate_dep() -> None:
-    dep = DependencySource(urls=["https://github.com/a/b"], path="skills/shared")
-    project = _make_project_config(skills=[dep])
-    global_cfg = GlobalConfig(
-        skills=[DependencySource(urls=["https://github.com/a/b"], path="skills/shared")],
+def test_merge_project_wins_on_duplicate_mcp(tmp_path: Path) -> None:
+    cfg = _setup_global(
+        tmp_path,
+        global_text="""\
+dependencies:
+  mcp:
+    - name: ctx7
+      command: npx
+      args: ["global-version"]
+""",
+        project_text="""\
+targets:
+  - claude
+dependencies:
+  mcp:
+    - name: ctx7
+      command: npx
+      args: ["project-version"]
+""",
     )
-    merged = merge_configs(project, global_cfg)
-
-    # Duplicate should be deduped — only the project entry survives
-    assert len(merged.skills) == 1
-    assert merged.skills[0] is dep
+    assert len(cfg.mcp) == 1
+    assert cfg.mcp[0].args == ["project-version"]
 
 
-def test_merge_project_wins_on_duplicate_mcp() -> None:
-    project_server = McpServer(name="ctx7", command="npx", args=["project-version"])
-    global_server = McpServer(name="ctx7", command="npx", args=["global-version"])
-
-    project = _make_project_config(mcp=[project_server])
-    global_cfg = GlobalConfig(mcp=[global_server])
-    merged = merge_configs(project, global_cfg)
-
-    assert len(merged.mcp) == 1
-    assert merged.mcp[0].args == ["project-version"]
-
-
-def test_merge_empty_global() -> None:
-    project = _make_project_config(
-        skills=[DependencySource(urls=["https://github.com/a/b"])],
+def test_merge_empty_global(tmp_path: Path) -> None:
+    cfg = _setup_global(
+        tmp_path,
+        global_text="",
+        project_text="""\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: https://github.com/a/b
+""",
     )
-    global_cfg = GlobalConfig()
-    merged = merge_configs(project, global_cfg)
-
-    assert len(merged.skills) == 1
-    assert merged.commands == []
+    assert len(cfg.skills) == 1
+    assert cfg.commands == []
 
 
-def test_merge_empty_project_deps() -> None:
-    project = _make_project_config()
-    global_cfg = GlobalConfig(
-        skills=[DependencySource(urls=["https://github.com/c/d"])],
-        mcp=[McpServer(name="s1", command="cmd")],
+def test_merge_empty_project_deps(tmp_path: Path) -> None:
+    cfg = _setup_global(
+        tmp_path,
+        global_text="""\
+dependencies:
+  skills:
+    - url: https://github.com/c/d
+  mcp:
+    - name: s1
+      command: cmd
+""",
+        project_text="targets:\n  - claude\n",
     )
-    merged = merge_configs(project, global_cfg)
-
-    assert len(merged.skills) == 1
-    assert merged.skills[0].url == "https://github.com/c/d"
-    assert len(merged.mcp) == 1
+    assert len(cfg.skills) == 1
+    assert cfg.skills[0].url == "https://github.com/c/d"
+    assert len(cfg.mcp) == 1
 
 
-def test_merge_preserves_project_metadata() -> None:
-    project = _make_project_config(targets=["opencode"], use_global=False)
-    global_cfg = GlobalConfig(
-        skills=[DependencySource(urls=["https://github.com/a/b"])],
+def test_merge_preserves_project_metadata(tmp_path: Path) -> None:
+    cfg = _setup_global(
+        tmp_path,
+        global_text="dependencies:\n  skills:\n    - url: https://github.com/a/b\n",
+        project_text="targets:\n  - opencode\nglobal: true\n",
     )
-    merged = merge_configs(project, global_cfg)
-
-    assert merged.targets == ["opencode"]
-    assert merged.use_global is False
+    assert cfg.targets == ["opencode"]
 
 
-def test_merge_does_not_mutate_inputs() -> None:
-    project = _make_project_config(
-        skills=[DependencySource(urls=["https://github.com/a/b"])],
-    )
-    global_cfg = GlobalConfig(
-        skills=[DependencySource(urls=["https://github.com/c/d"])],
-    )
-    orig_project_skills = list(project.skills)
-    orig_global_skills = list(global_cfg.skills)
-
-    merge_configs(project, global_cfg)
-
-    assert project.skills == orig_project_skills
-    assert global_cfg.skills == orig_global_skills
-
-
-def test_merge_cross_type_identity_not_deduped() -> None:
+def test_merge_cross_type_identity_not_deduped(tmp_path: Path) -> None:
     """A skill and a command with the same identity are NOT deduped."""
-    dep = DependencySource(urls=["https://github.com/a/b"], path="shared")
-    project = _make_project_config(skills=[dep])
-    global_cfg = GlobalConfig(
-        commands=[DependencySource(urls=["https://github.com/a/b"], path="shared")],
+    cfg = _setup_global(
+        tmp_path,
+        global_text="""\
+dependencies:
+  commands:
+    - url: https://github.com/a/b
+      path: shared
+""",
+        project_text="""\
+targets:
+  - claude
+dependencies:
+  skills:
+    - url: https://github.com/a/b
+      path: shared
+""",
     )
-    merged = merge_configs(project, global_cfg)
-
-    assert len(merged.skills) == 1
-    assert len(merged.commands) == 1
+    assert len(cfg.skills) == 1
+    assert len(cfg.commands) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -792,7 +719,7 @@ def test_merge_cross_type_identity_not_deduped() -> None:
 
 
 def test_url_as_list(tmp_path: Path) -> None:
-    cfg_path = _write_config(
+    cfg = _load(
         tmp_path,
         """\
 targets:
@@ -805,7 +732,6 @@ dependencies:
       path: skills/foo
 """,
     )
-    cfg = load_config(cfg_path)
     assert cfg.skills[0].urls == [
         "https://github.com/owner/repo",
         "git@github.com:owner/repo.git",
@@ -814,53 +740,32 @@ dependencies:
 
 
 def test_url_as_string(tmp_path: Path) -> None:
-    cfg_path = _write_config(
+    cfg = _load(
         tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  skills:
-    - url: https://github.com/owner/repo
-""",
+        "targets:\n  - claude\ndependencies:\n  skills:\n    - url: https://github.com/owner/repo\n",
     )
-    cfg = load_config(cfg_path)
     assert cfg.skills[0].urls == ["https://github.com/owner/repo"]
 
 
 def test_url_empty_list_raises(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  skills:
-    - url: []
-""",
-    )
     with pytest.raises(ConfigError, match="'url' must not be empty"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  skills:\n    - url: []\n",
+        )
 
 
 def test_url_invalid_type_raises(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  skills:
-    - url: 42
-""",
-    )
     with pytest.raises(ConfigError, match="'url' must be a string or list"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  skills:\n    - url: 42\n",
+        )
 
 
 def test_url_as_list_in_global_config(tmp_path: Path) -> None:
-    path = tmp_path / "agpack.yml"
-    path.write_text(
+    cfg = _setup_global(
+        tmp_path,
         """\
 dependencies:
   skills:
@@ -868,10 +773,8 @@ dependencies:
         - https://github.com/org/repo
         - git@github.com:org/repo.git
       path: skills/shared
-"""
+""",
     )
-    cfg = load_global_config(path)
-    assert cfg is not None
     assert cfg.skills[0].urls == [
         "https://github.com/org/repo",
         "git@github.com:org/repo.git",
@@ -884,81 +787,43 @@ dependencies:
 
 
 def test_dependency_entry_not_a_dict(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  skills:
-    - just-a-string
-""",
-    )
     with pytest.raises(ConfigError, match="expected an object"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  skills:\n    - just-a-string\n",
+        )
 
 
 def test_dependency_url_empty_string(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  skills:
-    - url: ""
-""",
-    )
     with pytest.raises(ConfigError, match="'url' must not be empty"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            'targets:\n  - claude\ndependencies:\n  skills:\n    - url: ""\n',
+        )
 
 
 def test_dependency_path_not_a_string(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  skills:
-    - url: https://github.com/org/repo
-      path: 123
-""",
-    )
     with pytest.raises(ConfigError, match="'path' must be a string"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  skills:\n    - url: https://github.com/org/repo\n      path: 123\n",
+        )
 
 
 def test_mcp_entry_not_a_dict(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  mcp:
-    - just-a-string
-""",
-    )
     with pytest.raises(ConfigError, match="expected an object"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  mcp:\n    - just-a-string\n",
+        )
 
 
 def test_mcp_invalid_type(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies:
-  mcp:
-    - name: bad
-      type: grpc
-      command: something
-""",
-    )
     with pytest.raises(ConfigError, match="'type' must be 'stdio', 'sse', or 'http'"):
-        load_config(cfg_path)
+        _load(
+            tmp_path,
+            "targets:\n  - claude\ndependencies:\n  mcp:\n    - name: bad\n      type: grpc\n      command: something\n",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -968,29 +833,19 @@ dependencies:
 
 def test_config_file_not_found(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="Config file not found"):
-        load_config(tmp_path / "nonexistent.yml")
+        load_resolved_config(tmp_path / "nonexistent.yml", no_global=True)
 
 
 def test_config_malformed_yaml(tmp_path: Path) -> None:
-    cfg_path = _write_config(tmp_path, ":\n  - [invalid yaml")
     with pytest.raises(ConfigError, match="Failed to parse YAML"):
-        load_config(cfg_path)
+        _load(tmp_path, ":\n  - [invalid yaml")
 
 
 def test_config_not_a_mapping(tmp_path: Path) -> None:
-    cfg_path = _write_config(tmp_path, "- a list\n- not a mapping\n")
     with pytest.raises(ConfigError, match="Config file must be a YAML mapping"):
-        load_config(cfg_path)
+        _load(tmp_path, "- a list\n- not a mapping\n")
 
 
 def test_config_dependencies_not_a_mapping(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - claude
-dependencies: "oops"
-""",
-    )
     with pytest.raises(ConfigError, match="'dependencies' must be a mapping"):
-        load_config(cfg_path)
+        _load(tmp_path, 'targets:\n  - claude\ndependencies: "oops"\n')

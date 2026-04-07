@@ -1,8 +1,17 @@
-"""agpack.yml parsing and validation."""
+"""agpack.yml parsing, validation, global config merging, and env resolution.
+
+The main entry point is :func:`load_resolved_config`, which performs all
+config loading steps in one call:
+
+1. Parse and validate the project ``agpack.yml``.
+2. Load and merge the global config (unless opted out).
+3. Resolve ``${VAR}`` references from ``.env`` files and the shell.
+"""
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -13,6 +22,10 @@ import yaml
 from agpack.targets import VALID_TARGETS
 
 DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
+
+# Dependency field names on AgpackConfig that hold list[DependencySource].
+# Used to drive parsing, merging, and env resolution generically.
+_DEP_FIELDS = ("skills", "commands", "agents", "rules")
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -97,24 +110,8 @@ class AgpackConfig:
     use_global: bool = True
 
 
-@dataclass
-class GlobalConfig:
-    """Parsed global config (~/.config/agpack/agpack.yml).
-
-    Contains only dependencies — no targets.
-    """
-
-    skills: list[DependencySource] = field(default_factory=list)
-    commands: list[DependencySource] = field(default_factory=list)
-    agents: list[DependencySource] = field(default_factory=list)
-    rules: list[DependencySource] = field(default_factory=list)
-    mcp: list[McpServer] = field(default_factory=list)
-    config_dir: Path = field(default_factory=lambda: DEFAULT_GLOBAL_CONFIG_DIR)
-    """Directory containing the global config (used to locate .env)."""
-
-
 # ---------------------------------------------------------------------------
-# Validation errors
+# Errors
 # ---------------------------------------------------------------------------
 
 
@@ -123,17 +120,12 @@ class ConfigError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Parsing
+# Parsing helpers
 # ---------------------------------------------------------------------------
 
 
 def _parse_dependency(raw: dict[str, Any], context: str) -> DependencySource:
-    """Parse a single dependency entry (object form).
-
-    Args:
-        raw: The raw YAML dict for this dependency.
-        context: Human-readable location for error messages (e.g. "skills[0]").
-    """
+    """Parse a single dependency entry (object form)."""
     if not isinstance(raw, dict):
         raise ConfigError(f"{context}: expected an object with 'url' key, got {type(raw).__name__}")
 
@@ -197,87 +189,82 @@ def _parse_mcp(raw: dict[str, Any], context: str) -> McpServer:
     )
 
 
-def _parse_dependencies(
-    deps: dict[str, Any], prefix: str = ""
-) -> tuple[
-    list[DependencySource],
-    list[DependencySource],
-    list[DependencySource],
-    list[DependencySource],
-    list[McpServer],
-]:
+def _parse_dependencies(deps: dict[str, Any], prefix: str = "") -> dict[str, list[Any]]:
     """Parse all dependency lists from a ``dependencies`` mapping.
 
-    Args:
-        deps: The raw ``dependencies`` dict from YAML.
-        prefix: Optional prefix for error context (e.g. ``"global "``).
-
-    Returns:
-        A tuple of (skills, commands, agents, rules, mcp).
+    Returns a dict keyed by field name (matching :class:`AgpackConfig`
+    attributes), e.g. ``{"skills": [...], "commands": [...], ...}``.
     """
-    skills = [_parse_dependency(s, f"{prefix}dependencies.skills[{i}]") for i, s in enumerate(deps.get("skills") or [])]
-    commands = [
-        _parse_dependency(c, f"{prefix}dependencies.commands[{i}]") for i, c in enumerate(deps.get("commands") or [])
-    ]
-    agents = [_parse_dependency(a, f"{prefix}dependencies.agents[{i}]") for i, a in enumerate(deps.get("agents") or [])]
-    rules = [_parse_dependency(r, f"{prefix}dependencies.rules[{i}]") for i, r in enumerate(deps.get("rules") or [])]
-    mcp = [_parse_mcp(m, f"{prefix}dependencies.mcp[{i}]") for i, m in enumerate(deps.get("mcp") or [])]
-    return skills, commands, agents, rules, mcp
+    result: dict[str, list[Any]] = {}
+    for dep_field in _DEP_FIELDS:
+        result[dep_field] = [
+            _parse_dependency(entry, f"{prefix}dependencies.{dep_field}[{i}]")
+            for i, entry in enumerate(deps.get(dep_field) or [])
+        ]
+    result["mcp"] = [_parse_mcp(m, f"{prefix}dependencies.mcp[{i}]") for i, m in enumerate(deps.get("mcp") or [])]
+    return result
 
 
-def load_config(path: Path) -> AgpackConfig:
-    """Load and validate agpack.yml.
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
 
-    Args:
-        path: Path to the agpack.yml file.
 
-    Returns:
-        A validated AgpackConfig.
+def _load_yaml(path: Path, *, yaml_label: str = "YAML", mapping_label: str = "Config file") -> dict[str, Any] | None:
+    """Load and validate a YAML file as a mapping.
 
-    Raises:
-        ConfigError: If the config is invalid.
+    Returns the parsed dict, or *None* for an empty file.
+    Raises :class:`ConfigError` on parse failure or non-mapping content.
     """
-    if not path.exists():
-        raise ConfigError(f"Config file not found: {path}")
-
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise ConfigError(f"Failed to parse YAML: {exc}") from exc
+        raise ConfigError(f"Failed to parse {yaml_label}: {exc}") from exc
+
+    if data is None:
+        return None
 
     if not isinstance(data, dict):
-        raise ConfigError("Config file must be a YAML mapping")
+        raise ConfigError(f"{mapping_label} must be a YAML mapping")
 
-    # Targets
-    targets = data.get("targets")
-    if not targets or not isinstance(targets, list):
-        raise ConfigError("Missing or invalid 'targets' (must be a list)")
+    return data
 
-    for t in targets:
-        if t not in VALID_TARGETS:
-            raise ConfigError(f"Unrecognised target '{t}'. Valid targets: {sorted(VALID_TARGETS)}")
 
-    # Global config opt-out
-    use_global = data.get("global", True)
-    if not isinstance(use_global, bool):
-        raise ConfigError("'global' must be true or false")
+def _parse_config_data(
+    data: dict[str, Any],
+    *,
+    require_targets: bool,
+    prefix: str = "",
+) -> AgpackConfig:
+    """Build an :class:`AgpackConfig` from a parsed YAML dict.
 
-    # Dependencies
+    When *require_targets* is ``True`` (project configs), the ``targets``
+    key is validated.  When ``False`` (global configs), ``targets``
+    defaults to ``[]``.
+    """
+    targets: list[str] = []
+    use_global = True
+
+    if require_targets:
+        targets = data.get("targets")  # type: ignore[assignment]
+        if not targets or not isinstance(targets, list):
+            raise ConfigError("Missing or invalid 'targets' (must be a list)")
+        for t in targets:
+            if t not in VALID_TARGETS:
+                raise ConfigError(f"Unrecognised target '{t}'. Valid targets: {sorted(VALID_TARGETS)}")
+
+        use_global = data.get("global", True)
+        if not isinstance(use_global, bool):
+            raise ConfigError("'global' must be true or false")
+
     deps = data.get("dependencies", {})
     if not isinstance(deps, dict):
+        if prefix:
+            raise ConfigError(f"{prefix.strip().capitalize()} config 'dependencies' must be a mapping")
         raise ConfigError("'dependencies' must be a mapping")
 
-    skills, commands, agents, rules, mcp = _parse_dependencies(deps)
-
-    return AgpackConfig(
-        targets=targets,
-        skills=skills,
-        commands=commands,
-        agents=agents,
-        rules=rules,
-        mcp=mcp,
-        use_global=use_global,
-    )
+    parsed = _parse_dependencies(deps, prefix=prefix)
+    return AgpackConfig(targets=targets, use_global=use_global, **parsed)
 
 
 def _resolve_global_config_path() -> Path:
@@ -292,97 +279,244 @@ def _resolve_global_config_path() -> Path:
     return DEFAULT_GLOBAL_CONFIG_DIR / "agpack.yml"
 
 
-def load_global_config(path: Path | None = None) -> GlobalConfig | None:
+def _load_project_config(path: Path) -> AgpackConfig:
+    """Load and validate a project ``agpack.yml``."""
+    if not path.exists():
+        raise ConfigError(f"Config file not found: {path}")
+    data = _load_yaml(path)
+    if data is None:
+        raise ConfigError("Config file must be a YAML mapping")
+    return _parse_config_data(data, require_targets=True)
+
+
+def _load_global_config(path: Path | None = None) -> tuple[AgpackConfig, Path] | None:
     """Load the global agpack config.
 
-    Args:
-        path: Explicit path to the global config file.
-              If *None*, the path is resolved via ``AGPACK_GLOBAL_CONFIG``
-              or the default ``~/.config/agpack/agpack.yml``.
-
-    Returns:
-        A :class:`GlobalConfig` if the file exists and is valid,
-        or *None* if the file does not exist.
-
-    Raises:
-        ConfigError: If the file exists but is malformed.
+    Returns a ``(config, config_dir)`` tuple, or *None* if the file does
+    not exist.  The returned :class:`AgpackConfig` has ``targets=[]``.
     """
     if path is None:
         path = _resolve_global_config_path()
-
     if not path.exists():
         return None
 
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"Failed to parse global config YAML: {exc}") from exc
-
-    # An empty file yields None from safe_load
+    data = _load_yaml(path, yaml_label="global config YAML", mapping_label="Global config file")
     if data is None:
-        return GlobalConfig(config_dir=path.parent)
+        return AgpackConfig(targets=[]), path.parent
 
-    if not isinstance(data, dict):
-        raise ConfigError("Global config file must be a YAML mapping")
-
-    deps = data.get("dependencies", {})
-    if not isinstance(deps, dict):
-        raise ConfigError("Global config 'dependencies' must be a mapping")
-
-    skills, commands, agents, rules, mcp = _parse_dependencies(deps, prefix="global ")
-
-    return GlobalConfig(
-        skills=skills,
-        commands=commands,
-        agents=agents,
-        rules=rules,
-        mcp=mcp,
-        config_dir=path.parent,
-    )
+    cfg = _parse_config_data(data, require_targets=False, prefix="global ")
+    return cfg, path.parent
 
 
-def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConfig:
+# ---------------------------------------------------------------------------
+# Merging
+# ---------------------------------------------------------------------------
+
+
+def _merge_deps(
+    project_list: list[DependencySource],
+    global_list: list[DependencySource],
+) -> list[DependencySource]:
+    """Merge two dependency lists, deduplicating by identity."""
+    seen = {d.identity for d in project_list}
+    merged = list(project_list)
+    for dep in global_list:
+        if dep.identity not in seen:
+            merged.append(dep)
+            seen.add(dep.identity)
+    return merged
+
+
+def _merge_configs(project: AgpackConfig, global_cfg: AgpackConfig) -> AgpackConfig:
     """Merge a global config into a project config.
 
     Global dependencies are appended after project dependencies.
-    Duplicates are resolved in favour of the project config:
-
-    - Dependencies are deduplicated by :attr:`DependencySource.identity`.
-    - MCP servers are deduplicated by :attr:`McpServer.name`.
+    Duplicates are resolved in favour of the project config.
 
     Returns a **new** :class:`AgpackConfig`; the inputs are not mutated.
     """
+    merged_deps = {
+        dep_field: _merge_deps(getattr(project, dep_field), getattr(global_cfg, dep_field)) for dep_field in _DEP_FIELDS
+    }
+
     project_mcp_names = {m.name for m in project.mcp}
-
-    def _merge_deps(
-        project_list: list[DependencySource],
-        global_list: list[DependencySource],
-    ) -> list[DependencySource]:
-        seen = {d.identity for d in project_list}
-        merged = list(project_list)
-        for dep in global_list:
-            if dep.identity not in seen:
-                merged.append(dep)
-                seen.add(dep.identity)
-        return merged
-
-    skills = _merge_deps(project.skills, global_cfg.skills)
-    commands = _merge_deps(project.commands, global_cfg.commands)
-    agents = _merge_deps(project.agents, global_cfg.agents)
-    rules = _merge_deps(project.rules, global_cfg.rules)
-
-    # Merge MCP — project names take precedence
-    mcp = list(project.mcp)
-    for server in global_cfg.mcp:
-        if server.name not in project_mcp_names:
-            mcp.append(server)
+    merged_mcp = list(project.mcp) + [s for s in global_cfg.mcp if s.name not in project_mcp_names]
 
     return AgpackConfig(
         targets=project.targets,
-        skills=skills,
-        commands=commands,
-        agents=agents,
-        rules=rules,
-        mcp=mcp,
+        mcp=merged_mcp,
         use_global=project.use_global,
+        **merged_deps,
     )
+
+
+# ---------------------------------------------------------------------------
+# Environment variable substitution
+# ---------------------------------------------------------------------------
+
+_VAR_PATTERN = re.compile(r"\$\{([^}]+)}")
+
+
+def _load_dotenv(project_root: Path) -> dict[str, str]:
+    """Load variables from a ``.env`` file in *project_root*.
+
+    Returns an empty dict when the file does not exist.
+    """
+    env_path = project_root / ".env"
+    if not env_path.exists():
+        return {}
+
+    result: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if line.startswith("export "):
+            line = line[len("export ") :]
+
+        key, _, value = line.partition("=")
+        if not _:
+            continue
+
+        key = key.strip()
+        value = value.strip()
+
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+
+        result[key] = value
+
+    return result
+
+
+def _resolve_env_vars(value: str, env: dict[str, str], *, context: str = "") -> str:
+    """Replace all ``${VAR}`` references in *value* from *env*.
+
+    Raises :class:`ConfigError` if a referenced variable is not defined.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        try:
+            return env[var_name]
+        except KeyError:
+            hint = context + ": " if context else ""
+            raise ConfigError(
+                f"{hint}environment variable '{var_name}' is not set. Define it in .env or your shell environment."
+            ) from None
+
+    return _VAR_PATTERN.sub(_replace, value)
+
+
+def _build_env(
+    project_root: Path,
+    global_config_dir: Path | None = None,
+    *,
+    verbose: bool = False,
+) -> dict[str, str]:
+    """Build a merged environment dict for variable substitution.
+
+    Resolution order (highest priority first):
+      1. Project ``.env`` (from *project_root*)
+      2. Global ``.env`` (from *global_config_dir*)
+      3. Shell environment (``os.environ``)
+    """
+    global_dotenv: dict[str, str] = {}
+    if global_config_dir is not None:
+        global_dotenv = _load_dotenv(global_config_dir)
+
+    project_dotenv = _load_dotenv(project_root)
+    merged = {**os.environ, **global_dotenv, **project_dotenv}
+
+    if verbose:
+        from agpack.display import console
+
+        if global_dotenv:
+            console.print(f"  Loaded {len(global_dotenv)} variable(s) from global .env")
+        if project_dotenv:
+            console.print(f"  Loaded {len(project_dotenv)} variable(s) from project .env")
+
+    return merged
+
+
+def _resolve_config(
+    config: AgpackConfig,
+    project_root: Path,
+    *,
+    global_config_dir: Path | None = None,
+    verbose: bool = False,
+) -> None:
+    """Resolve ``${VAR}`` references in config values in-place.
+
+    Substitutes ``${VAR}`` references in **all** string fields across
+    the config: dependency URLs, paths, refs, MCP commands, args, env
+    values, and MCP URLs.
+    """
+    merged = _build_env(project_root, global_config_dir, verbose=verbose)
+
+    for dep_field in _DEP_FIELDS:
+        for dep in getattr(config, dep_field):
+            ctx = f"dependency '{dep.name}'"
+            dep.urls = [_resolve_env_vars(u, merged, context=ctx) for u in dep.urls]
+            if dep.path is not None:
+                dep.path = _resolve_env_vars(dep.path, merged, context=ctx)
+            if dep.ref is not None:
+                dep.ref = _resolve_env_vars(dep.ref, merged, context=ctx)
+
+    for server in config.mcp:
+        ctx = f"mcp server '{server.name}'"
+        if server.command is not None:
+            server.command = _resolve_env_vars(server.command, merged, context=ctx)
+        server.args = [_resolve_env_vars(a, merged, context=ctx) for a in server.args]
+        for key, value in server.env.items():
+            server.env[key] = _resolve_env_vars(value, merged, context=ctx)
+        if server.url is not None:
+            server.url = _resolve_env_vars(server.url, merged, context=ctx)
+
+
+# ---------------------------------------------------------------------------
+# High-level: load, merge, resolve in one call
+# ---------------------------------------------------------------------------
+
+
+def load_resolved_config(
+    config_path: Path,
+    *,
+    no_global: bool = False,
+    verbose: bool = False,
+) -> AgpackConfig:
+    """Load, merge global config, and resolve env vars — all in one step.
+
+    This is the main entry point for obtaining a fully-ready config.
+
+    Args:
+        config_path: Path to the project ``agpack.yml``.
+        no_global: If *True*, skip loading the global config.
+        verbose: Print diagnostic messages.
+
+    Returns:
+        A fully resolved :class:`AgpackConfig`.
+
+    Raises:
+        ConfigError: If any config file is invalid or a ``${VAR}`` cannot
+            be resolved.
+    """
+    project_root = config_path.parent
+
+    config = _load_project_config(config_path)
+
+    global_config_dir: Path | None = None
+    if not no_global and config.use_global:
+        result = _load_global_config()
+        if result is not None:
+            global_cfg, global_config_dir = result
+            if verbose:
+                from agpack.display import console
+
+                console.print("  Loaded global config")
+            config = _merge_configs(config, global_cfg)
+
+    _resolve_config(config, project_root, global_config_dir=global_config_dir, verbose=verbose)
+
+    return config

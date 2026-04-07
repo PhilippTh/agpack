@@ -8,6 +8,7 @@ from concurrent.futures import as_completed
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+from typing import Callable
 
 import click
 from rich.progress import Progress
@@ -16,24 +17,15 @@ from rich.rule import Rule
 from rich.table import Table
 
 from agpack import __version__
-from agpack.assets import AgentHandler
-from agpack.assets import CommandHandler
-from agpack.assets import DeployError
-from agpack.assets import RuleHandler
-from agpack.assets import SkillHandler
-from agpack.assets import cleanup_deployed_files
-from agpack.assets import cleanup_rule_append_targets
-from agpack.assets import AssetHandler
+from agpack.cleanup import cleanup_deployed_files
+from agpack.cleanup import cleanup_mcp_server
+from agpack.cleanup import cleanup_rule_append_targets
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
 from agpack.config import DependencySource
-from agpack.config import GlobalConfig
-from agpack.config import load_config
-from agpack.config import load_global_config
-from agpack.config import merge_configs
+from agpack.config import load_resolved_config
 from agpack.display import console
 from agpack.display import create_sync_progress
-from agpack.envsubst import resolve_config
 from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
 from agpack.fetcher import cleanup_fetch
@@ -43,10 +35,30 @@ from agpack.lockfile import Lockfile
 from agpack.lockfile import McpLockEntry
 from agpack.lockfile import read_lockfile
 from agpack.lockfile import write_lockfile
-from agpack.mcp import cleanup_mcp_server
-from agpack.mcp import deploy_mcp_servers
+from agpack.resolvers import ResolveError
+from agpack.resolvers import resolve_agents
+from agpack.resolvers import resolve_commands
+from agpack.resolvers import resolve_mcp
+from agpack.resolvers import resolve_rules
+from agpack.resolvers import resolve_rules_append
+from agpack.resolvers import resolve_skills
+from agpack.writer import WriteError
+from agpack.writer import WriteOp
+from agpack.writer import execute_write_ops
 
 _MAX_FETCH_WORKERS = 8
+
+# ---------------------------------------------------------------------------
+# Resolver registry — maps resource type name to its resolver function.
+# Each resolver takes (FetchResult, targets) and returns a list of WriteOps.
+# Rules are special-cased because they also return collected bodies.
+# ---------------------------------------------------------------------------
+
+_SIMPLE_RESOLVERS: dict[str, Callable[[FetchResult, list[str]], list[WriteOp]]] = {
+    "skill": resolve_skills,
+    "command": resolve_commands,
+    "agent": resolve_agents,
+}
 
 
 def _source_file_count(deployed: list[str]) -> int:
@@ -63,15 +75,17 @@ def _source_file_count(deployed: list[str]) -> int:
 
 
 @dataclass
-class SyncResult:
-    """Outcome of syncing one resource type."""
+class _DepSyncResult:
+    """Per-dependency result after resolve + write."""
 
-    count: int = 0
-    verbose_lines: list[str] = field(default_factory=list)
+    items_count: int = 0
+    deployed_files: list[str] = field(default_factory=list)
 
 
-def _sync_resource_type(  # noqa: C901
-    handler: AssetHandler,
+def _fetch_and_resolve(  # noqa: C901
+    deps: list[DependencySource],
+    resource_type: str,
+    resolve_fn: Callable[[FetchResult, list[str]], list[WriteOp]],
     config: AgpackConfig,
     project_root: Path,
     new_lockfile: Lockfile,
@@ -79,23 +93,22 @@ def _sync_resource_type(  # noqa: C901
     *,
     dry_run: bool,
     verbose: bool,
-) -> SyncResult:
-    """Fetch and deploy a list of dependencies of a single type.
+    all_rule_bodies: list[tuple[str, str]] | None = None,
+) -> int:
+    """Fetch, resolve, and write dependencies of a single resource type.
 
-    On error, writes a partial lockfile (with what has been synced so far)
-    before raising ClickException.
+    For rules, also populates *all_rule_bodies* with collected
+    (name, body) pairs for the append-based targets.
+
+    Returns the count of synced items.
     """
-    deps = handler.deps
-    resource_type = handler.resource_type
-
     if not deps:
-        return SyncResult()
+        return 0
 
-    # Phase 1: parallel fetch — collect all results and errors
+    # Phase 1: parallel fetch
     results: list[tuple[DependencySource, FetchResult]] = []
     errors: list[str] = []
 
-    # Add a progress row per dependency
     task_ids: dict[str, TaskID] = {}
     for dep in deps:
         task_ids[dep.identity] = progress.add_task(
@@ -117,7 +130,7 @@ def _sync_resource_type(  # noqa: C901
                 errors.append(f"  - {resource_type} '{dep.name}': {exc}")
                 progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
 
-    # Phase 2: collect-all error handling
+    # Phase 2: error handling
     if errors:
         for _, result in results:
             cleanup_fetch(result)
@@ -125,27 +138,39 @@ def _sync_resource_type(  # noqa: C901
             write_lockfile(project_root, new_lockfile)
         raise click.ClickException("\n".join([f"Failed to fetch {len(errors)} {resource_type}(s):"] + errors))
 
-    # Phase 3: sequential deploy — update progress rows, collect verbose output
-    sync = SyncResult()
+    # Phase 3: resolve + write per dependency
+    total_count = 0
+
     for dep, result in results:
         tid = task_ids[dep.identity]
 
         try:
-            items = handler.detect_items(result)
-        except Exception as exc:
+            # Resolve: produce WriteOps from fetched content
+            if resource_type == "rule" and all_rule_bodies is not None:
+                ops, bodies = resolve_rules(result, config.targets)
+                all_rule_bodies.extend(bodies)
+                # Count items by number of rule bodies (one per detected rule file)
+                items_count = len(bodies)
+            else:
+                ops = resolve_fn(result, config.targets)
+                # Estimate items: for skills, count unique second-level paths;
+                # for commands/agents, count unique filenames across targets
+                items_count = _count_items_from_ops(ops, resource_type)
+        except (ResolveError, Exception) as exc:
             progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
             cleanup_fetch(result)
             if not dry_run:
                 write_lockfile(project_root, new_lockfile)
             raise click.ClickException(f"Error deploying {resource_type} '{dep.name}': {exc}") from exc
 
-        is_expanded = len(items) > 1
+        is_expanded = items_count > 1
 
         # Add sub-rows for expanded dependencies
         sub_task_ids: list[TaskID] = []
         if is_expanded:
-            for i, (item_name, _) in enumerate(items):
-                is_last = i == len(items) - 1
+            item_names = _extract_item_names(ops, resource_type)
+            for i, item_name in enumerate(item_names):
+                is_last = i == len(item_names) - 1
                 branch = "└── " if is_last else "├── "
                 sub_tid = progress.add_task(
                     f"[dim]    {branch}[/dim]{item_name}",
@@ -155,96 +180,117 @@ def _sync_resource_type(  # noqa: C901
                 )
                 sub_task_ids.append(sub_tid)
 
-        # Deploy each item individually
-        all_deployed: list[str] = []
-        for idx, (item_name, item_path) in enumerate(items):
-            try:
-                files = handler.deploy_item(
-                    item_name,
-                    item_path,
-                    config.targets,
-                    project_root,
-                    dry_run=dry_run,
-                    verbose=False,
-                )
-            except Exception as exc:
-                if is_expanded:
+        # Execute write ops
+        try:
+            deployed_files = execute_write_ops(
+                ops,
+                project_root,
+                dry_run=dry_run,
+                verbose=False,
+            )
+        except (WriteError, Exception) as exc:
+            progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
+            cleanup_fetch(result)
+            if not dry_run:
+                write_lockfile(project_root, new_lockfile)
+            raise click.ClickException(f"Error deploying {resource_type} '{dep.name}': {exc}") from exc
+
+        # Update sub-rows if expanded
+        if is_expanded and sub_task_ids:
+            # Group deployed files by item name for sub-row progress
+            item_names = _extract_item_names(ops, resource_type)
+            files_per_item = _group_deployed_by_item(deployed_files, resource_type)
+            for idx, item_name in enumerate(item_names):
+                if idx < len(sub_task_ids):
+                    item_files = files_per_item.get(item_name, [])
+                    n = _source_file_count(item_files) if item_files else 0
                     progress.update(
                         sub_task_ids[idx],
                         completed=1,
-                        icon="[red]✗[/red]",
-                        detail=str(exc),
+                        icon="[green]✓[/green]",
+                        detail=f"Copied {n} {'file' if n == 1 else 'files'}",
                     )
-                progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
-                cleanup_fetch(result)
-                if not dry_run:
-                    write_lockfile(project_root, new_lockfile)
-                raise click.ClickException(f"Error deploying {resource_type} '{dep.name}': {exc}") from exc
 
-            all_deployed.extend(files)
-
-            if is_expanded:
-                n = _source_file_count(files)
-                progress.update(
-                    sub_task_ids[idx],
-                    completed=1,
-                    icon="[green]✓[/green]",
-                    detail=f"Copied {n} {'file' if n == 1 else 'files'}",
-                )
-
-        # Update parent row — show source file count, not total across targets
-        src_files = _source_file_count(all_deployed)
+        # Update parent row
+        src_files = _source_file_count(deployed_files)
         if is_expanded:
-            item_label = f"{resource_type}s" if len(items) != 1 else resource_type
-            detail = f"Copied {len(items)} {item_label}"
-            sync.count += len(items)
+            item_label = f"{resource_type}s" if items_count != 1 else resource_type
+            detail = f"Copied {items_count} {item_label}"
+            total_count += items_count
         else:
             file_label = "file" if src_files == 1 else "files"
             detail = f"Copied {src_files} {file_label}"
-            sync.count += 1
+            total_count += 1
 
         progress.update(tid, completed=2, icon="[green]✓[/green]", detail=detail)
 
-        if verbose:
-            sync.verbose_lines.extend(f"  {f}" for f in all_deployed)
-
+        # Record in lockfile
         new_lockfile.installed.append(
             InstalledEntry(
                 url=dep.url,
                 path=dep.path,
                 resolved_ref=result.resolved_ref,
                 type=resource_type,
-                deployed_files=all_deployed,
+                deployed_files=deployed_files,
             )
         )
         cleanup_fetch(result)
 
-    return sync
+    return total_count
 
 
-def _load_and_merge_global(
-    config: AgpackConfig,
-    *,
-    verbose: bool = False,
-) -> tuple[AgpackConfig, GlobalConfig | None]:
-    """Load the global config and merge it into *config*.
+def _count_items_from_ops(ops: list[WriteOp], resource_type: str) -> int:
+    """Count the number of distinct items from a list of write ops.
 
-    Returns the (possibly merged) config and the raw global config
-    (needed later for ``.env`` resolution).  If the global config
-    doesn't exist or is disabled, the original config is returned
-    unchanged together with ``None``.
+    For skills: count unique item names (3rd path component).
+    For commands/agents: count unique filenames across targets.
     """
-    try:
-        global_cfg = load_global_config()
-    except ConfigError as exc:
-        raise click.ClickException(f"Global config error: {exc}") from exc
+    if not ops:
+        return 0
 
-    if global_cfg is not None:
-        if verbose:
-            console.print("  Loaded global config")
-        config = merge_configs(config, global_cfg)
+    if resource_type == "skill":
+        # Skill dst_rel looks like: .claude/skills/<name>/...
+        names = set()
+        for op in ops:
+            parts = Path(op.dst_rel).parts
+            if len(parts) >= 3:
+                names.add(parts[2])
+        return max(len(names), 1)
 
-    return config, global_cfg
+    # Commands/agents: dst_rel looks like .claude/commands/<filename>
+    names = set()
+    for op in ops:
+        parts = Path(op.dst_rel).parts
+        if len(parts) >= 3:
+            names.add(parts[2])
+    return max(len(names), 1)
+
+
+def _extract_item_names(ops: list[WriteOp], resource_type: str) -> list[str]:
+    """Extract unique, ordered item names from write ops for progress display."""
+    seen: set[str] = set()
+    names: list[str] = []
+
+    for op in ops:
+        parts = Path(op.dst_rel).parts
+        if len(parts) >= 3:
+            name = parts[2]
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+
+    return names
+
+
+def _group_deployed_by_item(deployed_files: list[str], resource_type: str) -> dict[str, list[str]]:
+    """Group deployed file paths by their item name (3rd path component)."""
+    groups: dict[str, list[str]] = {}
+    for f in deployed_files:
+        parts = Path(f).parts
+        if len(parts) >= 3:
+            name = parts[2]
+            groups.setdefault(name, []).append(f)
+    return groups
 
 
 @click.group()
@@ -274,24 +320,13 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     project_root = cfg_path.parent
     start_time = time.monotonic()
 
-    # 1. Load and validate config
+    # 1. Load, merge global, and resolve env vars
     try:
-        config = load_config(cfg_path)
+        config = load_resolved_config(cfg_path, no_global=no_global, verbose=verbose)
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    # 2. Load and merge global config
-    global_cfg: GlobalConfig | None = None
-    if not no_global and config.use_global:
-        config, global_cfg = _load_and_merge_global(config, verbose=verbose)
-
-    # 3. Resolve ${VAR} references in config values
-    try:
-        resolve_config(config, project_root, global_config=global_cfg, verbose=verbose)
-    except ConfigError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    # 4. Read existing lockfile
+    # 2. Read existing lockfile
     old_lockfile = read_lockfile(project_root)
 
     # 5. Build set of current dependency identities
@@ -329,73 +364,84 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             verbose=verbose,
         )
 
-    # 8. Fetch and deploy dependencies
+    # 8. Fetch, resolve, and write — all resource types
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
+    all_rule_bodies: list[tuple[str, str]] = []
 
-    handlers: list[AssetHandler] = [
-        SkillHandler(config.skills),
-        CommandHandler(config.commands),
-        AgentHandler(config.agents),
-        RuleHandler(config.rules),
+    resource_types: list[tuple[str, list[DependencySource]]] = [
+        ("skill", config.skills),
+        ("command", config.commands),
+        ("agent", config.agents),
+        ("rule", config.rules),
     ]
 
-    all_verbose_lines: list[str] = []
-
     with create_sync_progress() as progress:
-        for handler in handlers:
-            sync = _sync_resource_type(
-                handler,
+        for resource_type, deps in resource_types:
+            resolve_fn = _SIMPLE_RESOLVERS.get(resource_type, resolve_skills)
+            count = _fetch_and_resolve(
+                deps,
+                resource_type,
+                resolve_fn,
                 config,
                 project_root,
                 new_lockfile,
                 progress,
                 dry_run=dry_run,
                 verbose=verbose,
+                all_rule_bodies=all_rule_bodies if resource_type == "rule" else None,
             )
-            counts[handler.resource_type] = sync.count
-            all_verbose_lines.extend(sync.verbose_lines)
+            counts[resource_type] = count
 
-    for line in all_verbose_lines:
-        console.print(line)
+    # 9. Write append-based rule targets (uniform — no more finalize())
+    if all_rule_bodies:
+        append_ops = resolve_rules_append(all_rule_bodies, config.targets)
+        try:
+            append_deployed = execute_write_ops(
+                append_ops,
+                project_root,
+                dry_run=dry_run,
+                verbose=verbose,
+            )
+        except WriteError as exc:
+            if not dry_run:
+                write_lockfile(project_root, new_lockfile)
+            raise click.ClickException(str(exc)) from exc
 
-    # Post-deploy hooks (e.g. rules batch-write to append targets)
-    for handler in handlers:
-        finalize_deployed = handler.finalize(
-            config.targets,
-            project_root,
-            dry_run=dry_run,
-            verbose=verbose,
-        )
-        if verbose and finalize_deployed:
-            all_verbose_lines.extend(f"  {p}" for p in finalize_deployed)
+        # Track append-target files in the lockfile under the last rule entry
+        # so they get cleaned up properly
+        if append_deployed and new_lockfile.installed:
+            for entry in reversed(new_lockfile.installed):
+                if entry.type == "rule":
+                    entry.deployed_files.extend(append_deployed)
+                    break
 
-    # MCP servers
+    # 10. MCP servers — now resolved uniformly into WriteOps
     mcp_count = 0
     if config.mcp:
         with console.status("Deploying MCP servers..."):
+            mcp_ops = resolve_mcp(config.mcp, config.targets)
             try:
-                mcp_result = deploy_mcp_servers(
-                    config.mcp,
-                    config.targets,
+                mcp_deployed = execute_write_ops(
+                    mcp_ops,
                     project_root,
                     dry_run=dry_run,
                     verbose=verbose,
                 )
-            except DeployError as exc:
+            except WriteError as exc:
                 if not dry_run:
                     write_lockfile(project_root, new_lockfile)
                 raise click.ClickException(str(exc)) from exc
 
-        for server_name, target_paths in mcp_result.items():
-            new_lockfile.mcp.append(McpLockEntry(name=server_name, targets=target_paths))
-            mcp_count += 1
+        # Build MCP lockfile entries (group deployed paths by server name)
+        _record_mcp_lockfile(config, mcp_deployed, new_lockfile)
+        mcp_count = len(config.mcp)
 
-    # 9. Write lockfile
+    # 11. Write lockfile
     if not dry_run:
         write_lockfile(project_root, new_lockfile)
 
-    # 10. Summary
+    # 12. Summary
     elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
     summary_items = [
@@ -410,6 +456,31 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     targets = f"[bold]{target_count}[/bold] targets"
     console.print()
     console.print(Rule(f"{summary} → {targets} [dim]({elapsed:.2f}s)[/dim]"))
+
+
+def _record_mcp_lockfile(
+    config: AgpackConfig,
+    mcp_deployed: list[str],
+    new_lockfile: Lockfile,
+) -> None:
+    """Record MCP server entries in the lockfile.
+
+    Groups deployed config file paths by server name so that cleanup
+    knows which files to remove when a server is removed.
+    """
+    # Each server writes to one config file per target. Since we process
+    # servers × targets in order, we can reconstruct the mapping.
+    from agpack.targets import MCP_TARGETS
+
+    for server in config.mcp:
+        target_paths: list[str] = []
+        for target in config.targets:
+            target_cfg = MCP_TARGETS.get(target)
+            if target_cfg is None:
+                continue
+            if target_cfg.config_path in mcp_deployed:
+                target_paths.append(target_cfg.config_path)
+        new_lockfile.mcp.append(McpLockEntry(name=server.name, targets=target_paths))
 
 
 @main.command()
@@ -431,13 +502,9 @@ def status(config_path: str, no_global: bool) -> None:  # noqa: C901
     project_root = cfg_path.parent
 
     try:
-        config = load_config(cfg_path)
+        config = load_resolved_config(cfg_path, no_global=no_global)
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
-
-    # Load and merge global config
-    if not no_global and config.use_global:
-        config, _ = _load_and_merge_global(config)
 
     lockfile = read_lockfile(project_root)
 
