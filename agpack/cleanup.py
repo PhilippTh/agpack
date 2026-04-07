@@ -20,11 +20,10 @@ from agpack.targets import IGNORE_FILES
 from agpack.targets import MCP_TARGETS
 from agpack.targets import RULE_TARGETS
 from agpack.targets import McpTargetConfig
-from agpack.writer import IGNORE_START_MARKER
 from agpack.writer import IGNORE_END_MARKER
-from agpack.writer import RULES_START_MARKER
+from agpack.writer import IGNORE_START_MARKER
 from agpack.writer import RULES_END_MARKER
-
+from agpack.writer import RULES_START_MARKER
 
 # ---------------------------------------------------------------------------
 # File cleanup
@@ -182,6 +181,27 @@ def cleanup_ignore_files(
 # ---------------------------------------------------------------------------
 
 
+def _remove_hooks_from_json(config_path: Path, hooks_key: str, target: str) -> None:
+    """Remove the hooks key from a JSON config file."""
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+
+    if hooks_key not in data:
+        return
+
+    del data[hooks_key]
+    # For Cursor, also remove the version key if hooks were the only content
+    if target == "cursor" and "version" in data and len(data) == 1:
+        data.pop("version", None)
+
+    if data:
+        atomic_write_text(config_path, json.dumps(data, indent=2) + "\n")
+    else:
+        config_path.unlink()
+
+
 def cleanup_hook_configs(
     targets: list[str],
     project_root: Path,
@@ -212,20 +232,7 @@ def cleanup_hook_configs(
                 console.print(f"  [dry-run] remove hooks from {target_cfg.config_path}")
             continue
 
-        try:
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-
-        if target_cfg.hooks_key in data:
-            del data[target_cfg.hooks_key]
-            # For Cursor, also remove the version key if hooks were the only content
-            if target == "cursor" and "version" in data and len(data) == 1:
-                data.pop("version", None)
-            if data:
-                atomic_write_text(config_path, json.dumps(data, indent=2) + "\n")
-            else:
-                config_path.unlink()
+        _remove_hooks_from_json(config_path, target_cfg.hooks_key, target)
 
         if verbose:
             console.print(f"  removed hooks from {target_cfg.config_path}")

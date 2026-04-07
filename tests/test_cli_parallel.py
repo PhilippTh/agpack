@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import click

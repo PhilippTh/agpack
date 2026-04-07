@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from agpack.cleanup import cleanup_rule_append_targets
 from agpack.config import DependencySource
 from agpack.fetcher import FetchResult

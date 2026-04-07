@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
-from typing import Callable
 
 import click
 from rich.progress import Progress

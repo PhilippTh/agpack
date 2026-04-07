@@ -19,7 +19,6 @@ from agpack.resolvers import resolve_hooks
 from agpack.targets import translate_hook_event
 from agpack.writer import execute_write_ops
 
-
 # ---------------------------------------------------------------------------
 # translate_hook_event
 # ---------------------------------------------------------------------------
@@ -182,7 +181,7 @@ class TestResolveHookConfigs:
             )
         ]
         ops = resolve_hook_configs(hooks, ["claude"])
-        deployed = execute_write_ops(ops, project)
+        execute_write_ops(ops, project)
 
         data = json.loads((project / ".claude/settings.json").read_text())
         entries = data["hooks"]["PostToolUse"]
@@ -219,7 +218,7 @@ class TestResolveHookConfigs:
             HookConfig(name="post", event="PostToolUse", command="post.sh"),
         ]
         ops = resolve_hook_configs(hooks, ["cursor"])
-        deployed = execute_write_ops(ops, project)
+        execute_write_ops(ops, project)
 
         data = json.loads((project / ".cursor/hooks.json").read_text())
         assert "beforeFileEdit" in data["hooks"]
@@ -233,7 +232,7 @@ class TestResolveHookConfigs:
             HookConfig(name="lint", event="PostToolUse", command="lint.sh", matcher="Write"),
         ]
         ops = resolve_hook_configs(hooks, ["claude"])
-        deployed = execute_write_ops(ops, project)
+        execute_write_ops(ops, project)
 
         data = json.loads((project / ".claude/settings.json").read_text())
         entries = data["hooks"]["PostToolUse"]
@@ -251,7 +250,7 @@ class TestResolveHookConfigs:
         assert ".claude/settings.json" in deployed
         assert ".cursor/hooks.json" in deployed
 
-    def test_skips_unsupported_targets(self, tmp_path: Path) -> None:
+    def test_skips_unsupported_targets(self) -> None:
         hooks = [
             HookConfig(name="format", event="PostToolUse", command="format.sh"),
         ]

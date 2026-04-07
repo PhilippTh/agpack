@@ -370,7 +370,7 @@ def resolve_rules_append(
 
 def resolve_ignores(
     fetch_result: FetchResult,
-    targets: list[str],
+    targets: list[str],  # noqa: ARG001
 ) -> tuple[list[WriteOp], list[str]]:
     """Read ignore pattern content from a fetched source.
 
@@ -379,7 +379,6 @@ def resolve_ignores(
         (ignore files are written via ``resolve_ignores_append``) and
         patterns is a list of pattern strings to aggregate.
     """
-    local_path = fetch_result.local_path
     items = detect_single_file_items(fetch_result, "ignore")
 
     patterns: list[str] = []

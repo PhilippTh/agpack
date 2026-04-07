@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from agpack.cleanup import cleanup_ignore_files
 from agpack.config import DependencySource
 from agpack.config import load_resolved_config
@@ -20,7 +18,6 @@ from agpack.writer import build_ignore_section
 from agpack.writer import execute_write_ops
 from agpack.writer import merge_into_ignore_section
 from agpack.writer import remove_ignore_section
-
 
 # ---------------------------------------------------------------------------
 # build_ignore_section
@@ -222,7 +219,7 @@ class TestResolveIgnoresAppend:
         project = tmp_path / "project"
         project.mkdir()
         ops = resolve_ignores_append([".env*\n*.pem", "dist/\nbuild/"], ["claude"])
-        deployed = execute_write_ops(ops, project)
+        execute_write_ops(ops, project)
 
         content = (project / ".claudeignore").read_text()
         assert ".env*" in content

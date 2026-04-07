@@ -9,7 +9,6 @@ import pytest
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
 from agpack.config import DependencySource
-from agpack.config import McpServer
 from agpack.config import load_resolved_config
 
 # ---------------------------------------------------------------------------
