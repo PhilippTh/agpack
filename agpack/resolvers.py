@@ -16,14 +16,18 @@ from typing import Any
 
 import yaml
 
+from agpack.config import HookConfig
 from agpack.config import McpServer
 from agpack.fetcher import FetchResult
 from agpack.targets import AGENT_DIRS
 from agpack.targets import COMMAND_DIRS
+from agpack.targets import HOOK_CONFIG_TARGETS
+from agpack.targets import HOOK_SCRIPT_DIRS
 from agpack.targets import IGNORE_FILES
 from agpack.targets import MCP_TARGETS
 from agpack.targets import RULE_TARGETS
 from agpack.targets import SKILL_DIRS
+from agpack.targets import translate_hook_event
 from agpack.writer import CopyFileOp
 from agpack.writer import CopyTreeOp
 from agpack.writer import IgnoreSectionOp
@@ -410,6 +414,124 @@ def resolve_ignores_append(
             continue
         seen.add(ignore_file)
         ops.append(IgnoreSectionOp(patterns=combined, dst_rel=ignore_file))
+
+    return ops
+
+
+# ---------------------------------------------------------------------------
+# Hook resolver
+# ---------------------------------------------------------------------------
+
+
+def resolve_hooks(fetch_result: FetchResult, targets: list[str]) -> list[WriteOp]:
+    """Produce write ops for hook script files.
+
+    Hook scripts are copied to ``.agpack/hooks/`` (shared location) and
+    additionally to target-specific script directories (e.g.
+    ``.cursor/hooks/``).
+    """
+    items = detect_single_file_items(fetch_result, "hook")
+    ops: list[WriteOp] = []
+
+    for name, path in items:
+        # Always copy to .agpack/hooks/ (the shared location referenced by configs)
+        ops.append(CopyFileOp(src=path, dst_rel=f".agpack/hooks/{name}"))
+
+        # Also copy to target-specific script directories
+        seen_dirs: set[str] = set()
+        for target in targets:
+            script_dir = HOOK_SCRIPT_DIRS.get(target)
+            if script_dir is None or script_dir in seen_dirs:
+                continue
+            seen_dirs.add(script_dir)
+            ops.append(CopyFileOp(src=path, dst_rel=f"{script_dir}/{name}"))
+
+    return ops
+
+
+def _build_claude_hook_entry(hook: HookConfig) -> dict[str, object]:
+    """Build a single Claude hook entry object."""
+    inner: dict[str, object] = {
+        "type": "command",
+        "command": hook.command,
+    }
+    entry: dict[str, object] = {"hooks": [inner]}
+    if hook.matcher:
+        entry["matcher"] = hook.matcher
+    return entry
+
+
+def _build_cursor_hook_entry(hook: HookConfig) -> dict[str, object]:
+    """Build a single Cursor hook entry object."""
+    return {"command": hook.command}
+
+
+def resolve_hook_configs(
+    hook_configs: list[HookConfig],
+    targets: list[str],
+) -> list[WriteOp]:
+    """Produce MergeJsonOps for hook config entries.
+
+    Builds the hook config structure for each target and produces
+    merge operations to write them into the target's config file.
+    """
+    if not hook_configs:
+        return []
+
+    ops: list[WriteOp] = []
+    seen: set[str] = set()
+
+    for target in targets:
+        target_cfg = HOOK_CONFIG_TARGETS.get(target)
+        if target_cfg is None:
+            continue
+        if target_cfg.config_path in seen:
+            continue
+        seen.add(target_cfg.config_path)
+
+        # Build the hooks structure for this target
+        hooks_data: dict[str, list[dict[str, object]]] = {}
+
+        for hook in hook_configs:
+            event = translate_hook_event(hook.event, target)
+
+            if target == "claude":
+                entry = _build_claude_hook_entry(hook)
+            elif target == "cursor":
+                entry = _build_cursor_hook_entry(hook)
+            else:
+                continue
+
+            hooks_data.setdefault(event, []).append(entry)
+
+        if not hooks_data:
+            continue
+
+        # For Cursor, the top-level needs a "version" key
+        if target == "cursor":
+            ops.append(
+                MergeJsonOp(
+                    data=hooks_data,
+                    dst_rel=target_cfg.config_path,
+                    key=target_cfg.hooks_key,
+                )
+            )
+            # Also ensure "version": 1 at the top level
+            ops.append(
+                MergeJsonOp(
+                    data={"version": 1},
+                    dst_rel=target_cfg.config_path,
+                    key="",
+                )
+            )
+        else:
+            ops.append(
+                MergeJsonOp(
+                    data=hooks_data,
+                    dst_rel=target_cfg.config_path,
+                    key=target_cfg.hooks_key,
+                )
+            )
 
     return ops
 

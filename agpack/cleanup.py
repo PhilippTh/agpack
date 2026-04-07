@@ -15,6 +15,7 @@ import tomli_w
 
 from agpack.display import console
 from agpack.fileutil import atomic_write_text
+from agpack.targets import HOOK_CONFIG_TARGETS
 from agpack.targets import IGNORE_FILES
 from agpack.targets import MCP_TARGETS
 from agpack.targets import RULE_TARGETS
@@ -174,6 +175,60 @@ def cleanup_ignore_files(
 
         if verbose:
             console.print(f"  cleaned managed section in {ignore_file}")
+
+
+# ---------------------------------------------------------------------------
+# Hook config cleanup
+# ---------------------------------------------------------------------------
+
+
+def cleanup_hook_configs(
+    targets: list[str],
+    project_root: Path,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> None:
+    """Remove agpack-managed hook entries from target config files.
+
+    Called when all hook_configs have been removed from the config.
+    Removes the ``hooks`` key from each target's config file.
+    """
+    seen_paths: set[str] = set()
+
+    for target in targets:
+        target_cfg = HOOK_CONFIG_TARGETS.get(target)
+        if target_cfg is None:
+            continue
+        if target_cfg.config_path in seen_paths:
+            continue
+        seen_paths.add(target_cfg.config_path)
+
+        config_path = project_root / target_cfg.config_path
+        if not config_path.exists():
+            continue
+
+        if dry_run:
+            if verbose:
+                console.print(f"  [dry-run] remove hooks from {target_cfg.config_path}")
+            continue
+
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        if target_cfg.hooks_key in data:
+            del data[target_cfg.hooks_key]
+            # For Cursor, also remove the version key if hooks were the only content
+            if target == "cursor" and "version" in data and len(data) == 1:
+                data.pop("version", None)
+            if data:
+                atomic_write_text(config_path, json.dumps(data, indent=2) + "\n")
+            else:
+                config_path.unlink()
+
+        if verbose:
+            console.print(f"  removed hooks from {target_cfg.config_path}")
 
 
 # ---------------------------------------------------------------------------

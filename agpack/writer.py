@@ -320,7 +320,10 @@ def execute_write_ops(
 
 
 def _merge_json(config_path: Path, key: str, data: dict[str, Any]) -> None:
-    """Merge data into a key of a JSON config file."""
+    """Merge data into a key of a JSON config file.
+
+    When *key* is empty, merges directly into the top level.
+    """
     existing: dict[str, Any] = {}
     if config_path.exists():
         try:
@@ -328,9 +331,12 @@ def _merge_json(config_path: Path, key: str, data: dict[str, Any]) -> None:
         except (json.JSONDecodeError, OSError) as exc:
             raise WriteError(f"Failed to read {config_path}: {exc}") from exc
 
-    if key not in existing:
-        existing[key] = {}
-    existing[key].update(data)
+    if not key:
+        existing.update(data)
+    else:
+        if key not in existing:
+            existing[key] = {}
+        existing[key].update(data)
 
     atomic_write_text(config_path, json.dumps(existing, indent=2) + "\n")
 

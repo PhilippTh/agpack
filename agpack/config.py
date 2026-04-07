@@ -25,7 +25,7 @@ DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
 
 # Dependency field names on AgpackConfig that hold list[DependencySource].
 # Used to drive parsing, merging, and env resolution generically.
-_DEP_FIELDS = ("skills", "commands", "agents", "rules", "ignores")
+_DEP_FIELDS = ("skills", "commands", "agents", "rules", "ignores", "hooks")
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -98,6 +98,16 @@ class McpServer:
 
 
 @dataclass
+class HookConfig:
+    """An inline hook configuration entry."""
+
+    name: str
+    event: str
+    command: str
+    matcher: str | None = None
+
+
+@dataclass
 class AgpackConfig:
     """Parsed and validated agpack.yml."""
 
@@ -107,6 +117,8 @@ class AgpackConfig:
     agents: list[DependencySource] = field(default_factory=list)
     rules: list[DependencySource] = field(default_factory=list)
     ignores: list[DependencySource] = field(default_factory=list)
+    hooks: list[DependencySource] = field(default_factory=list)
+    hook_configs: list[HookConfig] = field(default_factory=list)
     mcp: list[McpServer] = field(default_factory=list)
     use_global: bool = True
 
@@ -190,6 +202,35 @@ def _parse_mcp(raw: dict[str, Any], context: str) -> McpServer:
     )
 
 
+def _parse_hook_config(raw: dict[str, Any], context: str) -> HookConfig:
+    """Parse a single hook config entry."""
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{context}: expected an object, got {type(raw).__name__}")
+
+    name = raw.get("name")
+    if not name:
+        raise ConfigError(f"{context}: missing required field 'name'")
+
+    event = raw.get("event")
+    if not event:
+        raise ConfigError(f"{context}: hook '{name}' is missing required field 'event'")
+
+    command = raw.get("command")
+    if not command:
+        raise ConfigError(f"{context}: hook '{name}' is missing required field 'command'")
+
+    matcher = raw.get("matcher")
+    if matcher is not None:
+        matcher = str(matcher)
+
+    return HookConfig(
+        name=str(name),
+        event=str(event),
+        command=str(command),
+        matcher=matcher,
+    )
+
+
 def _parse_dependencies(deps: dict[str, Any], prefix: str = "") -> dict[str, list[Any]]:
     """Parse all dependency lists from a ``dependencies`` mapping.
 
@@ -202,6 +243,10 @@ def _parse_dependencies(deps: dict[str, Any], prefix: str = "") -> dict[str, lis
             _parse_dependency(entry, f"{prefix}dependencies.{dep_field}[{i}]")
             for i, entry in enumerate(deps.get(dep_field) or [])
         ]
+    result["hook_configs"] = [
+        _parse_hook_config(h, f"{prefix}dependencies.hook_configs[{i}]")
+        for i, h in enumerate(deps.get("hook_configs") or [])
+    ]
     result["mcp"] = [_parse_mcp(m, f"{prefix}dependencies.mcp[{i}]") for i, m in enumerate(deps.get("mcp") or [])]
     return result
 
@@ -340,11 +385,17 @@ def _merge_configs(project: AgpackConfig, global_cfg: AgpackConfig) -> AgpackCon
         dep_field: _merge_deps(getattr(project, dep_field), getattr(global_cfg, dep_field)) for dep_field in _DEP_FIELDS
     }
 
+    project_hook_names = {h.name for h in project.hook_configs}
+    merged_hook_configs = list(project.hook_configs) + [
+        h for h in global_cfg.hook_configs if h.name not in project_hook_names
+    ]
+
     project_mcp_names = {m.name for m in project.mcp}
     merged_mcp = list(project.mcp) + [s for s in global_cfg.mcp if s.name not in project_mcp_names]
 
     return AgpackConfig(
         targets=project.targets,
+        hook_configs=merged_hook_configs,
         mcp=merged_mcp,
         use_global=project.use_global,
         **merged_deps,
@@ -464,6 +515,10 @@ def _resolve_config(
                 dep.path = _resolve_env_vars(dep.path, merged, context=ctx)
             if dep.ref is not None:
                 dep.ref = _resolve_env_vars(dep.ref, merged, context=ctx)
+
+    for hook_cfg in config.hook_configs:
+        ctx = f"hook config '{hook_cfg.name}'"
+        hook_cfg.command = _resolve_env_vars(hook_cfg.command, merged, context=ctx)
 
     for server in config.mcp:
         ctx = f"mcp server '{server.name}'"

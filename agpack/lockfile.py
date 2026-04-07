@@ -25,7 +25,7 @@ class InstalledEntry:
     url: str
     path: str | None
     resolved_ref: str
-    type: str  # "skill", "command", "agent", "rule", "ignore"
+    type: str  # "skill", "command", "agent", "rule", "ignore", "hook"
     deployed_files: list[str] = field(default_factory=list)
 
     @property
@@ -43,6 +43,14 @@ class McpLockEntry:
 
 
 @dataclass
+class HookLockEntry:
+    """A single hook config entry in the lockfile."""
+
+    name: str
+    targets: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Lockfile:
     """The full lockfile state."""
 
@@ -50,6 +58,7 @@ class Lockfile:
     agpack_version: str = __version__
     installed: list[InstalledEntry] = field(default_factory=list)
     mcp: list[McpLockEntry] = field(default_factory=list)
+    hook_configs: list[HookLockEntry] = field(default_factory=list)
 
 
 def read_lockfile(project_root: Path) -> Lockfile | None:
@@ -97,6 +106,16 @@ def read_lockfile(project_root: Path) -> Lockfile | None:
             )
         )
 
+    for hook_data in data.get("hook_configs", []):
+        if not isinstance(hook_data, dict):
+            continue
+        lockfile.hook_configs.append(
+            HookLockEntry(
+                name=hook_data.get("name", ""),
+                targets=hook_data.get("targets", []),
+            )
+        )
+
     return lockfile
 
 
@@ -110,6 +129,7 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
         "agpack_version": lockfile.agpack_version,
         "installed": [],
         "mcp": [],
+        "hook_configs": [],
     }
 
     for entry in lockfile.installed:
@@ -128,6 +148,14 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
             {
                 "name": mcp_entry.name,
                 "targets": mcp_entry.targets,
+            }
+        )
+
+    for hook_entry in lockfile.hook_configs:
+        data["hook_configs"].append(
+            {
+                "name": hook_entry.name,
+                "targets": hook_entry.targets,
             }
         )
 

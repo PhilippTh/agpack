@@ -18,6 +18,7 @@ from rich.table import Table
 
 from agpack import __version__
 from agpack.cleanup import cleanup_deployed_files
+from agpack.cleanup import cleanup_hook_configs
 from agpack.cleanup import cleanup_ignore_files
 from agpack.cleanup import cleanup_mcp_server
 from agpack.cleanup import cleanup_rule_append_targets
@@ -31,6 +32,7 @@ from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
 from agpack.fetcher import cleanup_fetch
 from agpack.fetcher import fetch_dependency
+from agpack.lockfile import HookLockEntry
 from agpack.lockfile import InstalledEntry
 from agpack.lockfile import Lockfile
 from agpack.lockfile import McpLockEntry
@@ -39,6 +41,8 @@ from agpack.lockfile import write_lockfile
 from agpack.resolvers import ResolveError
 from agpack.resolvers import resolve_agents
 from agpack.resolvers import resolve_commands
+from agpack.resolvers import resolve_hook_configs
+from agpack.resolvers import resolve_hooks
 from agpack.resolvers import resolve_ignores
 from agpack.resolvers import resolve_ignores_append
 from agpack.resolvers import resolve_mcp
@@ -61,6 +65,7 @@ _SIMPLE_RESOLVERS: dict[str, Callable[[FetchResult, list[str]], list[WriteOp]]] 
     "skill": resolve_skills,
     "command": resolve_commands,
     "agent": resolve_agents,
+    "hook": resolve_hooks,
 }
 
 
@@ -337,14 +342,15 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     # 2. Read existing lockfile
     old_lockfile = read_lockfile(project_root)
 
-    # 5. Build set of current dependency identities
+    # 3. Build set of current dependency identities
     current_identities: set[str] = set()
-    for dep in [*config.skills, *config.commands, *config.agents, *config.rules, *config.ignores]:
+    for dep in [*config.skills, *config.commands, *config.agents, *config.rules, *config.ignores, *config.hooks]:
         current_identities.add(dep.identity)
 
     current_mcp_names = {m.name for m in config.mcp}
+    current_hook_config_names = {h.name for h in config.hook_configs}
 
-    # 6. Clean up removed dependencies
+    # 4. Clean up removed dependencies
     removed_deps = [e for e in (old_lockfile.installed if old_lockfile else []) if e.identity not in current_identities]
     removed_had_rules = False
     removed_had_ignores = False
@@ -365,7 +371,17 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     if removed_had_ignores and not config.ignores:
         cleanup_ignore_files(config.targets, project_root, dry_run=dry_run, verbose=verbose)
 
-    # 7. Clean up removed MCP servers
+    # 5. Clean up removed hook configs
+    removed_hook_configs = [
+        e for e in (old_lockfile.hook_configs if old_lockfile else []) if e.name not in current_hook_config_names
+    ]
+    if removed_hook_configs and not config.hook_configs:
+        cleanup_hook_configs(config.targets, project_root, dry_run=dry_run, verbose=verbose)
+    for hook_entry in removed_hook_configs:
+        if verbose or dry_run:
+            console.print(f"Removing hook config '{hook_entry.name}'...")
+
+    # 6. Clean up removed MCP servers
     removed_mcp = [e for e in (old_lockfile.mcp if old_lockfile else []) if e.name not in current_mcp_names]
     for mcp_entry in removed_mcp:
         if verbose or dry_run:
@@ -379,7 +395,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             verbose=verbose,
         )
 
-    # 8. Fetch, resolve, and write — all resource types
+    # 7. Fetch, resolve, and write — all resource types
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
     all_rule_bodies: list[tuple[str, str]] = []
@@ -391,6 +407,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
         ("agent", config.agents),
         ("rule", config.rules),
         ("ignore", config.ignores),
+        ("hook", config.hooks),
     ]
 
     with create_sync_progress() as progress:
@@ -411,7 +428,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             )
             counts[resource_type] = count
 
-    # 9. Write append-based rule targets (uniform — no more finalize())
+    # 8. Write append-based rule targets (uniform — no more finalize())
     if all_rule_bodies:
         append_ops = resolve_rules_append(all_rule_bodies, config.targets)
         try:
@@ -434,7 +451,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                     entry.deployed_files.extend(append_deployed)
                     break
 
-    # 9b. Write ignore files (same pattern as rules append)
+    # 9. Write ignore files (same pattern as rules append)
     if all_ignore_patterns:
         ignore_ops = resolve_ignores_append(all_ignore_patterns, config.targets)
         try:
@@ -456,7 +473,28 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                     entry.deployed_files.extend(ignore_deployed)
                     break
 
-    # 10. MCP servers — now resolved uniformly into WriteOps
+    # 11. Hook configs — resolved directly from config (no git fetch)
+    hook_config_count = 0
+    if config.hook_configs:
+        with console.status("Deploying hook configs..."):
+            hook_ops = resolve_hook_configs(config.hook_configs, config.targets)
+            try:
+                hook_deployed = execute_write_ops(
+                    hook_ops,
+                    project_root,
+                    dry_run=dry_run,
+                    verbose=verbose,
+                )
+            except WriteError as exc:
+                if not dry_run:
+                    write_lockfile(project_root, new_lockfile)
+                raise click.ClickException(str(exc)) from exc
+
+        # Record hook config entries in lockfile
+        _record_hook_config_lockfile(config, hook_deployed, new_lockfile)
+        hook_config_count = len(config.hook_configs)
+
+    # 12. MCP servers — now resolved uniformly into WriteOps
     mcp_count = 0
     if config.mcp:
         with console.status("Deploying MCP servers..."):
@@ -477,11 +515,11 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
         _record_mcp_lockfile(config, mcp_deployed, new_lockfile)
         mcp_count = len(config.mcp)
 
-    # 11. Write lockfile
+    # 13. Write lockfile
     if not dry_run:
         write_lockfile(project_root, new_lockfile)
 
-    # 12. Summary
+    # 14. Summary
     elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
     summary_items = [
@@ -490,8 +528,10 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
         ("agents", "agent"),
         ("rules", "rule"),
         ("ignores", "ignore"),
+        ("hooks", "hook"),
     ]
     parts = [f"[bold]{counts.get(k, 0)}[/bold] {name}" for name, k in summary_items]
+    parts.append(f"[bold]{hook_config_count}[/bold] hook configs")
     parts.append(f"[bold]{mcp_count}[/bold] MCP servers")
     summary = ", ".join(parts)
     targets = f"[bold]{target_count}[/bold] targets"
@@ -522,6 +562,29 @@ def _record_mcp_lockfile(
             if target_cfg.config_path in mcp_deployed:
                 target_paths.append(target_cfg.config_path)
         new_lockfile.mcp.append(McpLockEntry(name=server.name, targets=target_paths))
+
+
+def _record_hook_config_lockfile(
+    config: AgpackConfig,
+    hook_deployed: list[str],
+    new_lockfile: Lockfile,
+) -> None:
+    """Record hook config entries in the lockfile.
+
+    Groups deployed config file paths by hook name so that cleanup
+    knows which files to clean when a hook config is removed.
+    """
+    from agpack.targets import HOOK_CONFIG_TARGETS
+
+    for hook in config.hook_configs:
+        target_paths: list[str] = []
+        for target in config.targets:
+            target_cfg = HOOK_CONFIG_TARGETS.get(target)
+            if target_cfg is None:
+                continue
+            if target_cfg.config_path in hook_deployed:
+                target_paths.append(target_cfg.config_path)
+        new_lockfile.hook_configs.append(HookLockEntry(name=hook.name, targets=target_paths))
 
 
 @main.command()
@@ -560,12 +623,18 @@ def status(config_path: str, no_global: bool) -> None:  # noqa: C901
         for mcp_entry in lockfile.mcp:
             mcp_map[mcp_entry.name] = mcp_entry
 
+    hook_config_map: dict[str, HookLockEntry] = {}
+    if lockfile:
+        for hook_entry in lockfile.hook_configs:
+            hook_config_map[hook_entry.name] = hook_entry
+
     resource_sections = [
         ("Skills", config.skills),
         ("Commands", config.commands),
         ("Agents", config.agents),
         ("Rules", config.rules),
         ("Ignores", config.ignores),
+        ("Hooks", config.hooks),
     ]
     for label, deps in resource_sections:
         table = Table(
@@ -622,6 +691,36 @@ def status(config_path: str, no_global: bool) -> None:  # noqa: C901
             else:
                 table.add_row(
                     f"[red]✗[/red] {server.name}",
+                    "not yet synced",
+                )
+    console.print(table)
+    console.print()
+
+    # Hook Configs
+    table = Table(
+        title="Hook Configs",
+        title_style="bold",
+        show_header=False,
+        box=None,
+        padding=(0, 1),
+        title_justify="left",
+    )
+    table.add_column(style="bold", no_wrap=True)
+    table.add_column(style="dim")
+    if not config.hook_configs:
+        table.add_row("[dim]no hook configs configured[/dim]")
+    else:
+        for hook in config.hook_configs:
+            hook_installed = hook_config_map.get(hook.name)
+            if hook_installed and hook_installed.targets:
+                targets_str = ", ".join(hook_installed.targets)
+                table.add_row(
+                    f"[green]✓[/green] {hook.name}",
+                    f"{hook.event} → {targets_str}",
+                )
+            else:
+                table.add_row(
+                    f"[red]✗[/red] {hook.name}",
                     "not yet synced",
                 )
     console.print(table)
@@ -685,6 +784,18 @@ dependencies:
     # - url: https://github.com/owner/repo
     #   path: ignores/ai-security.ignore
 
+  hooks:
+    # Shared hook scripts available in all projects:
+    # - url: https://github.com/owner/repo
+    #   path: hooks/format-on-save.sh
+
+  hook_configs:
+    # Shared hook configs available in all projects:
+    # - name: auto-format
+    #   event: PostToolUse
+    #   matcher: Write
+    #   command: .agpack/hooks/format-on-save.sh
+
   mcp:
     # Shared MCP servers available in all projects:
     # - name: my-server
@@ -747,6 +858,18 @@ dependencies:
     # Point to a file or directory of ignore pattern files:
     # - url: https://github.com/owner/repo
     #   path: ignores/ai-security.ignore
+
+  hooks:
+    # Point to a hook script file or directory of hook scripts:
+    # - url: https://github.com/owner/repo
+    #   path: hooks/format-on-save.sh
+
+  hook_configs:
+    # Define hook configurations (event + command mappings):
+    # - name: auto-format
+    #   event: PostToolUse
+    #   matcher: Write
+    #   command: .agpack/hooks/format-on-save.sh
 
   mcp:
     # - name: my-server

@@ -145,6 +145,51 @@ IGNORE_FILES: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Hooks
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HookConfigTarget:
+    """Describes how a target stores hook configuration."""
+
+    config_path: str
+    hooks_key: str  # top-level key holding the hooks dict
+
+
+HOOK_CONFIG_TARGETS: dict[str, HookConfigTarget] = {
+    "claude": HookConfigTarget(
+        config_path=".claude/settings.json",
+        hooks_key="hooks",
+    ),
+    "cursor": HookConfigTarget(
+        config_path=".cursor/hooks.json",
+        hooks_key="hooks",
+    ),
+}
+
+# Cursor copies hook scripts to .cursor/hooks/; Claude references them by path.
+HOOK_SCRIPT_DIRS: dict[str, str] = {
+    "cursor": ".cursor/hooks",
+}
+
+# Event name mapping: canonical (Claude) name → target-specific name.
+# Claude uses its own event names as canonical; other targets translate.
+HOOK_EVENT_MAP: dict[str, dict[str, str]] = {
+    "cursor": {
+        "PreToolUse": "beforeFileEdit",
+        "PostToolUse": "afterFileEdit",
+    },
+}
+
+
+def translate_hook_event(event: str, target: str) -> str:
+    """Translate a canonical event name to the target-specific name."""
+    mapping = HOOK_EVENT_MAP.get(target, {})
+    return mapping.get(event, event)
+
+
 RULE_TARGETS: dict[str, RuleTargetConfig] = {
     "claude": RuleTargetConfig(strategy="append", path="CLAUDE.md"),
     "codex": RuleTargetConfig(strategy="append", path="AGENTS.md"),
