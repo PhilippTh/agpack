@@ -122,19 +122,35 @@ targets: []
 
 
 # ---------------------------------------------------------------------------
-# 5. Unrecognised target name
+# 5. Unrecognised target names are tolerated at parse time
 # ---------------------------------------------------------------------------
 
 
-def test_unrecognised_target(tmp_path: Path) -> None:
+def test_unknown_target_name_accepted_at_parse_time(tmp_path: Path) -> None:
+    """An unknown target name is not a parse error — it might be defined
+    later via target_definitions (project or global). Validation happens
+    at target-resolution time in the CLI instead.
+    """
     cfg_path = _write_config(
         tmp_path,
         """\
 targets:
-  - not-a-target
+  - not-a-builtin
 """,
     )
-    with pytest.raises(ConfigError, match="Unrecognised target 'not-a-target'"):
+    config = load_config(cfg_path)
+    assert config.targets == ["not-a-builtin"]
+
+
+def test_target_must_be_non_empty_string(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - ""
+""",
+    )
+    with pytest.raises(ConfigError, match="non-empty strings"):
         load_config(cfg_path)
 
 
@@ -1008,3 +1024,203 @@ dependencies: "oops"
     )
     with pytest.raises(ConfigError, match="'dependencies' must be a mapping"):
         load_config(cfg_path)
+
+
+# ---------------------------------------------------------------------------
+# 25. target_definitions parsing
+# ---------------------------------------------------------------------------
+
+
+def test_target_definitions_parses_new_target(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - my-tool
+
+target_definitions:
+  my-tool:
+    description: Custom internal tool
+    resources:
+      skills:
+        layout: directory
+        path: .my-tool/skills
+    mcp:
+      path: .my-tool/config.json
+      format: json
+      servers_key: mcpServers
+      transports:
+        stdio: {}
+""",
+    )
+    config = load_config(cfg_path)
+
+    assert "my-tool" in config.target_definitions
+    td = config.target_definitions["my-tool"]
+    assert td.name == "my-tool"
+    assert td.description == "Custom internal tool"
+    assert td.resources["skills"].path == ".my-tool/skills"
+    assert td.mcp is not None
+    assert td.mcp.path == ".my-tool/config.json"
+
+
+def test_target_definitions_overrides_builtin(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+
+target_definitions:
+  claude:
+    resources:
+      skills:
+        layout: directory
+        path: .my-claude/skills
+""",
+    )
+    config = load_config(cfg_path)
+
+    td = config.target_definitions["claude"]
+    assert td.resources["skills"].path == ".my-claude/skills"
+    # Replace semantics: only what's defined is present; no mcp inherited
+    assert td.mcp is None
+    assert "commands" not in td.resources
+
+
+def test_target_definitions_name_field_must_match_key(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - my-tool
+
+target_definitions:
+  my-tool:
+    name: something-else
+    resources:
+      skills:
+        layout: directory
+        path: .x/skills
+""",
+    )
+    with pytest.raises(ConfigError, match="does not match the key"):
+        load_config(cfg_path)
+
+
+def test_target_definitions_not_a_mapping(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+target_definitions: "oops"
+""",
+    )
+    with pytest.raises(ConfigError, match="target_definitions: must be a mapping"):
+        load_config(cfg_path)
+
+
+def test_target_definitions_invalid_inner_schema_raises_config_error(
+    tmp_path: Path,
+) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - my-tool
+
+target_definitions:
+  my-tool:
+    resources:
+      skills:
+        layout: not-a-real-layout
+        path: .x/skills
+""",
+    )
+    with pytest.raises(ConfigError, match="layout"):
+        load_config(cfg_path)
+
+
+def test_target_definitions_default_is_empty(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path, "targets:\n  - claude\n")
+    config = load_config(cfg_path)
+    assert config.target_definitions == {}
+
+
+# ---------------------------------------------------------------------------
+# 26. target_definitions merging (project vs global)
+# ---------------------------------------------------------------------------
+
+
+def test_merge_carries_global_target_definitions(tmp_path: Path) -> None:
+    project_path = _write_config(
+        tmp_path,
+        "targets:\n  - shared-tool\n",
+    )
+    project = load_config(project_path)
+    global_path = tmp_path / "global.yml"
+    global_path.write_text(
+        """\
+target_definitions:
+  shared-tool:
+    resources:
+      skills:
+        layout: directory
+        path: .shared/skills
+""",
+        encoding="utf-8",
+    )
+    global_cfg = load_global_config(global_path)
+    assert global_cfg is not None
+
+    merged = merge_configs(project, global_cfg)
+
+    assert "shared-tool" in merged.target_definitions
+    assert (
+        merged.target_definitions["shared-tool"].resources["skills"].path
+        == ".shared/skills"
+    )
+
+
+def test_merge_project_target_definitions_win_by_name(tmp_path: Path) -> None:
+    """Replace semantics: project entry fully replaces a global entry of
+    the same name."""
+    project_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - my-tool
+
+target_definitions:
+  my-tool:
+    resources:
+      skills:
+        layout: directory
+        path: .project-override/skills
+""",
+    )
+    project = load_config(project_path)
+    global_path = tmp_path / "global.yml"
+    global_path.write_text(
+        """\
+target_definitions:
+  my-tool:
+    resources:
+      skills:
+        layout: directory
+        path: .global-version/skills
+      commands:
+        layout: file
+        path: .global-version/commands
+""",
+        encoding="utf-8",
+    )
+    global_cfg = load_global_config(global_path)
+    assert global_cfg is not None
+
+    merged = merge_configs(project, global_cfg)
+    td = merged.target_definitions["my-tool"]
+    assert td.resources["skills"].path == ".project-override/skills"
+    # Replace, not deep-merge: the global's "commands" must not leak in
+    assert "commands" not in td.resources

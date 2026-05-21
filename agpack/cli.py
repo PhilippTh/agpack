@@ -235,15 +235,32 @@ def _sync_resource_type(
 
 
 def _resolve_targets(config: AgpackConfig) -> list[TargetDef]:
-    """Resolve ``config.targets`` (a list of names) to TargetDef objects.
+    """Resolve ``config.targets`` to TargetDef objects.
 
-    Currently only built-in targets are recognised; project-level
-    ``target_definitions`` resolution lands in a follow-up commit.
+    Precedence: ``config.target_definitions`` (already merged from
+    project + global) → bundled built-in manifests.  Unknown names
+    raise a ``ClickException`` listing both pools.
     """
-    try:
-        return [load_builtin(name) for name in config.targets]
-    except TargetSchemaError as exc:
-        raise click.ClickException(str(exc)) from exc
+    resolved: list[TargetDef] = []
+    for name in config.targets:
+        if name in config.target_definitions:
+            resolved.append(config.target_definitions[name])
+            continue
+        try:
+            resolved.append(load_builtin(name))
+        except TargetSchemaError as exc:
+            from agpack.registry import list_builtins
+
+            builtins = ", ".join(list_builtins())
+            user_defs = ", ".join(sorted(config.target_definitions)) or "(none)"
+            raise click.ClickException(
+                f"Unknown target '{name}'.\n"
+                f"  Built-in targets: {builtins}\n"
+                f"  Your target_definitions: {user_defs}\n"
+                "Add an entry under 'target_definitions' in agpack.yml to "
+                "define a custom target."
+            ) from exc
+    return resolved
 
 
 def _load_and_merge_global(

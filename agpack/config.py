@@ -10,7 +10,9 @@ from typing import Any
 
 import yaml
 
-from agpack.registry import list_builtins
+from agpack.target_schema import TargetDef
+from agpack.target_schema import TargetSchemaError
+from agpack.target_schema import parse_target_def
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -84,6 +86,7 @@ class AgpackConfig:
     agents: list[DependencySource] = field(default_factory=list)
     mcp: list[McpServer] = field(default_factory=list)
     use_global: bool = True
+    target_definitions: dict[str, TargetDef] = field(default_factory=dict)
 
 
 @dataclass
@@ -97,6 +100,7 @@ class GlobalConfig:
     commands: list[DependencySource] = field(default_factory=list)
     agents: list[DependencySource] = field(default_factory=list)
     mcp: list[McpServer] = field(default_factory=list)
+    target_definitions: dict[str, TargetDef] = field(default_factory=dict)
     config_dir: Path = field(default_factory=lambda: DEFAULT_GLOBAL_CONFIG_DIR)
     """Directory containing the global config (used to locate .env)."""
 
@@ -196,6 +200,45 @@ def _parse_mcp(raw: dict[str, Any], context: str) -> McpServer:
         )
 
 
+def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef]:
+    """Parse a ``target_definitions`` mapping into TargetDef objects.
+
+    The mapping key is treated as the target name.  An explicit ``name``
+    field inside the entry, if present, must match the key.  A missing
+    ``name`` is filled in from the key for convenience.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"{prefix}target_definitions: must be a mapping, got {type(raw).__name__}"
+        )
+
+    result: dict[str, TargetDef] = {}
+    for key, value in raw.items():
+        context = f"{prefix}target_definitions.{key}"
+
+        if not isinstance(key, str) or not key:
+            raise ConfigError(f"{context}: target name must be a non-empty string")
+
+        if isinstance(value, dict):
+            value = dict(value)
+            if "name" not in value:
+                value["name"] = key
+            elif value["name"] != key:
+                raise ConfigError(
+                    f"{context}: 'name' ({value['name']!r}) does not match "
+                    f"the key ({key!r})"
+                )
+
+        try:
+            result[key] = parse_target_def(value, context=context)
+        except TargetSchemaError as exc:
+            raise ConfigError(str(exc)) from exc
+
+    return result
+
+
 def _parse_dependencies(
     deps: dict[str, Any], prefix: str = ""
 ) -> tuple[
@@ -260,12 +303,9 @@ def load_config(path: Path) -> AgpackConfig:
     if not targets or not isinstance(targets, list):
         raise ConfigError("Missing or invalid 'targets' (must be a list)")
 
-    valid = set(list_builtins())
     for t in targets:
-        if t not in valid:
-            raise ConfigError(
-                f"Unrecognised target '{t}'. Valid targets: {sorted(valid)}"
-            )
+        if not isinstance(t, str) or not t:
+            raise ConfigError(f"'targets' entries must be non-empty strings, got {t!r}")
 
     # Global config opt-out
     use_global = data.get("global", True)
@@ -279,6 +319,9 @@ def load_config(path: Path) -> AgpackConfig:
 
     skills, commands, agents, mcp = _parse_dependencies(deps)
 
+    # Custom target definitions (override built-ins or add new targets)
+    target_definitions = _parse_target_definitions(data.get("target_definitions"))
+
     return AgpackConfig(
         targets=targets,
         skills=skills,
@@ -286,6 +329,7 @@ def load_config(path: Path) -> AgpackConfig:
         agents=agents,
         mcp=mcp,
         use_global=use_global,
+        target_definitions=target_definitions,
     )
 
 
@@ -340,11 +384,16 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
 
     skills, commands, agents, mcp = _parse_dependencies(deps, prefix="global ")
 
+    target_definitions = _parse_target_definitions(
+        data.get("target_definitions"), prefix="global "
+    )
+
     return GlobalConfig(
         skills=skills,
         commands=commands,
         agents=agents,
         mcp=mcp,
+        target_definitions=target_definitions,
         config_dir=path.parent,
     )
 
@@ -384,6 +433,13 @@ def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConf
         if server.name not in project_mcp_names:
             mcp.append(server)
 
+    # Merge target_definitions — project entries win by name (replace, no
+    # deep merge); global additions only if name not already in project.
+    target_definitions = dict(project.target_definitions)
+    for name, target in global_cfg.target_definitions.items():
+        if name not in target_definitions:
+            target_definitions[name] = target
+
     return AgpackConfig(
         targets=project.targets,
         skills=skills,
@@ -391,4 +447,5 @@ def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConf
         agents=agents,
         mcp=mcp,
         use_global=project.use_global,
+        target_definitions=target_definitions,
     )

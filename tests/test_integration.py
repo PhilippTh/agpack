@@ -973,6 +973,113 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     assert lockfile.get("mcp", []) == []
 
 
+def test_sync_with_target_definitions_overriding_builtin(tmp_path: Path) -> None:
+    """A target_definitions entry fully replaces the built-in of the same name."""
+    bare_repo = _create_bare_repo(tmp_path)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "skills": [{"url": str(bare_repo), "path": "skills/my-skill"}],
+        },
+        "target_definitions": {
+            "claude": {
+                "resources": {
+                    "skills": {"layout": "directory", "path": ".my-claude/skills"},
+                },
+            },
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    # Files land at the overridden path, not at the built-in .claude/skills
+    assert (project_dir / ".my-claude/skills/my-skill/SKILL.md").exists()
+    assert not (project_dir / ".claude/skills").exists()
+
+
+def test_sync_with_brand_new_custom_target(tmp_path: Path) -> None:
+    """A target name absent from built-ins is resolved from target_definitions."""
+    bare_repo = _create_bare_repo(tmp_path)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    config = {
+        "targets": ["my-internal-tool"],
+        "dependencies": {
+            "skills": [{"url": str(bare_repo), "path": "skills/my-skill"}],
+            "mcp": [
+                {
+                    "name": "filesystem",
+                    "command": "npx",
+                    "args": ["-y", "fs"],
+                },
+            ],
+        },
+        "target_definitions": {
+            "my-internal-tool": {
+                "resources": {
+                    "skills": {"layout": "directory", "path": ".myaitool/skills"},
+                },
+                "mcp": {
+                    "path": ".myaitool/config.json",
+                    "format": "json",
+                    "servers_key": "mcpServers",
+                    "transports": {"stdio": {}},
+                },
+            },
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (project_dir / ".myaitool/skills/my-skill/SKILL.md").exists()
+    mcp_cfg = json.loads((project_dir / ".myaitool/config.json").read_text())
+    assert "filesystem" in mcp_cfg["mcpServers"]
+
+
+def test_sync_unknown_target_lists_options_in_error(tmp_path: Path) -> None:
+    """An unknown target name surfaces a CLI error mentioning both pools."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(
+        yaml.dump(
+            {"targets": ["bogus-tool"], "dependencies": {}},
+            default_flow_style=False,
+        )
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+    )
+
+    assert result.exit_code != 0
+    assert "Unknown target 'bogus-tool'" in result.output
+    assert "Built-in targets:" in result.output
+    assert "target_definitions" in result.output
+
+
 def test_sync_url_multiple_fallbacks(tmp_path: Path) -> None:
     """Multiple URLs: first two invalid, third valid."""
     bare_repo = _create_bare_repo(tmp_path)
