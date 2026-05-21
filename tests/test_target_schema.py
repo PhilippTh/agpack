@@ -263,3 +263,82 @@ def test_context_appears_in_error() -> None:
             },
             context="my-source",
         )
+
+
+# ---------------------------------------------------------------------------
+# target_def_to_dict — serializer
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_minimal_target() -> None:
+    from agpack.target_schema import target_def_to_dict
+
+    raw = {"name": "demo"}
+    out = target_def_to_dict(parse_target_def(raw))
+    assert out == {"name": "demo"}
+
+
+def test_serialize_omits_transport_defaults() -> None:
+    """Transport fields equal to TransportSpec defaults must not appear."""
+    from agpack.target_schema import target_def_to_dict
+
+    raw = {
+        "name": "demo",
+        "mcp": {
+            "path": ".x.json",
+            "format": "json",
+            "servers_key": "mcpServers",
+            "transports": {
+                "stdio": {},
+                "http": {"type_value": "http"},
+            },
+        },
+    }
+    out = target_def_to_dict(parse_target_def(raw))
+    # stdio had no overrides → empty dict
+    assert out["mcp"]["transports"]["stdio"] == {}
+    # http only differs in type_value → only that field shows up
+    assert out["mcp"]["transports"]["http"] == {"type_value": "http"}
+
+
+def test_serialize_full_target_roundtrips() -> None:
+    """A complete manifest must survive a dump → parse roundtrip unchanged."""
+    from agpack.target_schema import target_def_to_dict
+
+    raw = {
+        "name": "demo",
+        "description": "Demo tool",
+        "resources": {
+            "skills": {"layout": "directory", "path": ".demo/skills"},
+            "commands": {"layout": "file", "path": ".demo/commands"},
+        },
+        "mcp": {
+            "path": ".demo/mcp.json",
+            "format": "json",
+            "servers_key": "mcp",
+            "defaults": {"$schema": "https://example.com/schema.json"},
+            "transports": {
+                "stdio": {
+                    "type_value": "local",
+                    "command_format": "array",
+                    "env_key": "environment",
+                },
+                "http": {"type_value": "remote", "url_key": "httpUrl"},
+            },
+        },
+    }
+    original = parse_target_def(raw)
+    redumped = target_def_to_dict(original)
+    reparsed = parse_target_def(redumped)
+    assert reparsed == original
+
+
+def test_every_builtin_roundtrips() -> None:
+    """Every shipped manifest survives a serialize → parse cycle unchanged."""
+    from agpack.registry import load_all_builtins
+    from agpack.target_schema import target_def_to_dict
+
+    for name, original in load_all_builtins().items():
+        dumped = target_def_to_dict(original)
+        reparsed = parse_target_def(dumped)
+        assert reparsed == original, f"roundtrip mismatch for built-in '{name}'"

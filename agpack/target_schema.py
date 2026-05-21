@@ -313,3 +313,66 @@ def parse_target_def(raw: Any, context: str = "target") -> TargetDef:
     mcp = _parse_mcp(mcp_raw, f"{context}.mcp") if mcp_raw is not None else None
 
     return TargetDef(name=name, description=description, resources=resources, mcp=mcp)
+
+
+# ---------------------------------------------------------------------------
+# Serializer (back to a YAML-friendly dict)
+# ---------------------------------------------------------------------------
+
+
+_TRANSPORT_DEFAULTS = TransportSpec()
+_TRANSPORT_FIELDS = (
+    "type_value",
+    "type_field",
+    "command_key",
+    "command_format",
+    "args_key",
+    "env_key",
+    "url_key",
+    "headers_key",
+)
+
+
+def _transport_to_dict(spec: TransportSpec) -> dict[str, Any]:
+    """Render a TransportSpec, omitting fields that match defaults."""
+    result: dict[str, Any] = {}
+    for field_name in _TRANSPORT_FIELDS:
+        value = getattr(spec, field_name)
+        if value != getattr(_TRANSPORT_DEFAULTS, field_name):
+            result[field_name] = value
+    return result
+
+
+def _mcp_to_dict(mcp: McpSpec) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "path": mcp.path,
+        "format": mcp.format,
+        "servers_key": mcp.servers_key,
+    }
+    if mcp.defaults:
+        result["defaults"] = dict(mcp.defaults)
+    if mcp.transports:
+        result["transports"] = {
+            name: _transport_to_dict(spec) for name, spec in mcp.transports.items()
+        }
+    return result
+
+
+def target_def_to_dict(target: TargetDef) -> dict[str, Any]:
+    """Render a TargetDef as a YAML-friendly dict.
+
+    The output omits empty optional sections and TransportSpec fields
+    that match their defaults, so the result is a clean starting point
+    that users can paste under ``target_definitions:`` and tweak.
+    """
+    result: dict[str, Any] = {"name": target.name}
+    if target.description:
+        result["description"] = target.description
+    if target.resources:
+        result["resources"] = {
+            name: {"layout": layout.layout, "path": layout.path}
+            for name, layout in target.resources.items()
+        }
+    if target.mcp is not None:
+        result["mcp"] = _mcp_to_dict(target.mcp)
+    return result

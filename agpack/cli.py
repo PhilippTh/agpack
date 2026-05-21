@@ -48,9 +48,11 @@ from agpack.lockfile import write_lockfile
 from agpack.mcp import McpError
 from agpack.mcp import cleanup_mcp_server
 from agpack.mcp import deploy_mcp_servers
+from agpack.registry import list_builtins
 from agpack.registry import load_builtin
 from agpack.target_schema import TargetDef
 from agpack.target_schema import TargetSchemaError
+from agpack.target_schema import target_def_to_dict
 
 _MAX_FETCH_WORKERS = 8
 
@@ -249,8 +251,6 @@ def _resolve_targets(config: AgpackConfig) -> list[TargetDef]:
         try:
             resolved.append(load_builtin(name))
         except TargetSchemaError as exc:
-            from agpack.registry import list_builtins
-
             builtins = ", ".join(list_builtins())
             user_defs = ", ".join(sorted(config.target_definitions)) or "(none)"
             raise click.ClickException(
@@ -655,6 +655,187 @@ dependencies:
     #   args: ["-y", "@example/mcp-server"]
     #   env:
     #     API_KEY: ${API_KEY}   # resolved from .env or shell environment
+
+# Override a built-in target or define a brand-new one.
+# Use 'agpack targets list' to see all available targets and
+# 'agpack targets show <name>' to print a starting manifest you can copy here.
+# target_definitions:
+#   claude:
+#     # Override the built-in claude target — replace semantics (no merge).
+#     resources:
+#       skills:
+#         layout: directory
+#         path: .my-claude/skills
+#       commands:
+#         layout: file
+#         path: .my-claude/commands
+#     mcp:
+#       path: .mcp.json
+#       format: json
+#       servers_key: mcpServers
+#       transports:
+#         stdio: {}
+#
+#   my-internal-tool:
+#     # Brand-new target — also listed under 'targets:' above to be used.
+#     description: Custom internal tool
+#     resources:
+#       skills:
+#         layout: directory
+#         path: .myaitool/skills
+#     mcp:
+#       path: .myaitool/config.json
+#       format: json
+#       servers_key: mcpServers
+#       transports:
+#         stdio: {}
 """
     path.write_text(template, encoding="utf-8")
     console.print(f"[green]✓[/green] Created [bold]{path.name}[/bold]")
+
+
+# ---------------------------------------------------------------------------
+# `agpack targets` — inspect available target manifests
+# ---------------------------------------------------------------------------
+
+
+def _load_user_target_definitions(
+    config_path: str, no_global: bool
+) -> dict[str, TargetDef]:
+    """Load target_definitions from project + global config (best-effort).
+
+    Returns an empty dict if the project config is absent or invalid,
+    so the targets subcommands can still list built-ins for users who
+    haven't initialised a project yet.
+    """
+    cfg_path = Path(config_path).resolve()
+    user_defs: dict[str, TargetDef] = {}
+
+    if cfg_path.exists():
+        try:
+            config = load_config(cfg_path)
+        except ConfigError:
+            return user_defs
+        user_defs.update(config.target_definitions)
+        if not no_global and config.use_global:
+            try:
+                global_cfg = load_global_config()
+            except ConfigError:
+                global_cfg = None
+            if global_cfg is not None:
+                for name, td in global_cfg.target_definitions.items():
+                    user_defs.setdefault(name, td)
+    elif not no_global:
+        try:
+            global_cfg = load_global_config()
+        except ConfigError:
+            global_cfg = None
+        if global_cfg is not None:
+            user_defs.update(global_cfg.target_definitions)
+
+    return user_defs
+
+
+def _resource_summary(target: TargetDef) -> str:
+    parts = list(target.resources)
+    if target.mcp is not None:
+        parts.append("mcp")
+    return ", ".join(parts) or "[dim]none[/dim]"
+
+
+@main.group()
+def targets() -> None:
+    """Inspect available target manifests (built-in and user-defined)."""
+
+
+@targets.command("list")
+@click.option(
+    "--config",
+    "config_path",
+    default="./agpack.yml",
+    type=click.Path(),
+    help="Path to config file (used to discover user target_definitions).",
+)
+@click.option(
+    "--no-global",
+    is_flag=True,
+    help="Ignore the global config file.",
+)
+def targets_list(config_path: str, no_global: bool) -> None:
+    """List all available targets — built-ins and user-defined."""
+    user_defs = _load_user_target_definitions(config_path, no_global)
+    builtin_names = set(list_builtins())
+
+    table = Table(
+        title="Available targets",
+        title_style="bold",
+        show_header=True,
+        header_style="bold",
+        box=None,
+        padding=(0, 2),
+        title_justify="left",
+    )
+    table.add_column("Name")
+    table.add_column("Source")
+    table.add_column("Resources")
+
+    all_names = sorted(builtin_names | set(user_defs))
+    for name in all_names:
+        if name in user_defs:
+            target = user_defs[name]
+            if name in builtin_names:
+                source = "[yellow]user (overrides built-in)[/yellow]"
+            else:
+                source = "[cyan]user[/cyan]"
+        else:
+            target = load_builtin(name)
+            source = "[dim]built-in[/dim]"
+        table.add_row(name, source, _resource_summary(target))
+
+    console.print(table)
+
+
+@targets.command("show")
+@click.argument("name")
+@click.option(
+    "--config",
+    "config_path",
+    default="./agpack.yml",
+    type=click.Path(),
+    help="Path to config file (used to discover user target_definitions).",
+)
+@click.option(
+    "--no-global",
+    is_flag=True,
+    help="Ignore the global config file.",
+)
+def targets_show(name: str, config_path: str, no_global: bool) -> None:
+    """Print the resolved manifest for *name* as YAML.
+
+    Useful as a starting point for copying into ``target_definitions:``
+    to customise a built-in.
+    """
+    import yaml
+
+    user_defs = _load_user_target_definitions(config_path, no_global)
+
+    if name in user_defs:
+        target = user_defs[name]
+    else:
+        try:
+            target = load_builtin(name)
+        except TargetSchemaError as exc:
+            builtins = ", ".join(list_builtins())
+            user_names = ", ".join(sorted(user_defs)) or "(none)"
+            raise click.ClickException(
+                f"Unknown target '{name}'.\n"
+                f"  Built-in targets: {builtins}\n"
+                f"  Your target_definitions: {user_names}"
+            ) from exc
+
+    yaml_text = yaml.safe_dump(
+        target_def_to_dict(target),
+        default_flow_style=False,
+        sort_keys=False,
+    )
+    click.echo(yaml_text, nl=False)

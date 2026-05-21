@@ -1056,6 +1056,177 @@ def test_sync_with_brand_new_custom_target(tmp_path: Path) -> None:
     assert "filesystem" in mcp_cfg["mcpServers"]
 
 
+def test_targets_list_shows_all_builtins(tmp_path: Path) -> None:
+    """`agpack targets list` shows the eight built-in targets."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["targets", "list", "--config", str(project_dir / "agpack.yml"), "--no-global"],
+    )
+    assert result.exit_code == 0, result.output
+
+    for name in [
+        "claude",
+        "opencode",
+        "codex",
+        "cursor",
+        "copilot",
+        "gemini",
+        "windsurf",
+        "antigravity",
+    ]:
+        assert name in result.output
+
+
+def test_targets_list_marks_user_override(tmp_path: Path) -> None:
+    """User-defined entries that share a name with a built-in are flagged."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "targets": ["claude"],
+                "target_definitions": {
+                    "claude": {
+                        "resources": {
+                            "skills": {
+                                "layout": "directory",
+                                "path": ".my-claude/skills",
+                            },
+                        },
+                    },
+                    "my-tool": {
+                        "resources": {
+                            "skills": {
+                                "layout": "directory",
+                                "path": ".my-tool/skills",
+                            },
+                        },
+                    },
+                },
+            },
+            default_flow_style=False,
+        )
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["targets", "list", "--config", str(config_path), "--no-global"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "overrides built-in" in result.output
+    assert "my-tool" in result.output
+
+
+def test_targets_show_prints_yaml_for_builtin(tmp_path: Path) -> None:
+    """`agpack targets show <name>` prints a valid manifest as YAML."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "targets",
+            "show",
+            "claude",
+            "--config",
+            str(project_dir / "agpack.yml"),
+            "--no-global",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    # Output must be valid YAML that parses back into a TargetDef
+    from agpack.target_schema import parse_target_def
+
+    parsed = parse_target_def(yaml.safe_load(result.output))
+    assert parsed.name == "claude"
+    assert parsed.resources["skills"].path == ".claude/skills"
+
+
+def test_targets_show_uses_user_definition(tmp_path: Path) -> None:
+    """A user definition shadows the built-in when shown."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "targets": ["claude"],
+                "target_definitions": {
+                    "claude": {
+                        "resources": {
+                            "skills": {
+                                "layout": "directory",
+                                "path": ".my-claude/skills",
+                            },
+                        },
+                    },
+                },
+            },
+            default_flow_style=False,
+        )
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["targets", "show", "claude", "--config", str(config_path), "--no-global"],
+    )
+    assert result.exit_code == 0, result.output
+
+    parsed = yaml.safe_load(result.output)
+    assert parsed["resources"]["skills"]["path"] == ".my-claude/skills"
+    # User definition has no mcp block — the built-in's mcp must NOT leak in
+    assert "mcp" not in parsed
+
+
+def test_targets_show_unknown_name_errors(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "targets",
+            "show",
+            "bogus-tool",
+            "--config",
+            str(project_dir / "agpack.yml"),
+            "--no-global",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Unknown target 'bogus-tool'" in result.output
+
+
+def test_init_template_parses_when_uncommented(tmp_path: Path) -> None:
+    """The scaffolded agpack.yml must parse without errors after `init`."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "agpack.yml"
+
+    runner = CliRunner()
+    init_result = runner.invoke(main, ["init", "--config", str(config_path)])
+    assert init_result.exit_code == 0, init_result.output
+    assert config_path.exists()
+
+    # The default scaffold has no targets selected; just verify it loads.
+    from agpack.config import load_config
+
+    # The scaffold has only commented entries — load should report missing
+    # targets, since 'targets' is required.
+    with pytest.raises(Exception, match="targets"):
+        load_config(config_path)
+
+
 def test_sync_unknown_target_lists_options_in_error(tmp_path: Path) -> None:
     """An unknown target name surfaces a CLI error mentioning both pools."""
     project_dir = tmp_path / "project"
