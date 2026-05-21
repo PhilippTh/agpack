@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from agpack.registry import load_all_builtins
 from agpack.target_schema import ResourceLayout
 from agpack.target_schema import TargetDef
 from agpack.target_schema import TargetSchemaError
 from agpack.target_schema import TransportSpec
 from agpack.target_schema import parse_target_def
+from agpack.target_schema import target_def_to_dict
 
 
 def _minimal() -> dict[str, object]:
@@ -271,7 +273,6 @@ def test_context_appears_in_error() -> None:
 
 
 def test_serialize_minimal_target() -> None:
-    from agpack.target_schema import target_def_to_dict
 
     raw = {"name": "demo"}
     out = target_def_to_dict(parse_target_def(raw))
@@ -280,7 +281,6 @@ def test_serialize_minimal_target() -> None:
 
 def test_serialize_omits_transport_defaults() -> None:
     """Transport fields equal to TransportSpec defaults must not appear."""
-    from agpack.target_schema import target_def_to_dict
 
     raw = {
         "name": "demo",
@@ -303,7 +303,6 @@ def test_serialize_omits_transport_defaults() -> None:
 
 def test_serialize_full_target_roundtrips() -> None:
     """A complete manifest must survive a dump → parse roundtrip unchanged."""
-    from agpack.target_schema import target_def_to_dict
 
     raw = {
         "name": "demo",
@@ -335,8 +334,6 @@ def test_serialize_full_target_roundtrips() -> None:
 
 def test_every_builtin_roundtrips() -> None:
     """Every shipped manifest survives a serialize → parse cycle unchanged."""
-    from agpack.registry import load_all_builtins
-    from agpack.target_schema import target_def_to_dict
 
     for name, original in load_all_builtins().items():
         dumped = target_def_to_dict(original)

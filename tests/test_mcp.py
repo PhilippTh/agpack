@@ -24,14 +24,16 @@ from agpack.target_schema import TargetDef
 
 
 def _resolve_targets(names: list[str]) -> list[TargetDef]:
-    """Resolve target name strings to TargetDef objects."""
-    return [load_builtin(n) for n in names if n in set(_known_targets())]
+    """Resolve target name strings to TargetDef objects.
 
-
-def _known_targets() -> set[str]:
+    Unknown names are silently dropped so the existing tests for
+    "this target has no MCP block" (windsurf, antigravity) and
+    "this target name is not a built-in" keep their old, lax shape.
+    """
     from agpack.registry import list_builtins
 
-    return set(list_builtins())
+    builtins = set(list_builtins())
+    return [load_builtin(n) for n in names if n in builtins]
 
 
 def deploy_mcp_servers(
@@ -40,11 +42,7 @@ def deploy_mcp_servers(
     project_root: Path,
     **kwargs: object,
 ) -> dict[str, list[str]]:
-    """Test shim: accept name strings, forward TargetDef list to production code.
-
-    Unknown target names are silently dropped, matching the old behavior
-    where ``MCP_TARGETS.get(target)`` returned ``None`` for them.
-    """
+    """Test shim: accept name strings, forward TargetDef list to production."""
     return _raw_deploy_mcp_servers(  # type: ignore[arg-type]
         servers, _resolve_targets(targets), project_root, **kwargs
     )

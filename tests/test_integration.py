@@ -11,6 +11,9 @@ import yaml
 from click.testing import CliRunner
 
 from agpack.cli import main
+from agpack.config import load_config
+from agpack.mcp import McpError
+from agpack.target_schema import parse_target_def
 
 
 def _run_git(args: list[str], cwd: Path) -> None:
@@ -922,8 +925,6 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     """When deploy_mcp_servers raises McpError, partial lockfile is written."""
     from unittest.mock import patch
 
-    from agpack.mcp import McpError
-
     bare_repo = _create_bare_repo(tmp_path)
 
     project_dir = tmp_path / "project"
@@ -1143,8 +1144,6 @@ def test_targets_show_prints_yaml_for_builtin(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
 
     # Output must be valid YAML that parses back into a TargetDef
-    from agpack.target_schema import parse_target_def
-
     parsed = parse_target_def(yaml.safe_load(result.output))
     assert parsed.name == "claude"
     assert parsed.resources["skills"].path == ".claude/skills"
@@ -1217,9 +1216,6 @@ def test_init_template_parses_when_uncommented(tmp_path: Path) -> None:
     init_result = runner.invoke(main, ["init", "--config", str(config_path)])
     assert init_result.exit_code == 0, init_result.output
     assert config_path.exists()
-
-    # The default scaffold has no targets selected; just verify it loads.
-    from agpack.config import load_config
 
     # The scaffold has only commented entries — load should report missing
     # targets, since 'targets' is required.

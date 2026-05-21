@@ -12,12 +12,13 @@ import pytest
 
 from agpack.cli import _MAX_FETCH_WORKERS
 from agpack.cli import _sync_resource_type
-from agpack.config import AgpackConfig
 from agpack.config import DependencySource
 from agpack.display import create_sync_progress
 from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
 from agpack.lockfile import Lockfile
+from agpack.registry import load_builtin
+from agpack.target_schema import TargetDef
 
 
 def _make_dep(name: str) -> DependencySource:
@@ -30,10 +31,8 @@ def _make_result(dep: DependencySource, tmp_path: Path) -> FetchResult:
     return FetchResult(source=dep, local_path=d, resolved_ref="abc1234", _tmpdir=d)
 
 
-def _make_config(targets: list[str] | None = None) -> AgpackConfig:
-    return AgpackConfig(
-        targets=targets or ["claude"],
-    )
+def _make_targets(names: list[str] | None = None) -> list[TargetDef]:
+    return [load_builtin(n) for n in (names or ["claude"])]
 
 
 def _fake_detect(result: FetchResult) -> list[tuple[str, Path]]:
@@ -57,7 +56,7 @@ class TestParallelFetchAllSucceed:
     def test_all_fetched_and_deployed(self, tmp_path: Path) -> None:
         deps = [_make_dep("a"), _make_dep("b"), _make_dep("c")]
         fake_results = {dep.name: _make_result(dep, tmp_path) for dep in deps}
-        config = _make_config()
+        target_defs = _make_targets()
         new_lockfile = Lockfile()
 
         def fake_fetch(dep: DependencySource) -> FetchResult:
@@ -75,7 +74,7 @@ class TestParallelFetchAllSucceed:
                 _fake_detect,
                 deploy_item_fn,
                 "skill",
-                config,
+                target_defs,
                 tmp_path,
                 new_lockfile,
                 progress,
@@ -90,7 +89,7 @@ class TestParallelFetchAllSucceed:
     def test_lockfile_entries_added(self, tmp_path: Path) -> None:
         deps = [_make_dep("x")]
         fake_result = _make_result(deps[0], tmp_path)
-        config = _make_config()
+        target_defs = _make_targets()
         new_lockfile = Lockfile()
 
         with (
@@ -103,7 +102,7 @@ class TestParallelFetchAllSucceed:
                 _fake_detect,
                 _fake_deploy_item,
                 "skill",
-                config,
+                target_defs,
                 tmp_path,
                 new_lockfile,
                 progress,
@@ -118,7 +117,7 @@ class TestParallelFetchAllSucceed:
 class TestParallelFetchCollectAllErrors:
     def test_all_errors_reported(self, tmp_path: Path) -> None:
         deps = [_make_dep("a"), _make_dep("b"), _make_dep("c")]
-        config = _make_config()
+        target_defs = _make_targets()
         new_lockfile = Lockfile()
 
         def fake_fetch(dep: DependencySource) -> FetchResult:
@@ -138,7 +137,7 @@ class TestParallelFetchCollectAllErrors:
                 detect_fn,
                 deploy_item_fn,
                 "skill",
-                config,
+                target_defs,
                 tmp_path,
                 new_lockfile,
                 progress,
@@ -158,7 +157,7 @@ class TestParallelFetchCollectAllErrors:
     def test_partial_failure_cleans_up_successes(self, tmp_path: Path) -> None:
         deps = [_make_dep("ok"), _make_dep("bad")]
         fake_result = _make_result(deps[0], tmp_path)
-        config = _make_config()
+        target_defs = _make_targets()
 
         def fake_fetch(dep: DependencySource) -> FetchResult:
             if dep.name == "bad":
@@ -177,7 +176,7 @@ class TestParallelFetchCollectAllErrors:
                 MagicMock(),
                 MagicMock(),
                 "skill",
-                config,
+                target_defs,
                 tmp_path,
                 Lockfile(),
                 progress,
@@ -189,7 +188,7 @@ class TestParallelFetchCollectAllErrors:
 
     def test_dry_run_skips_lockfile_write(self, tmp_path: Path) -> None:
         deps = [_make_dep("bad")]
-        config = _make_config()
+        target_defs = _make_targets()
 
         with (
             patch("agpack.cli.fetch_dependency", side_effect=FetchError("boom")),
@@ -203,7 +202,7 @@ class TestParallelFetchCollectAllErrors:
                 MagicMock(),
                 MagicMock(),
                 "skill",
-                config,
+                target_defs,
                 tmp_path,
                 Lockfile(),
                 progress,
@@ -216,7 +215,7 @@ class TestParallelFetchCollectAllErrors:
     def test_deploy_not_called_when_any_fetch_fails(self, tmp_path: Path) -> None:
         deps = [_make_dep("a"), _make_dep("b")]
         fake_result = _make_result(deps[0], tmp_path)
-        config = _make_config()
+        target_defs = _make_targets()
         detect_fn = MagicMock()
         deploy_item_fn = MagicMock()
 
@@ -237,7 +236,7 @@ class TestParallelFetchCollectAllErrors:
                 detect_fn,
                 deploy_item_fn,
                 "skill",
-                config,
+                target_defs,
                 tmp_path,
                 Lockfile(),
                 progress,
@@ -260,7 +259,7 @@ class TestParallelFetchEdgeCases:
                 MagicMock(),
                 MagicMock(),
                 "skill",
-                _make_config(),
+                _make_targets(),
                 tmp_path,
                 Lockfile(),
                 progress,
@@ -272,7 +271,7 @@ class TestParallelFetchEdgeCases:
 
     def test_concurrency_capped_at_max_workers(self, tmp_path: Path) -> None:
         deps = [_make_dep(str(i)) for i in range(20)]
-        config = _make_config()
+        target_defs = _make_targets()
 
         captured: list[int] = []
         real_init = ThreadPoolExecutor.__init__
@@ -296,7 +295,7 @@ class TestParallelFetchEdgeCases:
                 _fake_detect,
                 _fake_deploy_item,
                 "skill",
-                config,
+                target_defs,
                 tmp_path,
                 Lockfile(),
                 progress,
@@ -310,7 +309,7 @@ class TestParallelFetchEdgeCases:
     def test_deploy_error_writes_lockfile(self, tmp_path: Path) -> None:
         deps = [_make_dep("a")]
         fake_result = _make_result(deps[0], tmp_path)
-        config = _make_config()
+        target_defs = _make_targets()
 
         with (
             patch("agpack.cli.fetch_dependency", return_value=fake_result),
@@ -324,7 +323,7 @@ class TestParallelFetchEdgeCases:
                 _fake_detect,
                 MagicMock(side_effect=RuntimeError("disk full")),
                 "skill",
-                config,
+                target_defs,
                 tmp_path,
                 Lockfile(),
                 progress,

@@ -705,35 +705,37 @@ def _load_user_target_definitions(
     """Load target_definitions from project + global config (best-effort).
 
     Returns an empty dict if the project config is absent or invalid,
-    so the targets subcommands can still list built-ins for users who
-    haven't initialised a project yet.
+    so the ``targets`` subcommands can still list built-ins for users
+    who haven't initialised a project yet.  Project entries win by name
+    over global; global entries with fresh names are appended.
     """
     cfg_path = Path(config_path).resolve()
-    user_defs: dict[str, TargetDef] = {}
+    project_defs: dict[str, TargetDef] = {}
+    include_global = not no_global
 
     if cfg_path.exists():
         try:
             config = load_config(cfg_path)
         except ConfigError:
-            return user_defs
-        user_defs.update(config.target_definitions)
-        if not no_global and config.use_global:
-            try:
-                global_cfg = load_global_config()
-            except ConfigError:
-                global_cfg = None
-            if global_cfg is not None:
-                for name, td in global_cfg.target_definitions.items():
-                    user_defs.setdefault(name, td)
-    elif not no_global:
-        try:
-            global_cfg = load_global_config()
-        except ConfigError:
-            global_cfg = None
-        if global_cfg is not None:
-            user_defs.update(global_cfg.target_definitions)
+            return {}
+        project_defs = dict(config.target_definitions)
+        include_global = include_global and config.use_global
 
-    return user_defs
+    if not include_global:
+        return project_defs
+
+    try:
+        global_cfg = load_global_config()
+    except ConfigError:
+        return project_defs
+
+    if global_cfg is None:
+        return project_defs
+
+    merged = dict(project_defs)
+    for name, td in global_cfg.target_definitions.items():
+        merged.setdefault(name, td)
+    return merged
 
 
 def _resource_summary(target: TargetDef) -> str:
