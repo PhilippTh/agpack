@@ -1,4 +1,4 @@
-"""MCP config merge logic (JSON + TOML)."""
+"""MCP config merge logic — generic encoder driven by TargetDef.mcp."""
 
 from __future__ import annotations
 
@@ -13,51 +13,57 @@ import tomli_w
 
 from agpack.config import McpServer
 from agpack.display import console
-from agpack.targets import MCP_TARGETS
-from agpack.targets import McpTargetConfig
+from agpack.target_schema import McpSpec
+from agpack.target_schema import TargetDef
+from agpack.target_schema import TransportSpec
 
 
 class McpError(Exception):
     """Raised when an MCP config merge fails."""
 
 
-def _build_server_object(server: McpServer, target: str = "") -> dict[str, Any]:
-    """Build the config object for a single MCP server.
+# ---------------------------------------------------------------------------
+# Server-object encoding
+# ---------------------------------------------------------------------------
 
-    Different targets expect different schemas, so the output varies by target.
+
+def _encode_server(server: McpServer, spec: TransportSpec) -> dict[str, Any]:
+    """Render a single MCP server entry per the transport spec.
+
+    The output dict key order is deterministic: ``type`` (when emitted),
+    then ``command``/``url``, then ``args``, ``env``/``environment``.
     """
-    if target == "opencode":
-        return _build_opencode_server_object(server)
+    obj: dict[str, Any] = {}
+
+    if spec.type_value is not None:
+        obj[spec.type_field] = spec.type_value
 
     if server.type == "stdio":
-        obj: dict[str, Any] = {}
-        # VS Code / Copilot requires an explicit "type" field for stdio servers
-        if target == "copilot":
-            obj["type"] = "stdio"
-        obj["command"] = server.command
-        if server.args:
-            obj["args"] = server.args
+        if server.command is None:
+            raise McpError(
+                f"MCP server '{server.name}': stdio transport requires a command"
+            )
+        if spec.command_format == "array":
+            obj[spec.command_key] = [server.command, *list(server.args)]
+        else:
+            obj[spec.command_key] = server.command
+            if server.args:
+                obj[spec.args_key] = list(server.args)
         if server.env:
-            obj["env"] = server.env
-        return obj
+            obj[spec.env_key] = dict(server.env)
     else:
-        obj = {"url": server.url, "type": server.type}
-        return obj
+        if server.url is None:
+            raise McpError(
+                f"MCP server '{server.name}': {server.type} transport requires a url"
+            )
+        obj[spec.url_key] = server.url
+
+    return obj
 
 
-def _build_opencode_server_object(server: McpServer) -> dict[str, Any]:
-    """Build an MCP server object in opencode's expected schema.
-
-    opencode uses: type "local"/"remote", command as array, "environment" key.
-    """
-    if server.type == "stdio":
-        cmd = [server.command] + server.args if server.args else [server.command]
-        obj: dict[str, Any] = {"type": "local", "command": cmd}
-        if server.env:
-            obj["environment"] = server.env
-        return obj
-    else:
-        return {"type": "remote", "url": server.url}
+# ---------------------------------------------------------------------------
+# File I/O
+# ---------------------------------------------------------------------------
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -76,59 +82,70 @@ def _atomic_write(path: Path, content: str) -> None:
         raise
 
 
-def _merge_json(
+def _read_existing(config_path: Path, format_: str) -> dict[str, Any]:
+    """Read an existing JSON/TOML config file, or return empty dict."""
+    if not config_path.exists():
+        return {}
+    text = config_path.read_text(encoding="utf-8")
+    try:
+        if format_ == "json":
+            data = json.loads(text)
+        else:
+            data = tomllib.loads(text)
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError, OSError) as exc:
+        raise McpError(f"Failed to read {config_path}: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise McpError(f"{config_path}: top-level must be a mapping")
+    return data
+
+
+def _dump(data: dict[str, Any], format_: str) -> str:
+    """Serialise a dict back to JSON or TOML text."""
+    if format_ == "json":
+        return json.dumps(data, indent=2) + "\n"
+    return tomli_w.dumps(data)
+
+
+def _merge_into_config(
+    mcp_spec: McpSpec,
     config_path: Path,
-    servers_key: str,
     servers: dict[str, dict[str, Any]],
 ) -> None:
-    """Merge MCP servers into a JSON config file."""
-    existing: dict[str, Any] = {}
-    if config_path.exists():
-        try:
-            existing = json.loads(config_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            raise McpError(f"Failed to read {config_path}: {exc}") from exc
+    """Merge server entries into a target's MCP config file.
 
-    if servers_key not in existing:
-        existing[servers_key] = {}
+    Also applies any ``defaults`` from the spec to the root of the
+    config file when those keys are not already present.
+    """
+    existing = _read_existing(config_path, mcp_spec.format)
 
-    existing[servers_key].update(servers)
+    for key, value in mcp_spec.defaults.items():
+        existing.setdefault(key, value)
 
-    _atomic_write(config_path, json.dumps(existing, indent=2) + "\n")
+    existing.setdefault(mcp_spec.servers_key, {})
+    existing[mcp_spec.servers_key].update(servers)
+
+    _atomic_write(config_path, _dump(existing, mcp_spec.format))
 
 
-def _merge_toml(
-    config_path: Path,
-    servers_key: str,
-    servers: dict[str, dict[str, Any]],
-) -> None:
-    """Merge MCP servers into a TOML config file."""
-    existing: dict[str, Any] = {}
-    if config_path.exists():
-        try:
-            existing = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        except (tomllib.TOMLDecodeError, OSError) as exc:
-            raise McpError(f"Failed to read {config_path}: {exc}") from exc
-
-    if servers_key not in existing:
-        existing[servers_key] = {}
-
-    existing[servers_key].update(servers)
-
-    _atomic_write(config_path, tomli_w.dumps(existing))
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def deploy_mcp_servers(
     mcp_servers: list[McpServer],
-    targets: list[str],
+    targets: list[TargetDef],
     project_root: Path,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> dict[str, list[str]]:
-    """Deploy MCP server definitions to all applicable target config files.
+    """Deploy MCP server definitions to each target's MCP config file.
 
-    Returns a dict mapping server name to list of config file paths
-    (relative to project_root) that were written.
+    Returns a dict mapping server name to the list of config-file paths
+    (relative to *project_root*) that were written.  Targets without an
+    ``mcp`` block in their manifest, or that don't support the server's
+    transport, are skipped silently.
     """
     result: dict[str, list[str]] = {}
 
@@ -136,15 +153,18 @@ def deploy_mcp_servers(
         written_to: list[str] = []
 
         for target in targets:
-            target_cfg = MCP_TARGETS.get(target)
-            if target_cfg is None:
+            if target.mcp is None:
                 continue
 
-            server_obj = _build_server_object(server, target=target)
+            transport_spec = target.mcp.transports.get(server.type)
+            if transport_spec is None:
+                continue
+
+            server_obj = _encode_server(server, transport_spec)
             servers_dict = {server.name: server_obj}
 
-            config_path = project_root / target_cfg.config_path
-            rel_path = target_cfg.config_path
+            config_path = project_root / target.mcp.path
+            rel_path = target.mcp.path
 
             if dry_run:
                 if verbose:
@@ -153,10 +173,7 @@ def deploy_mcp_servers(
                 continue
 
             try:
-                if target_cfg.format == "json":
-                    _merge_json(config_path, target_cfg.servers_key, servers_dict)
-                elif target_cfg.format == "toml":
-                    _merge_toml(config_path, target_cfg.servers_key, servers_dict)
+                _merge_into_config(target.mcp, config_path, servers_dict)
             except McpError:
                 raise
             except Exception as exc:
@@ -174,34 +191,51 @@ def deploy_mcp_servers(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+
+
+def _find_spec_for_path(targets: list[TargetDef], rel_path: str) -> McpSpec | None:
+    """Return the McpSpec whose config path matches *rel_path*."""
+    for target in targets:
+        if target.mcp is not None and target.mcp.path == rel_path:
+            return target.mcp
+    return None
+
+
+def _format_from_extension(rel_path: str) -> str | None:
+    if rel_path.endswith(".json"):
+        return "json"
+    if rel_path.endswith(".toml"):
+        return "toml"
+    return None
+
+
+def _candidate_servers_keys(format_: str) -> tuple[str, ...]:
+    if format_ == "json":
+        return ("mcpServers", "mcp", "servers")
+    return ("mcp_servers",)
+
+
 def cleanup_mcp_server(
     server_name: str,
     target_paths: list[str],
     project_root: Path,
-    targets: list[str],
+    targets: list[TargetDef],
     dry_run: bool = False,
     verbose: bool = False,
 ) -> None:
-    """Remove an MCP server from all listed config files."""
+    """Remove an MCP server from each listed config file.
+
+    When a path in *target_paths* still corresponds to a configured
+    target, that target's ``servers_key`` is used.  Otherwise (the
+    target was removed from the project), the format is inferred from
+    the file extension and known keys are tried.
+    """
     for rel_path in target_paths:
         config_path = project_root / rel_path
         if not config_path.exists():
-            continue
-
-        # Find the target config for this path
-        target_cfg: McpTargetConfig | None = None
-        for target in targets:
-            cfg = MCP_TARGETS.get(target)
-            if cfg and cfg.config_path == rel_path:
-                target_cfg = cfg
-                break
-
-        if target_cfg is None:
-            # Try to infer format from the file extension
-            if rel_path.endswith(".json"):
-                _remove_from_json(config_path, server_name, dry_run)
-            elif rel_path.endswith(".toml"):
-                _remove_from_toml(config_path, server_name, dry_run)
             continue
 
         if dry_run:
@@ -209,86 +243,46 @@ def cleanup_mcp_server(
                 console.print(f"[dry-run]   remove MCP '{server_name}' from {rel_path}")
             continue
 
-        if target_cfg.format == "json":
-            _remove_server_from_json(config_path, target_cfg.servers_key, server_name)
-        elif target_cfg.format == "toml":
-            _remove_server_from_toml(config_path, target_cfg.servers_key, server_name)
+        spec = _find_spec_for_path(targets, rel_path)
+        if spec is not None:
+            _remove_server(config_path, spec.format, (spec.servers_key,), server_name)
+        else:
+            format_ = _format_from_extension(rel_path)
+            if format_ is None:
+                continue
+            _remove_server(
+                config_path,
+                format_,
+                _candidate_servers_keys(format_),
+                server_name,
+            )
 
         if verbose:
             console.print(f"  removed MCP '{server_name}' from {rel_path}")
 
 
-def _remove_server_from_json(
+def _remove_server(
     config_path: Path,
-    servers_key: str,
+    format_: str,
+    servers_keys: tuple[str, ...],
     server_name: str,
 ) -> None:
-    """Remove a server from a JSON config file."""
+    """Remove a server entry from the first matching servers_key."""
     try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        data = (
+            json.loads(config_path.read_text(encoding="utf-8"))
+            if format_ == "json"
+            else tomllib.loads(config_path.read_text(encoding="utf-8"))
+        )
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError, OSError):
         return
 
-    servers = data.get(servers_key, {})
-    if server_name in servers:
-        del servers[server_name]
-        _atomic_write(config_path, json.dumps(data, indent=2) + "\n")
-
-
-def _remove_server_from_toml(
-    config_path: Path,
-    servers_key: str,
-    server_name: str,
-) -> None:
-    """Remove a server from a TOML config file."""
-    try:
-        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, OSError):
+    if not isinstance(data, dict):
         return
 
-    servers = data.get(servers_key, {})
-    if server_name in servers:
-        del servers[server_name]
-        _atomic_write(config_path, tomli_w.dumps(data))
-
-
-def _remove_from_json(
-    config_path: Path,
-    server_name: str,
-    dry_run: bool,
-) -> None:
-    """Remove a server from a JSON file, trying common server keys."""
-    if dry_run:
-        return
-    try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return
-
-    for key in ("mcpServers", "mcp", "servers"):
-        servers = data.get(key, {})
+    for key in servers_keys:
+        servers = data.get(key)
         if isinstance(servers, dict) and server_name in servers:
             del servers[server_name]
-            _atomic_write(config_path, json.dumps(data, indent=2) + "\n")
-            return
-
-
-def _remove_from_toml(
-    config_path: Path,
-    server_name: str,
-    dry_run: bool,
-) -> None:
-    """Remove a server from a TOML file, trying common server keys."""
-    if dry_run:
-        return
-    try:
-        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, OSError):
-        return
-
-    for key in ("mcp_servers",):
-        servers = data.get(key, {})
-        if isinstance(servers, dict) and server_name in servers:
-            del servers[server_name]
-            _atomic_write(config_path, tomli_w.dumps(data))
+            _atomic_write(config_path, _dump(data, format_))
             return

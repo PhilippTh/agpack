@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from agpack.targets import VALID_TARGETS
+from agpack.registry import list_builtins
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -260,10 +260,11 @@ def load_config(path: Path) -> AgpackConfig:
     if not targets or not isinstance(targets, list):
         raise ConfigError("Missing or invalid 'targets' (must be a list)")
 
+    valid = set(list_builtins())
     for t in targets:
-        if t not in VALID_TARGETS:
+        if t not in valid:
             raise ConfigError(
-                f"Unrecognised target '{t}'. Valid targets: {sorted(VALID_TARGETS)}"
+                f"Unrecognised target '{t}'. Valid targets: {sorted(valid)}"
             )
 
     # Global config opt-out

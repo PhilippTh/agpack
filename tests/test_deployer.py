@@ -12,26 +12,59 @@ from agpack.deployer import DeployError
 from agpack.deployer import DeployResult
 from agpack.deployer import _atomic_copy_file
 from agpack.deployer import cleanup_deployed_files
-from agpack.deployer import deploy_agent
-from agpack.deployer import deploy_command
-from agpack.deployer import deploy_single_skill
-from agpack.deployer import deploy_skill
+from agpack.deployer import deploy_agent as _raw_deploy_agent
+from agpack.deployer import deploy_command as _raw_deploy_command
+from agpack.deployer import deploy_single_skill as _raw_deploy_single_skill
+from agpack.deployer import deploy_skill as _raw_deploy_skill
 from agpack.fetcher import FetchResult
+from agpack.registry import load_all_builtins
+from agpack.target_schema import TargetDef
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-ALL_TARGETS = [
-    "claude",
-    "opencode",
-    "codex",
-    "cursor",
-    "copilot",
-    "gemini",
-    "windsurf",
-    "antigravity",
-]
+_BUILTINS = load_all_builtins()
+
+ALL_TARGETS = sorted(_BUILTINS)
+
+SKILL_DIRS = {
+    name: t.resources["skills"].path
+    for name, t in _BUILTINS.items()
+    if "skills" in t.resources
+}
+COMMAND_DIRS = {
+    name: t.resources["commands"].path
+    for name, t in _BUILTINS.items()
+    if "commands" in t.resources
+}
+AGENT_DIRS = {
+    name: t.resources["agents"].path
+    for name, t in _BUILTINS.items()
+    if "agents" in t.resources
+}
+
+
+def _resolve(names: list[str]) -> list[TargetDef]:
+    return [_BUILTINS[n] for n in names if n in _BUILTINS]
+
+
+def deploy_skill(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
+    return _raw_deploy_skill(fr, _resolve(targets), project, **kwargs)
+
+
+def deploy_command(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
+    return _raw_deploy_command(fr, _resolve(targets), project, **kwargs)
+
+
+def deploy_agent(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
+    return _raw_deploy_agent(fr, _resolve(targets), project, **kwargs)
+
+
+def deploy_single_skill(name, path, targets, project, dry_run, verbose):  # type: ignore[no-untyped-def]
+    return _raw_deploy_single_skill(
+        name, path, _resolve(targets), project, dry_run, verbose
+    )
 
 
 def _make_source(name: str = "my-skill") -> DependencySource:
@@ -97,7 +130,6 @@ class TestDeploySkill:
         assert result.expanded_items == []
 
         # Should produce files under every target's skill dir
-        from agpack.targets import SKILL_DIRS
 
         for target, base in SKILL_DIRS.items():
             skill_md = project / base / "my-skill" / "SKILL.md"
@@ -187,8 +219,6 @@ class TestDeployCommand:
         assert isinstance(result, DeployResult)
         assert result.expanded_items == []
 
-        from agpack.targets import COMMAND_DIRS
-
         # Only targets with entries in COMMAND_DIRS should have files
         assert len(result.files) == len(COMMAND_DIRS)
         for target, base in COMMAND_DIRS.items():
@@ -201,8 +231,8 @@ class TestDeployCommand:
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="lint.md")
 
-        # codex and cursor don't support commands
-        result = deploy_command(fr, ["codex", "cursor"], project)
+        # codex doesn't support project-level commands
+        result = deploy_command(fr, ["codex"], project)
 
         assert result.files == []
 
@@ -233,8 +263,6 @@ class TestDeployAgent:
         assert isinstance(result, DeployResult)
         assert result.expanded_items == []
 
-        from agpack.targets import AGENT_DIRS
-
         assert len(result.files) == len(AGENT_DIRS)
         for target, base in AGENT_DIRS.items():
             dst = project / base / "reviewer.md"
@@ -246,8 +274,8 @@ class TestDeployAgent:
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="reviewer.md")
 
-        # codex doesn't support agents
-        result = deploy_agent(fr, ["codex"], project)
+        # cursor / gemini / windsurf / antigravity don't expose project-level agents
+        result = deploy_agent(fr, ["cursor", "gemini", "windsurf"], project)
 
         assert result.files == []
 
@@ -256,7 +284,7 @@ class TestDeployAgent:
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="reviewer.md")
 
-        result = deploy_agent(fr, ["claude", "cursor"], project, dry_run=True)
+        result = deploy_agent(fr, ["claude", "opencode"], project, dry_run=True)
 
         assert len(result.files) == 2
         for rel in result.files:
@@ -444,8 +472,6 @@ class TestDeploySkillFolderDetection:
         fr = _make_folder_of_skills_fetch(tmp_path)
 
         result = deploy_skill(fr, ALL_TARGETS, project)
-
-        from agpack.targets import SKILL_DIRS
 
         # 3 files × 5 targets = 15
         assert len(result.files) == 3 * len(SKILL_DIRS)
@@ -704,8 +730,6 @@ class TestDeploySingleFileSkill:
         result = deploy_single_skill(
             "my-skill", skill_file, ALL_TARGETS, project, dry_run=False, verbose=False
         )
-
-        from agpack.targets import SKILL_DIRS
 
         assert len(result) == len(SKILL_DIRS)
         for rel in result:

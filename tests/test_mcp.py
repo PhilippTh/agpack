@@ -13,16 +13,54 @@ import tomli_w
 from agpack.config import McpServer
 from agpack.mcp import McpError
 from agpack.mcp import _atomic_write
-from agpack.mcp import _merge_json
-from agpack.mcp import _merge_toml
-from agpack.mcp import _remove_from_json
-from agpack.mcp import _remove_from_toml
-from agpack.mcp import cleanup_mcp_server
-from agpack.mcp import deploy_mcp_servers
+from agpack.mcp import cleanup_mcp_server as _raw_cleanup_mcp_server
+from agpack.mcp import deploy_mcp_servers as _raw_deploy_mcp_servers
+from agpack.registry import load_builtin
+from agpack.target_schema import TargetDef
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_targets(names: list[str]) -> list[TargetDef]:
+    """Resolve target name strings to TargetDef objects."""
+    return [load_builtin(n) for n in names if n in set(_known_targets())]
+
+
+def _known_targets() -> set[str]:
+    from agpack.registry import list_builtins
+
+    return set(list_builtins())
+
+
+def deploy_mcp_servers(
+    servers: list[McpServer],
+    targets: list[str],
+    project_root: Path,
+    **kwargs: object,
+) -> dict[str, list[str]]:
+    """Test shim: accept name strings, forward TargetDef list to production code.
+
+    Unknown target names are silently dropped, matching the old behavior
+    where ``MCP_TARGETS.get(target)`` returned ``None`` for them.
+    """
+    return _raw_deploy_mcp_servers(  # type: ignore[arg-type]
+        servers, _resolve_targets(targets), project_root, **kwargs
+    )
+
+
+def cleanup_mcp_server(
+    server_name: str,
+    target_paths: list[str],
+    project_root: Path,
+    targets: list[str],
+    **kwargs: object,
+) -> None:
+    """Test shim: accept name strings, forward TargetDef list."""
+    _raw_cleanup_mcp_server(  # type: ignore[arg-type]
+        server_name, target_paths, project_root, _resolve_targets(targets), **kwargs
+    )
 
 
 def _stdio_server(
@@ -555,115 +593,80 @@ class TestOpencodeFormat:
 
 
 # ---------------------------------------------------------------------------
-# 15. _merge_json / _merge_toml with corrupt files
+# 15. Corrupt config file handling on deploy
 # ---------------------------------------------------------------------------
 
 
 class TestMergeCorruptFiles:
-    def test_merge_json_corrupt_file_raises(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "bad.json"
-        config_path.write_text("not valid json {{{{", encoding="utf-8")
+    def test_deploy_to_corrupt_json_raises(self, tmp_path: Path) -> None:
+        (tmp_path / ".mcp.json").write_text("not valid json {{{{", encoding="utf-8")
 
         with pytest.raises(McpError, match="Failed to read"):
-            _merge_json(config_path, "mcpServers", {"s": {"command": "x"}})
+            deploy_mcp_servers([_stdio_server()], ["claude"], tmp_path)
 
-    def test_merge_toml_corrupt_file_raises(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "bad.toml"
-        config_path.write_text("= invalid toml", encoding="utf-8")
+    def test_deploy_to_corrupt_toml_raises(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text("= invalid toml", encoding="utf-8")
 
         with pytest.raises(McpError, match="Failed to read"):
-            _merge_toml(config_path, "mcp_servers", {"s": {"command": "x"}})
+            deploy_mcp_servers([_stdio_server()], ["codex"], tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# 16. _remove_from_json – fuzzy key matching
+# 16. cleanup_mcp_server with unknown target — fuzzy key matching by format
 # ---------------------------------------------------------------------------
 
 
-class TestRemoveFromJsonFuzzyKeys:
+class TestCleanupFuzzyKeys:
     @pytest.mark.parametrize("key", ["mcpServers", "mcp", "servers"])
-    def test_removes_server_under_various_keys(self, tmp_path: Path, key: str) -> None:
-        config_path = tmp_path / "config.json"
+    def test_removes_server_under_various_json_keys(
+        self, tmp_path: Path, key: str
+    ) -> None:
+        """When the target is not known, JSON cleanup tries common keys."""
+        config_path = tmp_path / "custom.json"
         data = {key: {"my-server": {"command": "npx"}, "keep": {"command": "y"}}}
         config_path.write_text(json.dumps(data), encoding="utf-8")
 
-        _remove_from_json(config_path, "my-server", dry_run=False)
+        cleanup_mcp_server("my-server", ["custom.json"], tmp_path, targets=[])
 
         result = json.loads(config_path.read_text(encoding="utf-8"))
         assert "my-server" not in result[key]
         assert "keep" in result[key]
 
-    def test_noop_when_server_not_found(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.json"
-        original = {"mcpServers": {"other": {"command": "x"}}}
-        config_path.write_text(json.dumps(original), encoding="utf-8")
-
-        _remove_from_json(config_path, "nonexistent", dry_run=False)
-
-        assert json.loads(config_path.read_text(encoding="utf-8")) == original
-
-    def test_dry_run_skips_removal(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.json"
-        original = {"mcpServers": {"my-server": {"command": "x"}}}
-        config_path.write_text(json.dumps(original), encoding="utf-8")
-
-        _remove_from_json(config_path, "my-server", dry_run=True)
-
-        assert json.loads(config_path.read_text(encoding="utf-8")) == original
-
-    def test_corrupt_file_returns_silently(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.json"
-        config_path.write_text("not json!", encoding="utf-8")
-
-        # Should not raise
-        _remove_from_json(config_path, "my-server", dry_run=False)
-
-
-# ---------------------------------------------------------------------------
-# 17. _remove_from_toml – fuzzy key matching
-# ---------------------------------------------------------------------------
-
-
-class TestRemoveFromTomlFuzzyKeys:
-    def test_removes_server_under_mcp_servers_key(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.toml"
+    def test_removes_server_under_mcp_servers_toml_key(self, tmp_path: Path) -> None:
+        """When the target is not known, TOML cleanup tries mcp_servers."""
+        config_path = tmp_path / "custom.toml"
         data = {
             "mcp_servers": {"my-server": {"command": "npx"}, "keep": {"command": "y"}}
         }
         config_path.write_text(tomli_w.dumps(data), encoding="utf-8")
 
-        _remove_from_toml(config_path, "my-server", dry_run=False)
+        cleanup_mcp_server("my-server", ["custom.toml"], tmp_path, targets=[])
 
         result = tomllib.loads(config_path.read_text(encoding="utf-8"))
         assert "my-server" not in result["mcp_servers"]
         assert "keep" in result["mcp_servers"]
 
     def test_noop_when_server_not_found(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.toml"
-        data = {"mcp_servers": {"other": {"command": "x"}}}
-        config_path.write_text(tomli_w.dumps(data), encoding="utf-8")
+        config_path = tmp_path / "custom.json"
+        original = {"mcpServers": {"other": {"command": "x"}}}
+        config_path.write_text(json.dumps(original), encoding="utf-8")
 
-        _remove_from_toml(config_path, "nonexistent", dry_run=False)
+        cleanup_mcp_server("nonexistent", ["custom.json"], tmp_path, targets=[])
 
-        result = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        assert result["mcp_servers"] == {"other": {"command": "x"}}
+        assert json.loads(config_path.read_text(encoding="utf-8")) == original
 
     def test_dry_run_skips_removal(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.toml"
-        data = {"mcp_servers": {"my-server": {"command": "x"}}}
-        config_path.write_text(tomli_w.dumps(data), encoding="utf-8")
+        config_path = tmp_path / ".mcp.json"
+        original = {"mcpServers": {"my-server": {"command": "x"}}}
+        config_path.write_text(json.dumps(original), encoding="utf-8")
 
-        _remove_from_toml(config_path, "my-server", dry_run=True)
+        cleanup_mcp_server(
+            "my-server", [".mcp.json"], tmp_path, targets=["claude"], dry_run=True
+        )
 
-        result = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        assert "my-server" in result["mcp_servers"]
-
-    def test_corrupt_file_returns_silently(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("= invalid toml", encoding="utf-8")
-
-        # Should not raise
-        _remove_from_toml(config_path, "my-server", dry_run=False)
+        assert json.loads(config_path.read_text(encoding="utf-8")) == original
 
 
 # ---------------------------------------------------------------------------
@@ -741,18 +744,18 @@ class TestDeployErrorHandling:
         server = _stdio_server()
 
         with (
-            patch("agpack.mcp._merge_json", side_effect=OSError("disk full")),
+            patch("agpack.mcp._merge_into_config", side_effect=OSError("disk full")),
             pytest.raises(McpError, match="Failed to write MCP config.*disk full"),
         ):
             deploy_mcp_servers([server], ["claude"], tmp_path)
 
     def test_mcp_error_re_raised_directly(self, tmp_path: Path) -> None:
-        """McpError from _merge_json is re-raised without wrapping."""
+        """McpError from _merge_into_config is re-raised without wrapping."""
         server = _stdio_server()
 
         with (
             patch(
-                "agpack.mcp._merge_json",
+                "agpack.mcp._merge_into_config",
                 side_effect=McpError("corrupt config"),
             ),
             pytest.raises(McpError, match="corrupt config"),

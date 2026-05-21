@@ -48,6 +48,9 @@ from agpack.lockfile import write_lockfile
 from agpack.mcp import McpError
 from agpack.mcp import cleanup_mcp_server
 from agpack.mcp import deploy_mcp_servers
+from agpack.registry import load_builtin
+from agpack.target_schema import TargetDef
+from agpack.target_schema import TargetSchemaError
 
 _MAX_FETCH_WORKERS = 8
 
@@ -76,9 +79,9 @@ class SyncResult:
 def _sync_resource_type(
     deps: list[DependencySource],
     detect_fn: Callable[[FetchResult], list[tuple[str, Path]]],
-    deploy_item_fn: Callable[[str, Path, list[str], Path, bool, bool], list[str]],
+    deploy_item_fn: Callable[[str, Path, list[TargetDef], Path, bool, bool], list[str]],
     resource_type: str,
-    config: AgpackConfig,
+    target_defs: list[TargetDef],
     project_root: Path,
     new_lockfile: Lockfile,
     progress: Progress,
@@ -169,7 +172,7 @@ def _sync_resource_type(
                 files = deploy_item_fn(
                     item_name,
                     item_path,
-                    config.targets,
+                    target_defs,
                     project_root,
                     dry_run,
                     False,
@@ -229,6 +232,18 @@ def _sync_resource_type(
         cleanup_fetch(result)
 
     return sync
+
+
+def _resolve_targets(config: AgpackConfig) -> list[TargetDef]:
+    """Resolve ``config.targets`` (a list of names) to TargetDef objects.
+
+    Currently only built-in targets are recognised; project-level
+    ``target_definitions`` resolution lands in a follow-up commit.
+    """
+    try:
+        return [load_builtin(name) for name in config.targets]
+    except TargetSchemaError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _load_and_merge_global(
@@ -300,7 +315,10 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    # 4. Read existing lockfile
+    # 4. Resolve target names to manifests
+    target_defs = _resolve_targets(config)
+
+    # 5. Read existing lockfile
     old_lockfile = read_lockfile(project_root)
 
     # 5. Build set of current dependency identities
@@ -328,7 +346,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             mcp_entry.name,
             mcp_entry.targets,
             project_root,
-            config.targets,
+            target_defs,
             dry_run=dry_run,
             verbose=verbose,
         )
@@ -352,7 +370,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                 detect_fn,
                 deploy_item_fn,
                 resource_type,
-                config,
+                target_defs,
                 project_root,
                 new_lockfile,
                 progress,
@@ -372,7 +390,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             try:
                 mcp_result = deploy_mcp_servers(
                     config.mcp,
-                    config.targets,
+                    target_defs,
                     project_root,
                     dry_run=dry_run,
                     verbose=verbose,
