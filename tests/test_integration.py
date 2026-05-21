@@ -12,7 +12,7 @@ from click.testing import CliRunner
 
 from agpack.cli import main
 from agpack.config import load_config
-from agpack.deployer import McpError
+from agpack.kinds import EditFileError
 from agpack.target_schema import parse_target_def
 
 
@@ -118,7 +118,9 @@ def test_full_sync_flow(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     # Run sync
     runner = CliRunner()
@@ -192,7 +194,9 @@ def test_sync_cleanup_removed_dependency(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -208,7 +212,9 @@ def test_sync_cleanup_removed_dependency(tmp_path: Path) -> None:
 
     # Remove the skill from config, keep command
     config["dependencies"]["skills"] = []
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     # Second sync
     result = runner.invoke(
@@ -246,7 +252,9 @@ def test_sync_dry_run(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -287,7 +295,9 @@ def test_status_command(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
 
@@ -374,7 +384,9 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -393,7 +405,9 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
     config["dependencies"]["mcp"] = [
         {"name": "other-server", "command": "node", "args": ["server.js"]}
     ]
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     # Re-sync
     result = runner.invoke(
@@ -434,7 +448,9 @@ def test_sync_with_global_config(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    global_path.write_text(
+        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
+    )
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     # Set up project directory with skills only
@@ -452,7 +468,9 @@ def test_sync_with_global_config(
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -486,7 +504,9 @@ def test_sync_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    global_path.write_text(
+        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
+    )
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     # Project with skills only
@@ -504,7 +524,9 @@ def test_sync_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -540,7 +562,9 @@ def test_sync_global_false_in_project(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    global_path.write_text(
+        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
+    )
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     # Project config with global: false
@@ -593,7 +617,9 @@ def test_sync_global_mcp_merged(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    global_path.write_text(
+        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
+    )
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     # Project with its own MCP server
@@ -612,7 +638,9 @@ def test_sync_global_mcp_merged(
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -647,7 +675,9 @@ def test_sync_global_mcp_project_wins_duplicate(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    global_path.write_text(
+        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
+    )
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     project_dir = tmp_path / "project"
@@ -665,7 +695,9 @@ def test_sync_global_mcp_project_wins_duplicate(
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -743,7 +775,9 @@ def test_status_with_global_config(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    global_path.write_text(
+        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
+    )
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     # Project with skills only
@@ -761,7 +795,9 @@ def test_status_with_global_config(
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
 
@@ -793,7 +829,9 @@ def test_status_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(yaml.dump(global_config, default_flow_style=False))
+    global_path.write_text(
+        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
+    )
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     project_dir = tmp_path / "project"
@@ -810,7 +848,9 @@ def test_status_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -849,7 +889,9 @@ def test_sync_url_fallback(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -889,7 +931,9 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     # First sync succeeds, establishing a lockfile
     runner = CliRunner()
@@ -901,7 +945,7 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     assert result.exit_code == 0
 
     # Now make item detection raise on the commands pass
-    def failing_detect(fetch_result, resource_type):  # noqa: ARG001
+    def failing_detect(fetch_result, layout, resource_type):  # noqa: ARG001
         if resource_type == "commands":
             raise RuntimeError("detection failed")
         return [(fetch_result.source.name, fetch_result.local_path)]
@@ -924,7 +968,7 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
 
 
 def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
-    """When deploy_mcp_servers raises McpError, partial lockfile is written."""
+    """When deploy_mcp_servers raises EditFileError, partial lockfile is written."""
     from unittest.mock import patch
 
     bare_repo = _create_bare_repo(tmp_path)
@@ -951,11 +995,13 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     with patch(
         "agpack.cli.deploy_mcp_servers",
-        side_effect=McpError("corrupt config file"),
+        side_effect=EditFileError("corrupt config file"),
     ):
         runner = CliRunner()
         result = runner.invoke(
@@ -971,7 +1017,7 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     assert lockfile_path.exists()
     lockfile = yaml.safe_load(lockfile_path.read_text())
     assert len(lockfile["installed"]) == 1
-    assert lockfile["installed"][0]["type"] == "skill"
+    assert lockfile["installed"][0]["type"] == "skills"
     # MCP section should be empty since deploy failed
     assert lockfile.get("mcp", []) == []
 
@@ -989,12 +1035,14 @@ def test_sync_with_target_definitions_overriding_builtin(tmp_path: Path) -> None
         },
         "target_definitions": {
             "claude": {
-                "skills": {"layout": "directory", "path": ".my-claude/skills"},
+                "skills": {"kind": "copy-directory", "path": ".my-claude/skills"},
             },
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -1029,18 +1077,22 @@ def test_sync_with_brand_new_custom_target(tmp_path: Path) -> None:
         },
         "target_definitions": {
             "my-internal-tool": {
-                "skills": {"layout": "directory", "path": ".myaitool/skills"},
+                "skills": {"kind": "copy-directory", "path": ".myaitool/skills"},
                 "mcp": {
+                    "kind": "edit-file",
                     "path": ".myaitool/config.json",
-                    "format": "json",
-                    "servers_key": "mcpServers",
-                    "transports": {"stdio": {}},
+                    "merge": {
+                        "servers_key": "mcpServers",
+                        "transports": {"stdio": {}},
+                    },
                 },
             },
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -1092,13 +1144,13 @@ def test_targets_list_marks_user_override(tmp_path: Path) -> None:
                 "target_definitions": {
                     "claude": {
                         "skills": {
-                            "layout": "directory",
+                            "kind": "copy-directory",
                             "path": ".my-claude/skills",
                         },
                     },
                     "my-tool": {
                         "skills": {
-                            "layout": "directory",
+                            "kind": "copy-directory",
                             "path": ".my-tool/skills",
                         },
                     },
@@ -1154,7 +1206,7 @@ def test_targets_show_uses_user_definition(tmp_path: Path) -> None:
                 "target_definitions": {
                     "claude": {
                         "skills": {
-                            "layout": "directory",
+                            "kind": "copy-directory",
                             "path": ".my-claude/skills",
                         },
                     },
@@ -1260,7 +1312,9 @@ def test_sync_url_multiple_fallbacks(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
 
     runner = CliRunner()
     result = runner.invoke(

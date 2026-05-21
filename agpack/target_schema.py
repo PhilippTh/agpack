@@ -1,14 +1,14 @@
-"""Target manifest schema — dataclasses, parser, and validator.
+"""Target manifest schema — parser and validator.
 
 A *target* describes where a single AI coding tool expects resources and
-how its MCP config file is encoded.  Built-in manifests ship as YAML
-files under ``agpack/builtin_targets/`` and users may override them in
-their ``agpack.yml`` via ``target_definitions``.
+how its structured config files are merged. Each resource block is
+identified by an arbitrary name (``skills``, ``commands``, ``mcp``, or
+anything user-defined) and declares a :data:`~agpack.kinds.ResourceDef`
+via the ``kind:`` field.
 
-The schema is intentionally declarative: every per-tool quirk that used
-to live in Python (file paths, MCP top-level key, JSON vs TOML, opencode's
-``command``-as-array form, copilot's explicit ``type: stdio``, etc.) is
-expressed here so the deployer and MCP encoder stay generic.
+The actual deploy/cleanup behavior lives on the kind classes in
+:mod:`agpack.kinds`; this module is only responsible for turning YAML
+into well-typed resource definitions.
 """
 
 from __future__ import annotations
@@ -16,7 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
-from typing import Literal
+
+from agpack.kinds import CopyDirectoryResource
+from agpack.kinds import CopyFileResource
+from agpack.kinds import EditFileResource
+from agpack.kinds import MergeMcpServers
+from agpack.kinds import ResourceDef
+from agpack.kinds import TransportSpec
+from agpack.kinds import infer_mcp_format
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -31,119 +38,36 @@ class TargetSchemaError(Exception):
 # Constants
 # ---------------------------------------------------------------------------
 
-_VALID_LAYOUTS = ("directory", "file")
-_VALID_FORMATS = ("json", "toml")
+_VALID_KINDS = ("copy-directory", "copy-file", "edit-file")
 _VALID_COMMAND_FORMATS = ("string", "array")
-_VALID_RESOURCE_TYPES = ("skills", "commands", "agents")
 _VALID_TRANSPORTS = ("stdio", "http", "sse")
 
 
 # ---------------------------------------------------------------------------
-# Dataclasses
+# TargetDef
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ResourceLayout:
-    """How a single resource type is deployed for a target.
-
-    Attributes:
-        layout: ``"directory"`` to copy each dependency item as a whole
-            folder (skill bundles), ``"file"`` to copy individual files
-            (commands, agents).
-        path: Deployment path, relative to the project root.
-    """
-
-    layout: Literal["directory", "file"]
-    path: str
-
-
-@dataclass(frozen=True)
-class TransportSpec:
-    """Encoding rules for one MCP transport (stdio / http / sse).
-
-    All fields have sensible defaults so the most common case
-    (e.g. stdio with ``command``/``args``/``env``) needs no configuration.
-
-    Attributes:
-        type_value: Value written under :attr:`type_field`.  When
-            ``None`` (the default), no type field is emitted — useful for
-            tools that infer the transport from which field is present.
-        type_field: Key name for the transport type (default ``"type"``).
-        command_key: Output key for the stdio command (default
-            ``"command"``).  Only used when :attr:`command_format` is
-            ``"string"``; in ``"array"`` form the merged list is written
-            under this key.
-        command_format: ``"string"`` keeps ``command``/``args`` separate;
-            ``"array"`` merges them into a single list under
-            :attr:`command_key` (opencode convention).
-        args_key: Output key for stdio args (default ``"args"``).
-            Ignored when :attr:`command_format` is ``"array"``.
-        env_key: Output key for stdio env (default ``"env"``;
-            opencode uses ``"environment"``).
-        url_key: Output key for the remote URL (default ``"url"``;
-            Gemini's Streamable HTTP uses ``"httpUrl"``).
-        headers_key: Output key for remote headers (default
-            ``"headers"``; Codex uses ``"http_headers"``).
-    """
-
-    type_value: str | None = None
-    type_field: str = "type"
-    command_key: str = "command"
-    command_format: Literal["string", "array"] = "string"
-    args_key: str = "args"
-    env_key: str = "env"
-    url_key: str = "url"
-    headers_key: str = "headers"
-
-
-@dataclass(frozen=True)
-class McpSpec:
-    """How a target stores MCP server definitions.
-
-    Attributes:
-        path: Config file path, relative to the project root.
-        format: ``"json"`` or ``"toml"``.
-        servers_key: Top-level key inside the config that holds the
-            ``{name: server-object}`` mapping (``"mcpServers"``, ``"mcp"``,
-            ``"servers"``, ``"mcp_servers"``, …).
-        defaults: Constant fields merged into the config file's root
-            (e.g. opencode's ``"$schema"`` reference).
-        transports: Per-transport encoding rules.  Only transports listed
-            here are emitted; missing transports are treated as
-            unsupported by the target.
-    """
-
-    path: str
-    format: Literal["json", "toml"]
-    servers_key: str
-    defaults: dict[str, Any] = field(default_factory=dict)
-    transports: dict[str, TransportSpec] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class TargetDef:
     """A fully-resolved target manifest.
 
-    The target's name is not stored on the dataclass — it's the key
-    that addresses the manifest (filename for built-ins, mapping key
-    for ``target_definitions`` in ``agpack.yml``).  That key is the
-    single source of truth, so there is nowhere for a stale or
-    mismatched ``name`` to hide.
+    The target's name is the YAML filename (built-ins) or the mapping
+    key under ``target_definitions:`` in ``agpack.yml``; it is not
+    stored on the dataclass.
 
     Attributes:
-        resources: Per-resource-type deployment layouts.  Missing keys
-            mean the target does not support that resource type.
-        mcp: MCP encoding spec, or ``None`` if the target has no
-            project-level MCP config (e.g. Windsurf, Antigravity).
+        resources: All resource definitions declared by this target,
+            keyed by resource type name. ``mcp`` is no longer a
+            reserved name — it's a regular entry whose kind happens to
+            be ``edit-file``.
     """
 
-    resources: dict[str, ResourceLayout] = field(default_factory=dict)
-    mcp: McpSpec | None = None
+    resources: dict[str, ResourceDef] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
-# Parser
+# Helpers
 # ---------------------------------------------------------------------------
 
 
@@ -161,22 +85,30 @@ def _require_string(value: Any, context: str) -> str:
     return value
 
 
-def _parse_resource(raw: Any, context: str) -> ResourceLayout:
-    data = _require_mapping(raw, context)
-
-    layout = data.get("layout")
-    if layout not in _VALID_LAYOUTS:
+def _reject_extra(known: set[str], data: dict[str, Any], context: str) -> None:
+    extra = set(data) - known
+    if extra:
         raise TargetSchemaError(
-            f"{context}.layout: must be one of {_VALID_LAYOUTS}, got {layout!r}"
+            f"{context}: unknown keys {sorted(extra)}; "
+            f"valid: {sorted(known)}"
         )
 
+
+# ---------------------------------------------------------------------------
+# Per-kind parsers
+# ---------------------------------------------------------------------------
+
+
+def _parse_copy_directory(data: dict[str, Any], context: str) -> CopyDirectoryResource:
+    _reject_extra({"kind", "path"}, data, context)
     path = _require_string(data.get("path"), f"{context}.path")
+    return CopyDirectoryResource(path=path)
 
-    extra = set(data) - {"layout", "path"}
-    if extra:
-        raise TargetSchemaError(f"{context}: unknown keys {sorted(extra)}")
 
-    return ResourceLayout(layout=layout, path=path)
+def _parse_copy_file(data: dict[str, Any], context: str) -> CopyFileResource:
+    _reject_extra({"kind", "path"}, data, context)
+    path = _require_string(data.get("path"), f"{context}.path")
+    return CopyFileResource(path=path)
 
 
 def _parse_transport(raw: Any, context: str) -> TransportSpec:
@@ -192,9 +124,7 @@ def _parse_transport(raw: Any, context: str) -> TransportSpec:
         "url_key",
         "headers_key",
     }
-    extra = set(data) - known
-    if extra:
-        raise TargetSchemaError(f"{context}: unknown keys {sorted(extra)}")
+    _reject_extra(known, data, context)
 
     type_value = data.get("type_value")
     if type_value is not None and not isinstance(type_value, str):
@@ -228,21 +158,9 @@ def _parse_transport(raw: Any, context: str) -> TransportSpec:
     return TransportSpec(**kwargs)
 
 
-def _parse_mcp(raw: Any, context: str) -> McpSpec:
+def _parse_merge_mcp_servers(raw: Any, context: str) -> MergeMcpServers:
     data = _require_mapping(raw, context)
-
-    known = {"path", "format", "servers_key", "defaults", "transports"}
-    extra = set(data) - known
-    if extra:
-        raise TargetSchemaError(f"{context}: unknown keys {sorted(extra)}")
-
-    path = _require_string(data.get("path"), f"{context}.path")
-
-    format_ = data.get("format")
-    if format_ not in _VALID_FORMATS:
-        raise TargetSchemaError(
-            f"{context}.format: must be one of {_VALID_FORMATS}, got {format_!r}"
-        )
+    _reject_extra({"servers_key", "defaults", "transports"}, data, context)
 
     servers_key = _require_string(data.get("servers_key"), f"{context}.servers_key")
 
@@ -263,49 +181,90 @@ def _parse_mcp(raw: Any, context: str) -> McpSpec:
             transport_raw, f"{context}.transports.{transport_name}"
         )
 
-    return McpSpec(
-        path=path,
-        format=format_,
+    return MergeMcpServers(
         servers_key=servers_key,
         defaults=dict(defaults_raw),
         transports=transports,
     )
 
 
+def _parse_edit_file(data: dict[str, Any], context: str) -> EditFileResource:
+    _reject_extra({"kind", "path", "merge"}, data, context)
+
+    path = _require_string(data.get("path"), f"{context}.path")
+    # Validate the path has a recognised extension at parse time so
+    # bad manifests fail loudly (not at deploy time).
+    try:
+        infer_mcp_format(path)
+    except Exception as exc:
+        raise TargetSchemaError(f"{context}.path: {exc}") from exc
+
+    if "merge" not in data:
+        raise TargetSchemaError(
+            f"{context}.merge: required for kind: edit-file (use the "
+            f"mcp-servers encoder shape)"
+        )
+    merge = _parse_merge_mcp_servers(data["merge"], f"{context}.merge")
+
+    return EditFileResource(path=path, merge=merge)
+
+
+# ---------------------------------------------------------------------------
+# Resource block parser (kind dispatch)
+# ---------------------------------------------------------------------------
+
+
+def _parse_resource(raw: Any, context: str) -> ResourceDef:
+    data = _require_mapping(raw, context)
+
+    if "layout" in data:
+        raise TargetSchemaError(
+            f"{context}.layout: deprecated — use 'kind: copy-directory' or "
+            f"'kind: copy-file' instead. (Was: layout: {data['layout']!r}.)"
+        )
+    if "format" in data:
+        raise TargetSchemaError(
+            f"{context}.format: drop this field — the MCP config format "
+            f"is inferred from the file extension of 'path'."
+        )
+
+    kind = data.get("kind")
+    if kind not in _VALID_KINDS:
+        raise TargetSchemaError(
+            f"{context}.kind: must be one of {_VALID_KINDS}, got {kind!r}"
+        )
+
+    if kind == "copy-directory":
+        return _parse_copy_directory(data, context)
+    if kind == "copy-file":
+        return _parse_copy_file(data, context)
+    return _parse_edit_file(data, context)
+
+
+# ---------------------------------------------------------------------------
+# Public entrypoint
+# ---------------------------------------------------------------------------
+
+
 def parse_target_def(raw: Any, context: str = "target") -> TargetDef:
     """Parse a target manifest from a raw dict (loaded YAML).
 
-    The YAML is flat: each top-level key is either a resource type
-    (``skills`` / ``commands`` / ``agents``) or ``mcp``.  Unknown keys
-    are rejected.
-
-    Args:
-        raw: The mapping produced by ``yaml.safe_load``.
-        context: Error-message prefix identifying the source
-            (e.g. ``"builtin_targets/claude.yml"`` or
-            ``"target_definitions.claude"``).
+    Each top-level key is a resource type name (``skills`` /
+    ``commands`` / ``mcp`` / any user-defined name). Each block must
+    declare a ``kind:`` (``copy-directory`` / ``copy-file`` /
+    ``edit-file``) plus the kind-specific fields.
 
     Raises:
         TargetSchemaError: If the manifest is malformed.
     """
     data = _require_mapping(raw, context)
 
-    known = set(_VALID_RESOURCE_TYPES) | {"mcp"}
-    extra = set(data) - known
-    if extra:
-        raise TargetSchemaError(
-            f"{context}: unknown keys {sorted(extra)}; "
-            f"valid: {sorted(known)}"
-        )
-
-    resources: dict[str, ResourceLayout] = {}
-    for resource_name in _VALID_RESOURCE_TYPES:
-        if resource_name in data:
-            resources[resource_name] = _parse_resource(
-                data[resource_name], f"{context}.{resource_name}"
+    resources: dict[str, ResourceDef] = {}
+    for key, value in data.items():
+        if not isinstance(key, str) or not key:
+            raise TargetSchemaError(
+                f"{context}: keys must be non-empty strings, got {key!r}"
             )
+        resources[key] = _parse_resource(value, f"{context}.{key}")
 
-    mcp_raw = data.get("mcp")
-    mcp = _parse_mcp(mcp_raw, f"{context}.mcp") if mcp_raw is not None else None
-
-    return TargetDef(resources=resources, mcp=mcp)
+    return TargetDef(resources=resources)

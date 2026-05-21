@@ -10,10 +10,10 @@ from unittest.mock import patch
 import pytest
 
 from agpack.config import McpServer
-from agpack.deployer import McpError
-from agpack.deployer import _atomic_write
 from agpack.deployer import cleanup_mcp_server as _raw_cleanup_mcp_server
 from agpack.deployer import deploy_mcp_servers as _raw_deploy_mcp_servers
+from agpack.kinds import EditFileError
+from agpack.kinds import _atomic_write
 from agpack.lockfile import McpTargetRef
 from agpack.registry import load_builtin
 from agpack.target_schema import TargetDef
@@ -77,30 +77,28 @@ def cleanup_mcp_server(
     """Test shim: build McpTargetRefs from current target manifests by path.
 
     Paths that don't match any current target are passed with an empty
-    servers_key/format — the production cleanup will skip them, which
-    matches the new "no fuzzy fallback" contract.
+    servers_key — the production cleanup will skip them, which matches
+    the "no fuzzy fallback" contract.
     """
+    from agpack.kinds import EditFileResource
+
     target_defs = _resolve_targets(targets)
     refs: list[McpTargetRef] = []
     for path in target_paths:
-        match = next(
-            (
-                t.mcp
-                for t in target_defs
-                if t.mcp is not None and t.mcp.path == path
-            ),
-            None,
-        )
+        match = None
+        for t in target_defs:
+            for res in t.resources.values():
+                if isinstance(res, EditFileResource) and res.path == path:
+                    match = res
+                    break
+            if match is not None:
+                break
         if match is not None:
             refs.append(
-                McpTargetRef(
-                    path=path,
-                    servers_key=match.servers_key,
-                    format=match.format,
-                )
+                McpTargetRef(path=path, servers_key=match.merge.servers_key)
             )
         else:
-            refs.append(McpTargetRef(path=path, servers_key="", format=""))
+            refs.append(McpTargetRef(path=path, servers_key=""))
     _raw_cleanup_mcp_server(server_name, refs, project_root, **kwargs)  # type: ignore[arg-type]
 
 
@@ -642,7 +640,7 @@ class TestMergeCorruptFiles:
     def test_deploy_to_corrupt_json_raises(self, tmp_path: Path) -> None:
         (tmp_path / ".mcp.json").write_text("not valid json {{{{", encoding="utf-8")
 
-        with pytest.raises(McpError, match="Failed to read"):
+        with pytest.raises(EditFileError, match="Failed to read"):
             deploy_mcp_servers([_stdio_server()], ["claude"], tmp_path)
 
     def test_deploy_to_corrupt_toml_raises(self, tmp_path: Path) -> None:
@@ -650,7 +648,7 @@ class TestMergeCorruptFiles:
         codex_dir.mkdir()
         (codex_dir / "config.toml").write_text("= invalid toml", encoding="utf-8")
 
-        with pytest.raises(McpError, match="Failed to read"):
+        with pytest.raises(EditFileError, match="Failed to read"):
             deploy_mcp_servers([_stdio_server()], ["codex"], tmp_path)
 
 
@@ -716,28 +714,28 @@ class TestCleanupDryRun:
 
 class TestDeployErrorHandling:
     def test_non_mcp_error_wrapped(self, tmp_path: Path) -> None:
-        """Non-McpError exceptions from file writes are wrapped in McpError."""
+        """Non-EditFileError exceptions from writes are wrapped in EditFileError."""
         server = _stdio_server()
 
         with (
             patch(
-                "agpack.deployer._merge_into_config",
+                "agpack.kinds._merge_into_config",
                 side_effect=OSError("disk full"),
             ),
-            pytest.raises(McpError, match="Failed to write MCP config.*disk full"),
+            pytest.raises(EditFileError, match="Failed to write MCP config.*disk full"),
         ):
             deploy_mcp_servers([server], ["claude"], tmp_path)
 
     def test_mcp_error_re_raised_directly(self, tmp_path: Path) -> None:
-        """McpError from _merge_into_config is re-raised without wrapping."""
+        """EditFileError from _merge_into_config is re-raised without wrapping."""
         server = _stdio_server()
 
         with (
             patch(
-                "agpack.deployer._merge_into_config",
-                side_effect=McpError("corrupt config"),
+                "agpack.kinds._merge_into_config",
+                side_effect=EditFileError("corrupt config"),
             ),
-            pytest.raises(McpError, match="corrupt config"),
+            pytest.raises(EditFileError, match="corrupt config"),
         ):
             deploy_mcp_servers([server], ["claude"], tmp_path)
 
@@ -758,7 +756,7 @@ class TestAtomicWriteFailure:
         target = tmp_path / "output.json"
 
         with (
-            patch("agpack.deployer.os.replace", side_effect=OSError("disk full")),
+            patch("agpack.kinds.os.replace", side_effect=OSError("disk full")),
             pytest.raises(OSError, match="disk full"),
         ):
             _atomic_write(target, '{"test": true}\n')

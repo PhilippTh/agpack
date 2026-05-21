@@ -7,22 +7,34 @@ encoding.
 
 from __future__ import annotations
 
+from agpack.kinds import CopyDirectoryResource
+from agpack.kinds import CopyFileResource
+from agpack.kinds import EditFileResource
 from agpack.registry import load_builtin
+
+
+def _mcp(target):  # type: ignore[no-untyped-def]
+    """Return the target's edit-file resource (i.e. its MCP block), or None."""
+    res = target.resources.get("mcp")
+    return res if isinstance(res, EditFileResource) else None
 
 
 def test_claude_paths_and_mcp() -> None:
     target = load_builtin("claude")
     assert target.resources["skills"].path == ".claude/skills"
+    assert isinstance(target.resources["skills"], CopyDirectoryResource)
     assert target.resources["commands"].path == ".claude/commands"
+    assert isinstance(target.resources["commands"], CopyFileResource)
     assert target.resources["agents"].path == ".claude/agents"
 
-    assert target.mcp is not None
-    assert target.mcp.path == ".mcp.json"
-    assert target.mcp.format == "json"
-    assert target.mcp.servers_key == "mcpServers"
-    assert target.mcp.transports["stdio"].type_value is None
-    assert target.mcp.transports["http"].type_value == "http"
-    assert target.mcp.transports["sse"].type_value == "sse"
+    mcp = _mcp(target)
+    assert mcp is not None
+    assert mcp.path == ".mcp.json"
+    assert mcp.format == "json"
+    assert mcp.merge.servers_key == "mcpServers"
+    assert mcp.merge.transports["stdio"].type_value is None
+    assert mcp.merge.transports["http"].type_value == "http"
+    assert mcp.merge.transports["sse"].type_value == "sse"
 
 
 def test_opencode_quirks() -> None:
@@ -31,36 +43,38 @@ def test_opencode_quirks() -> None:
     assert target.resources["commands"].path == ".opencode/commands"
     assert target.resources["agents"].path == ".opencode/agents"
 
-    assert target.mcp is not None
-    assert target.mcp.path == "opencode.json"
-    assert target.mcp.servers_key == "mcp"
-    assert target.mcp.defaults == {"$schema": "https://opencode.ai/config.json"}
+    mcp = _mcp(target)
+    assert mcp is not None
+    assert mcp.path == "opencode.json"
+    assert mcp.merge.servers_key == "mcp"
+    assert mcp.merge.defaults == {"$schema": "https://opencode.ai/config.json"}
 
-    stdio = target.mcp.transports["stdio"]
+    stdio = mcp.merge.transports["stdio"]
     assert stdio.type_value == "local"
     assert stdio.command_format == "array"
     assert stdio.env_key == "environment"
 
-    assert target.mcp.transports["http"].type_value == "remote"
-    assert target.mcp.transports["sse"].type_value == "remote"
+    assert mcp.merge.transports["http"].type_value == "remote"
+    assert mcp.merge.transports["sse"].type_value == "remote"
 
 
 def test_codex_bug_fix_skills_path_and_agents_added() -> None:
     target = load_builtin("codex")
     # Bug fix: skills now under .codex/, not .agents/
     assert target.resources["skills"].path == ".codex/skills"
-    # Bug fix: agents now supported (file layout — TOML files provided by user)
-    assert target.resources["agents"].layout == "file"
+    # Bug fix: agents now supported (copy-file kind)
+    assert isinstance(target.resources["agents"], CopyFileResource)
     assert target.resources["agents"].path == ".codex/agents"
     # Codex does not support project-level commands
     assert "commands" not in target.resources
 
-    assert target.mcp is not None
-    assert target.mcp.format == "toml"
-    assert target.mcp.servers_key == "mcp_servers"
+    mcp = _mcp(target)
+    assert mcp is not None
+    assert mcp.format == "toml"
+    assert mcp.merge.servers_key == "mcp_servers"
     # No explicit type field for any transport (presence of command/url infers)
-    assert target.mcp.transports["stdio"].type_value is None
-    http = target.mcp.transports["http"]
+    assert mcp.merge.transports["stdio"].type_value is None
+    http = mcp.merge.transports["http"]
     assert http.type_value is None
     assert http.headers_key == "http_headers"
 
@@ -73,9 +87,10 @@ def test_cursor_bug_fix_removes_agents_adds_commands() -> None:
     # Bug fix: .cursor/agents/ was fictional; not present
     assert "agents" not in target.resources
 
-    assert target.mcp is not None
-    assert target.mcp.path == ".cursor/mcp.json"
-    assert target.mcp.servers_key == "mcpServers"
+    mcp = _mcp(target)
+    assert mcp is not None
+    assert mcp.path == ".cursor/mcp.json"
+    assert mcp.merge.servers_key == "mcpServers"
 
 
 def test_copilot_paths_and_explicit_stdio_type() -> None:
@@ -84,12 +99,13 @@ def test_copilot_paths_and_explicit_stdio_type() -> None:
     assert target.resources["commands"].path == ".github/prompts"
     assert target.resources["agents"].path == ".github/agents"
 
-    assert target.mcp is not None
-    assert target.mcp.path == ".vscode/mcp.json"
-    assert target.mcp.servers_key == "servers"
+    mcp = _mcp(target)
+    assert mcp is not None
+    assert mcp.path == ".vscode/mcp.json"
+    assert mcp.merge.servers_key == "servers"
     # Copilot/VS Code requires explicit "type": "stdio"
-    assert target.mcp.transports["stdio"].type_value == "stdio"
-    assert target.mcp.transports["http"].type_value == "http"
+    assert mcp.merge.transports["stdio"].type_value == "stdio"
+    assert mcp.merge.transports["http"].type_value == "http"
 
 
 def test_gemini_bug_fix_mcp_encoding() -> None:
@@ -98,17 +114,18 @@ def test_gemini_bug_fix_mcp_encoding() -> None:
     assert target.resources["commands"].path == ".gemini/commands"
     assert "agents" not in target.resources
 
-    assert target.mcp is not None
-    assert target.mcp.path == ".gemini/settings.json"
-    assert target.mcp.servers_key == "mcpServers"
+    mcp = _mcp(target)
+    assert mcp is not None
+    assert mcp.path == ".gemini/settings.json"
+    assert mcp.merge.servers_key == "mcpServers"
     # Bug fix: no type field anywhere; transport inferred from field presence
-    assert target.mcp.transports["stdio"].type_value is None
+    assert mcp.merge.transports["stdio"].type_value is None
     # Bug fix: Streamable HTTP uses httpUrl, not url
-    assert target.mcp.transports["http"].type_value is None
-    assert target.mcp.transports["http"].url_key == "httpUrl"
+    assert mcp.merge.transports["http"].type_value is None
+    assert mcp.merge.transports["http"].url_key == "httpUrl"
     # SSE keeps the default url
-    assert target.mcp.transports["sse"].type_value is None
-    assert target.mcp.transports["sse"].url_key == "url"
+    assert mcp.merge.transports["sse"].type_value is None
+    assert mcp.merge.transports["sse"].url_key == "url"
 
 
 def test_windsurf_workflows_added_no_mcp() -> None:
@@ -118,7 +135,7 @@ def test_windsurf_workflows_added_no_mcp() -> None:
     assert target.resources["commands"].path == ".windsurf/workflows"
     assert "agents" not in target.resources
     # Windsurf MCP is global-only — not managed here
-    assert target.mcp is None
+    assert "mcp" not in target.resources
 
 
 def test_antigravity_own_namespace_no_mcp() -> None:
@@ -128,4 +145,4 @@ def test_antigravity_own_namespace_no_mcp() -> None:
     assert target.resources["commands"].path == ".agent/workflows"
     assert "agents" not in target.resources
     # Antigravity MCP is global-only
-    assert target.mcp is None
+    assert "mcp" not in target.resources

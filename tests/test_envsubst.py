@@ -200,11 +200,11 @@ def test_resolve_dependency_url(
     monkeypatch.setenv("GH_ORG", "my-org")
     dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
     config = _make_config()
-    config.skills = [dep]
+    config.dependencies["skills"] = [dep]
 
     resolve_config(config, tmp_path)
 
-    assert config.skills[0].url == "https://github.com/my-org/repo"
+    assert config.dependencies["skills"][0].url == "https://github.com/my-org/repo"
 
 
 def test_resolve_dependency_path(
@@ -215,11 +215,11 @@ def test_resolve_dependency_path(
         urls=["https://github.com/org/repo"], path="skills/${SKILL_NAME}"
     )
     config = _make_config()
-    config.skills = [dep]
+    config.dependencies["skills"] = [dep]
 
     resolve_config(config, tmp_path)
 
-    assert config.skills[0].path == "skills/my-skill"
+    assert config.dependencies["skills"][0].path == "skills/my-skill"
 
 
 def test_resolve_dependency_ref(
@@ -228,42 +228,42 @@ def test_resolve_dependency_ref(
     monkeypatch.setenv("TAG", "v2.0")
     dep = DependencySource(urls=["https://github.com/org/repo"], ref="${TAG}")
     config = _make_config()
-    config.commands = [dep]
+    config.dependencies["commands"] = [dep]
 
     resolve_config(config, tmp_path)
 
-    assert config.commands[0].ref == "v2.0"
+    assert config.dependencies["commands"][0].ref == "v2.0"
 
 
 def test_resolve_dependency_no_vars_unchanged(tmp_path: Path) -> None:
     dep = DependencySource(urls=["https://github.com/org/repo"], path="skills/foo")
     config = _make_config()
-    config.agents = [dep]
+    config.dependencies["agents"] = [dep]
 
     resolve_config(config, tmp_path)
 
-    assert config.agents[0].url == "https://github.com/org/repo"
-    assert config.agents[0].path == "skills/foo"
+    assert config.dependencies["agents"][0].url == "https://github.com/org/repo"
+    assert config.dependencies["agents"][0].path == "skills/foo"
 
 
 def test_resolve_dependency_path_none_stays_none(tmp_path: Path) -> None:
     dep = DependencySource(urls=["https://github.com/org/repo"])
     config = _make_config()
-    config.skills = [dep]
+    config.dependencies["skills"] = [dep]
 
     resolve_config(config, tmp_path)
 
-    assert config.skills[0].path is None
+    assert config.dependencies["skills"][0].path is None
 
 
 def test_resolve_dependency_ref_none_stays_none(tmp_path: Path) -> None:
     dep = DependencySource(urls=["https://github.com/org/repo"])
     config = _make_config()
-    config.skills = [dep]
+    config.dependencies["skills"] = [dep]
 
     resolve_config(config, tmp_path)
 
-    assert config.skills[0].ref is None
+    assert config.dependencies["skills"][0].ref is None
 
 
 # ---------------------------------------------------------------------------
@@ -404,11 +404,11 @@ def test_three_tier_global_env_applies_to_deps(tmp_path: Path) -> None:
 
     dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
     config = _make_config()
-    config.skills = [dep]
+    config.dependencies["skills"] = [dep]
 
     resolve_config(config, project_dir, global_config=global_cfg)
 
-    assert config.skills[0].url == "https://github.com/my-global-org/repo"
+    assert config.dependencies["skills"][0].url == "https://github.com/my-global-org/repo"
 
 
 # ---------------------------------------------------------------------------
@@ -425,11 +425,11 @@ def test_resolve_multiple_urls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         ],
     )
     config = _make_config()
-    config.skills = [dep]
+    config.dependencies["skills"] = [dep]
 
     resolve_config(config, tmp_path)
 
-    assert config.skills[0].urls == [
+    assert config.dependencies["skills"][0].urls == [
         "https://github.com/my-org/repo",
         "git@github.com:my-org/repo.git",
     ]
@@ -438,8 +438,8 @@ def test_resolve_multiple_urls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 def test_resolve_single_url_unchanged(tmp_path: Path) -> None:
     dep = DependencySource(urls=["https://github.com/org/repo"])
     config = _make_config()
-    config.skills = [dep]
+    config.dependencies["skills"] = [dep]
 
     resolve_config(config, tmp_path)
 
-    assert config.skills[0].urls == ["https://github.com/org/repo"]
+    assert config.dependencies["skills"][0].urls == ["https://github.com/org/repo"]

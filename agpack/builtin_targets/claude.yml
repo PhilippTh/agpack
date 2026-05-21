@@ -1,24 +1,25 @@
 # Claude Code (Anthropic CLI)
 
 skills:
-  layout: directory
+  kind: copy-directory
   path: .claude/skills
 
 commands:
-  layout: file
+  kind: copy-file
   path: .claude/commands
 
 agents:
-  layout: file
+  kind: copy-file
   path: .claude/agents
 
 mcp:
+  kind: edit-file
   path: .mcp.json
-  format: json
-  servers_key: mcpServers
-  transports:
-    stdio: {}
-    http:
-      type_value: http
-    sse:
-      type_value: sse
+  merge:
+    servers_key: mcpServers
+    transports:
+      stdio: {}
+      http:
+        type_value: http
+      sse:
+        type_value: sse

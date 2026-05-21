@@ -10,12 +10,12 @@ from unittest.mock import patch
 import pytest
 
 from agpack.config import DependencySource
-from agpack.deployer import DeployError
-from agpack.deployer import _atomic_copy_file
 from agpack.deployer import cleanup_deployed_files
 from agpack.deployer import deploy_item
 from agpack.deployer import detect_items
 from agpack.fetcher import FetchResult
+from agpack.kinds import DeployError
+from agpack.kinds import _atomic_copy_file
 from agpack.registry import load_all_builtins
 from agpack.target_schema import TargetDef
 
@@ -57,9 +57,24 @@ def _resolve(names: list[str]) -> list[TargetDef]:
 
 
 def _run(resource_type, fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
-    """Mirror what the CLI does: detect items, then deploy each one."""
-    items = detect_items(fr, resource_type)
+    """Mirror what the CLI does: detect items, then deploy each one.
+
+    If no resolved target declares the resource type, return an empty
+    result — there's nothing to detect or deploy. The production CLI
+    short-circuits the same way via the kind map.
+    """
     target_defs = _resolve(targets)
+    detect_resource = next(
+        (
+            t.resources[resource_type]
+            for t in target_defs
+            if resource_type in t.resources
+        ),
+        None,
+    )
+    if detect_resource is None:
+        return _Deployed()
+    items = detect_items(fr, detect_resource, resource_type)
     files: list[str] = []
     for name, path in items:
         files.extend(
@@ -525,7 +540,7 @@ class TestDeploySkillFolderDetection:
             resolved_ref="abc1234",
         )
 
-        with pytest.raises(DeployError, match="does not contain any skill folders"):
+        with pytest.raises(DeployError, match="does not contain any skills folders"):
             deploy_skill(fr, ["claude"], project)
 
     def test_errors_on_dir_with_only_empty_subdirs(self, tmp_path: Path) -> None:
@@ -542,7 +557,7 @@ class TestDeploySkillFolderDetection:
             resolved_ref="abc1234",
         )
 
-        with pytest.raises(DeployError, match="does not contain any skill folders"):
+        with pytest.raises(DeployError, match="does not contain any skills folders"):
             deploy_skill(fr, ["claude"], project)
 
     def test_single_skill_folder_still_works(self, tmp_path: Path) -> None:
@@ -610,7 +625,7 @@ class TestDeployCommandFolderDetection:
             resolved_ref="abc1234",
         )
 
-        with pytest.raises(DeployError, match="does not contain any command files"):
+        with pytest.raises(DeployError, match="does not contain any commands files"):
             deploy_command(fr, ["claude"], project)
 
     def test_dry_run_with_directory(self, tmp_path: Path) -> None:
@@ -685,7 +700,7 @@ class TestDeployAgentFolderDetection:
             resolved_ref="abc1234",
         )
 
-        with pytest.raises(DeployError, match="does not contain any agent files"):
+        with pytest.raises(DeployError, match="does not contain any agents files"):
             deploy_agent(fr, ["claude"], project)
 
 
@@ -702,7 +717,7 @@ class TestAtomicCopyFailure:
         dst = tmp_path / "out" / "dst.txt"
 
         with (
-            patch("agpack.deployer.shutil.copy2", side_effect=OSError("no space")),
+            patch("agpack.kinds.shutil.copy2", side_effect=OSError("no space")),
             pytest.raises(OSError, match="no space"),
         ):
             _atomic_copy_file(src, dst)

@@ -78,12 +78,16 @@ class McpServer:
 
 @dataclass
 class AgpackConfig:
-    """Parsed and validated agpack.yml."""
+    """Parsed and validated agpack.yml.
+
+    ``dependencies`` is an open dict keyed by resource type name
+    (``skills``, ``commands``, ``agents``, or any user-defined type
+    such as ``rules`` or ``personas``). agpack does not interpret the
+    name — it simply matches it against the target manifests.
+    """
 
     targets: list[str]
-    skills: list[DependencySource] = field(default_factory=list)
-    commands: list[DependencySource] = field(default_factory=list)
-    agents: list[DependencySource] = field(default_factory=list)
+    dependencies: dict[str, list[DependencySource]] = field(default_factory=dict)
     mcp: list[McpServer] = field(default_factory=list)
     use_global: bool = True
     target_definitions: dict[str, TargetDef] = field(default_factory=dict)
@@ -96,9 +100,7 @@ class GlobalConfig:
     Contains only dependencies — no targets.
     """
 
-    skills: list[DependencySource] = field(default_factory=list)
-    commands: list[DependencySource] = field(default_factory=list)
-    agents: list[DependencySource] = field(default_factory=list)
+    dependencies: dict[str, list[DependencySource]] = field(default_factory=dict)
     mcp: list[McpServer] = field(default_factory=list)
     target_definitions: dict[str, TargetDef] = field(default_factory=dict)
     config_dir: Path = field(default_factory=lambda: DEFAULT_GLOBAL_CONFIG_DIR)
@@ -228,38 +230,40 @@ def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef
 
 def _parse_dependencies(
     deps: dict[str, Any], prefix: str = ""
-) -> tuple[
-    list[DependencySource],
-    list[DependencySource],
-    list[DependencySource],
-    list[McpServer],
-]:
+) -> tuple[dict[str, list[DependencySource]], list[McpServer]]:
     """Parse all dependency lists from a ``dependencies`` mapping.
+
+    Resource type names are open: every key under ``dependencies`` is
+    treated as a resource type name (with a list of dependency objects
+    as its value) except for the reserved ``mcp`` key, which is parsed
+    as a list of MCP server definitions.
 
     Args:
         deps: The raw ``dependencies`` dict from YAML.
         prefix: Optional prefix for error context (e.g. ``"global "``).
 
     Returns:
-        A tuple of (skills, commands, agents, mcp).
+        A tuple of (dependencies, mcp).
     """
-    skills = [
-        _parse_dependency(s, f"{prefix}dependencies.skills[{i}]")
-        for i, s in enumerate(deps.get("skills") or [])
-    ]
-    commands = [
-        _parse_dependency(c, f"{prefix}dependencies.commands[{i}]")
-        for i, c in enumerate(deps.get("commands") or [])
-    ]
-    agents = [
-        _parse_dependency(a, f"{prefix}dependencies.agents[{i}]")
-        for i, a in enumerate(deps.get("agents") or [])
-    ]
-    mcp = [
-        _parse_mcp(m, f"{prefix}dependencies.mcp[{i}]")
-        for i, m in enumerate(deps.get("mcp") or [])
-    ]
-    return skills, commands, agents, mcp
+    dependencies: dict[str, list[DependencySource]] = {}
+    mcp: list[McpServer] = []
+    for key, raw_list in deps.items():
+        if not isinstance(key, str) or not key:
+            raise ConfigError(
+                f"{prefix}dependencies: keys must be non-empty strings, got {key!r}"
+            )
+        items = raw_list or []
+        if key == "mcp":
+            mcp = [
+                _parse_mcp(m, f"{prefix}dependencies.mcp[{i}]")
+                for i, m in enumerate(items)
+            ]
+        else:
+            dependencies[key] = [
+                _parse_dependency(d, f"{prefix}dependencies.{key}[{i}]")
+                for i, d in enumerate(items)
+            ]
+    return dependencies, mcp
 
 
 def load_config(path: Path) -> AgpackConfig:
@@ -304,16 +308,14 @@ def load_config(path: Path) -> AgpackConfig:
     if not isinstance(deps, dict):
         raise ConfigError("'dependencies' must be a mapping")
 
-    skills, commands, agents, mcp = _parse_dependencies(deps)
+    dependencies, mcp = _parse_dependencies(deps)
 
     # Custom target definitions (override built-ins or add new targets)
     target_definitions = _parse_target_definitions(data.get("target_definitions"))
 
     return AgpackConfig(
         targets=targets,
-        skills=skills,
-        commands=commands,
-        agents=agents,
+        dependencies=dependencies,
         mcp=mcp,
         use_global=use_global,
         target_definitions=target_definitions,
@@ -369,16 +371,14 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
     if not isinstance(deps, dict):
         raise ConfigError("Global config 'dependencies' must be a mapping")
 
-    skills, commands, agents, mcp = _parse_dependencies(deps, prefix="global ")
+    dependencies, mcp = _parse_dependencies(deps, prefix="global ")
 
     target_definitions = _parse_target_definitions(
         data.get("target_definitions"), prefix="global "
     )
 
     return GlobalConfig(
-        skills=skills,
-        commands=commands,
-        agents=agents,
+        dependencies=dependencies,
         mcp=mcp,
         target_definitions=target_definitions,
         config_dir=path.parent,
@@ -391,28 +391,24 @@ def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConf
     Global dependencies are appended after project dependencies.
     Duplicates are resolved in favour of the project config:
 
-    - Dependencies are deduplicated by :attr:`DependencySource.identity`.
+    - Dependencies are deduplicated by :attr:`DependencySource.identity`,
+      within each resource type.
     - MCP servers are deduplicated by :attr:`McpServer.name`.
 
     Returns a **new** :class:`AgpackConfig`; the inputs are not mutated.
     """
     project_mcp_names = {m.name for m in project.mcp}
 
-    def _merge_deps(
-        project_list: list[DependencySource],
-        global_list: list[DependencySource],
-    ) -> list[DependencySource]:
-        seen = {d.identity for d in project_list}
-        merged = list(project_list)
-        for dep in global_list:
+    dependencies: dict[str, list[DependencySource]] = {
+        rt: list(deps) for rt, deps in project.dependencies.items()
+    }
+    for rt, global_deps in global_cfg.dependencies.items():
+        bucket = dependencies.setdefault(rt, [])
+        seen = {d.identity for d in bucket}
+        for dep in global_deps:
             if dep.identity not in seen:
-                merged.append(dep)
+                bucket.append(dep)
                 seen.add(dep.identity)
-        return merged
-
-    skills = _merge_deps(project.skills, global_cfg.skills)
-    commands = _merge_deps(project.commands, global_cfg.commands)
-    agents = _merge_deps(project.agents, global_cfg.agents)
 
     # Merge MCP — project names take precedence
     mcp = list(project.mcp)
@@ -429,9 +425,7 @@ def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConf
 
     return AgpackConfig(
         targets=project.targets,
-        skills=skills,
-        commands=commands,
-        agents=agents,
+        dependencies=dependencies,
         mcp=mcp,
         use_global=project.use_global,
         target_definitions=target_definitions,

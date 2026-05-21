@@ -1,18 +1,19 @@
 # OpenAI Codex CLI
 
 skills:
-  layout: directory
+  kind: copy-directory
   path: .codex/skills
 
 agents:
-  layout: file
+  kind: copy-file
   path: .codex/agents
 
 mcp:
+  kind: edit-file
   path: .codex/config.toml
-  format: toml
-  servers_key: mcp_servers
-  transports:
-    stdio: {}
-    http:
-      headers_key: http_headers
+  merge:
+    servers_key: mcp_servers
+    transports:
+      stdio: {}
+      http:
+        headers_key: http_headers

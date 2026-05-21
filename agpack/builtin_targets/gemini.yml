@@ -1,19 +1,20 @@
 # Gemini CLI (Google)
 
 skills:
-  layout: directory
+  kind: copy-directory
   path: .gemini/skills
 
 commands:
-  layout: file
+  kind: copy-file
   path: .gemini/commands
 
 mcp:
+  kind: edit-file
   path: .gemini/settings.json
-  format: json
-  servers_key: mcpServers
-  transports:
-    stdio: {}
-    http:
-      url_key: httpUrl
-    sse: {}
+  merge:
+    servers_key: mcpServers
+    transports:
+      stdio: {}
+      http:
+        url_key: httpUrl
+      sse: {}

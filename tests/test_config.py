@@ -62,16 +62,16 @@ dependencies:
     assert isinstance(cfg, AgpackConfig)
     assert cfg.targets == ["claude", "opencode"]
 
-    assert len(cfg.skills) == 1
-    assert cfg.skills[0].url == "https://gitlab.com/owner/skill-repo"
-    assert cfg.skills[0].path == "skills/foo"
-    assert cfg.skills[0].ref == "v2.0"
+    assert len(cfg.dependencies["skills"]) == 1
+    assert cfg.dependencies["skills"][0].url == "https://gitlab.com/owner/skill-repo"
+    assert cfg.dependencies["skills"][0].path == "skills/foo"
+    assert cfg.dependencies["skills"][0].ref == "v2.0"
 
-    assert len(cfg.commands) == 1
-    assert cfg.commands[0].url == "https://github.com/owner/cmd-repo"
+    assert len(cfg.dependencies["commands"]) == 1
+    assert cfg.dependencies["commands"][0].url == "https://github.com/owner/cmd-repo"
 
-    assert len(cfg.agents) == 1
-    assert cfg.agents[0].url == "https://github.com/owner/agent-repo"
+    assert len(cfg.dependencies["agents"]) == 1
+    assert cfg.dependencies["agents"][0].url == "https://github.com/owner/agent-repo"
 
     assert len(cfg.mcp) == 1
     mcp = cfg.mcp[0]
@@ -213,7 +213,7 @@ dependencies:
 """,
     )
     cfg = load_config(cfg_path)
-    dep = cfg.commands[0]
+    dep = cfg.dependencies["commands"][0]
     assert dep.url == "https://gitlab.com/org/repo"
     assert dep.path == "sub/dir"
     assert dep.ref == "main"
@@ -431,9 +431,7 @@ dependencies: {}
 """,
     )
     cfg = load_config(cfg_path)
-    assert cfg.skills == []
-    assert cfg.commands == []
-    assert cfg.agents == []
+    assert cfg.dependencies == {}
     assert cfg.mcp == []
 
 
@@ -446,9 +444,7 @@ targets:
 """,
     )
     cfg = load_config(cfg_path)
-    assert cfg.skills == []
-    assert cfg.commands == []
-    assert cfg.agents == []
+    assert cfg.dependencies == {}
     assert cfg.mcp == []
 
 
@@ -485,17 +481,19 @@ dependencies:
     )
     cfg = load_config(cfg_path)
 
-    assert len(cfg.skills) == 2
-    assert cfg.skills[0].url == "https://github.com/a/b"
-    assert cfg.skills[0].path is None
-    assert cfg.skills[1].url == "https://github.com/c/d"
-    assert cfg.skills[1].path == "deep/nested"
-    assert cfg.skills[1].ref == "v1"
+    skills = cfg.dependencies["skills"]
+    assert len(skills) == 2
+    assert skills[0].url == "https://github.com/a/b"
+    assert skills[0].path is None
+    assert skills[1].url == "https://github.com/c/d"
+    assert skills[1].path == "deep/nested"
+    assert skills[1].ref == "v1"
 
-    assert len(cfg.commands) == 1
+    assert len(cfg.dependencies["commands"]) == 1
 
-    assert len(cfg.agents) == 1
-    assert cfg.agents[0].url == "https://gitlab.com/g/h"
+    agents = cfg.dependencies["agents"]
+    assert len(agents) == 1
+    assert agents[0].url == "https://gitlab.com/g/h"
 
     assert len(cfg.mcp) == 2
     assert cfg.mcp[0].type == "stdio"
@@ -599,11 +597,12 @@ dependencies:
     )
     cfg = load_global_config(path)
     assert cfg is not None
-    assert len(cfg.skills) == 1
-    assert cfg.skills[0].url == "https://github.com/org/skills"
-    assert cfg.skills[0].path == "skills/shared"
-    assert len(cfg.commands) == 1
-    assert len(cfg.agents) == 1
+    skills = cfg.dependencies["skills"]
+    assert len(skills) == 1
+    assert skills[0].url == "https://github.com/org/skills"
+    assert skills[0].path == "skills/shared"
+    assert len(cfg.dependencies["commands"]) == 1
+    assert len(cfg.dependencies["agents"]) == 1
     assert len(cfg.mcp) == 1
     assert cfg.mcp[0].name == "global-server"
     assert cfg.config_dir == tmp_path
@@ -618,9 +617,7 @@ def test_load_global_config_empty_file(tmp_path: Path) -> None:
     path = _write_global_config(tmp_path, "")
     cfg = load_global_config(path)
     assert cfg is not None
-    assert cfg.skills == []
-    assert cfg.commands == []
-    assert cfg.agents == []
+    assert cfg.dependencies == {}
     assert cfg.mcp == []
 
 
@@ -628,7 +625,7 @@ def test_load_global_config_empty_dependencies(tmp_path: Path) -> None:
     path = _write_global_config(tmp_path, "dependencies: {}\n")
     cfg = load_global_config(path)
     assert cfg is not None
-    assert cfg.skills == []
+    assert cfg.dependencies == {}
 
 
 def test_load_global_config_malformed_yaml(tmp_path: Path) -> None:
@@ -664,7 +661,7 @@ def test_load_global_config_env_var_override(
 
     cfg = load_global_config()
     assert cfg is not None
-    assert len(cfg.skills) == 1
+    assert len(cfg.dependencies["skills"]) == 1
     assert cfg.config_dir == custom_dir
 
 
@@ -687,9 +684,9 @@ dependencies:
     )
     cfg = load_global_config(path)
     assert cfg is not None
-    assert len(cfg.skills) == 1
-    assert cfg.commands == []
-    assert cfg.agents == []
+    assert len(cfg.dependencies["skills"]) == 1
+    assert "commands" not in cfg.dependencies
+    assert "agents" not in cfg.dependencies
     assert cfg.mcp == []
 
 
@@ -698,19 +695,48 @@ dependencies:
 # ---------------------------------------------------------------------------
 
 
-def _make_project_config(**kwargs: object) -> AgpackConfig:
-    defaults: dict[str, object] = {
-        "targets": ["claude"],
-    }
+def _make_project_config(
+    *,
+    skills: list[DependencySource] | None = None,
+    commands: list[DependencySource] | None = None,
+    agents: list[DependencySource] | None = None,
+    **kwargs: object,
+) -> AgpackConfig:
+    """Convenience: spell skills/commands/agents as kwargs in tests."""
+    deps: dict[str, list[DependencySource]] = {}
+    if skills:
+        deps["skills"] = skills
+    if commands:
+        deps["commands"] = commands
+    if agents:
+        deps["agents"] = agents
+    defaults: dict[str, object] = {"targets": ["claude"], "dependencies": deps}
     defaults.update(kwargs)
     return AgpackConfig(**defaults)  # type: ignore[arg-type]
+
+
+def _make_global_config(
+    *,
+    skills: list[DependencySource] | None = None,
+    commands: list[DependencySource] | None = None,
+    agents: list[DependencySource] | None = None,
+    **kwargs: object,
+) -> GlobalConfig:
+    deps: dict[str, list[DependencySource]] = {}
+    if skills:
+        deps["skills"] = skills
+    if commands:
+        deps["commands"] = commands
+    if agents:
+        deps["agents"] = agents
+    return GlobalConfig(dependencies=deps, **kwargs)  # type: ignore[arg-type]
 
 
 def test_merge_basic() -> None:
     project = _make_project_config(
         skills=[DependencySource(urls=["https://github.com/a/b"], path="skills/proj")],
     )
-    global_cfg = GlobalConfig(
+    global_cfg = _make_global_config(
         skills=[
             DependencySource(urls=["https://github.com/c/d"], path="skills/global")
         ],
@@ -718,17 +744,19 @@ def test_merge_basic() -> None:
     )
     merged = merge_configs(project, global_cfg)
 
-    assert len(merged.skills) == 2
-    assert merged.skills[0].url == "https://github.com/a/b"  # project first
-    assert merged.skills[1].url == "https://github.com/c/d"  # global appended
-    assert len(merged.commands) == 1
-    assert merged.commands[0].url == "https://github.com/e/f"
+    skills = merged.dependencies["skills"]
+    assert len(skills) == 2
+    assert skills[0].url == "https://github.com/a/b"  # project first
+    assert skills[1].url == "https://github.com/c/d"  # global appended
+    commands = merged.dependencies["commands"]
+    assert len(commands) == 1
+    assert commands[0].url == "https://github.com/e/f"
 
 
 def test_merge_project_wins_on_duplicate_dep() -> None:
     dep = DependencySource(urls=["https://github.com/a/b"], path="skills/shared")
     project = _make_project_config(skills=[dep])
-    global_cfg = GlobalConfig(
+    global_cfg = _make_global_config(
         skills=[
             DependencySource(urls=["https://github.com/a/b"], path="skills/shared")
         ],
@@ -736,8 +764,9 @@ def test_merge_project_wins_on_duplicate_dep() -> None:
     merged = merge_configs(project, global_cfg)
 
     # Duplicate should be deduped — only the project entry survives
-    assert len(merged.skills) == 1
-    assert merged.skills[0] is dep
+    skills = merged.dependencies["skills"]
+    assert len(skills) == 1
+    assert skills[0] is dep
 
 
 def test_merge_project_wins_on_duplicate_mcp() -> None:
@@ -759,26 +788,27 @@ def test_merge_empty_global() -> None:
     global_cfg = GlobalConfig()
     merged = merge_configs(project, global_cfg)
 
-    assert len(merged.skills) == 1
-    assert merged.commands == []
+    assert len(merged.dependencies["skills"]) == 1
+    assert "commands" not in merged.dependencies
 
 
 def test_merge_empty_project_deps() -> None:
     project = _make_project_config()
-    global_cfg = GlobalConfig(
+    global_cfg = _make_global_config(
         skills=[DependencySource(urls=["https://github.com/c/d"])],
         mcp=[McpServer(name="s1", command="cmd")],
     )
     merged = merge_configs(project, global_cfg)
 
-    assert len(merged.skills) == 1
-    assert merged.skills[0].url == "https://github.com/c/d"
+    skills = merged.dependencies["skills"]
+    assert len(skills) == 1
+    assert skills[0].url == "https://github.com/c/d"
     assert len(merged.mcp) == 1
 
 
 def test_merge_preserves_project_metadata() -> None:
     project = _make_project_config(targets=["opencode"], use_global=False)
-    global_cfg = GlobalConfig(
+    global_cfg = _make_global_config(
         skills=[DependencySource(urls=["https://github.com/a/b"])],
     )
     merged = merge_configs(project, global_cfg)
@@ -791,29 +821,29 @@ def test_merge_does_not_mutate_inputs() -> None:
     project = _make_project_config(
         skills=[DependencySource(urls=["https://github.com/a/b"])],
     )
-    global_cfg = GlobalConfig(
+    global_cfg = _make_global_config(
         skills=[DependencySource(urls=["https://github.com/c/d"])],
     )
-    orig_project_skills = list(project.skills)
-    orig_global_skills = list(global_cfg.skills)
+    orig_project_skills = list(project.dependencies["skills"])
+    orig_global_skills = list(global_cfg.dependencies["skills"])
 
     merge_configs(project, global_cfg)
 
-    assert project.skills == orig_project_skills
-    assert global_cfg.skills == orig_global_skills
+    assert project.dependencies["skills"] == orig_project_skills
+    assert global_cfg.dependencies["skills"] == orig_global_skills
 
 
 def test_merge_cross_type_identity_not_deduped() -> None:
     """A skill and a command with the same identity are NOT deduped."""
     dep = DependencySource(urls=["https://github.com/a/b"], path="shared")
     project = _make_project_config(skills=[dep])
-    global_cfg = GlobalConfig(
+    global_cfg = _make_global_config(
         commands=[DependencySource(urls=["https://github.com/a/b"], path="shared")],
     )
     merged = merge_configs(project, global_cfg)
 
-    assert len(merged.skills) == 1
-    assert len(merged.commands) == 1
+    assert len(merged.dependencies["skills"]) == 1
+    assert len(merged.dependencies["commands"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -836,11 +866,12 @@ dependencies:
 """,
     )
     cfg = load_config(cfg_path)
-    assert cfg.skills[0].urls == [
+    skills = cfg.dependencies["skills"]
+    assert skills[0].urls == [
         "https://github.com/owner/repo",
         "git@github.com:owner/repo.git",
     ]
-    assert cfg.skills[0].url == "https://github.com/owner/repo"
+    assert skills[0].url == "https://github.com/owner/repo"
 
 
 def test_url_as_string(tmp_path: Path) -> None:
@@ -855,7 +886,7 @@ dependencies:
 """,
     )
     cfg = load_config(cfg_path)
-    assert cfg.skills[0].urls == ["https://github.com/owner/repo"]
+    assert cfg.dependencies["skills"][0].urls == ["https://github.com/owner/repo"]
 
 
 def test_url_empty_list_raises(tmp_path: Path) -> None:
@@ -902,7 +933,7 @@ dependencies:
     )
     cfg = load_global_config(path)
     assert cfg is not None
-    assert cfg.skills[0].urls == [
+    assert cfg.dependencies["skills"][0].urls == [
         "https://github.com/org/repo",
         "git@github.com:org/repo.git",
     ]
@@ -1026,6 +1057,49 @@ dependencies: "oops"
         load_config(cfg_path)
 
 
+def test_arbitrary_resource_type_in_dependencies(tmp_path: Path) -> None:
+    """Resource types are open — any non-'mcp' key under dependencies
+    is treated as a list of dependency entries with that type."""
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  rules:
+    - url: https://github.com/owner/rules-repo
+      path: rules/lint
+""",
+    )
+    cfg = load_config(cfg_path)
+    assert "rules" in cfg.dependencies
+    rules = cfg.dependencies["rules"]
+    assert len(rules) == 1
+    assert rules[0].url == "https://github.com/owner/rules-repo"
+    assert rules[0].path == "rules/lint"
+
+
+def test_dependencies_preserve_yaml_insertion_order(tmp_path: Path) -> None:
+    """``config.dependencies`` keeps the order users wrote in agpack.yml
+    so the sync progress display and summary match the YAML layout."""
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets:
+  - claude
+dependencies:
+  agents:
+    - url: https://github.com/a/agents
+  skills:
+    - url: https://github.com/a/skills
+  commands:
+    - url: https://github.com/a/commands
+""",
+    )
+    cfg = load_config(cfg_path)
+    assert list(cfg.dependencies) == ["agents", "skills", "commands"]
+
+
 # ---------------------------------------------------------------------------
 # 25. target_definitions parsing
 # ---------------------------------------------------------------------------
@@ -1041,14 +1115,15 @@ targets:
 target_definitions:
   my-tool:
     skills:
-      layout: directory
+      kind: copy-directory
       path: .my-tool/skills
     mcp:
+      kind: edit-file
       path: .my-tool/config.json
-      format: json
-      servers_key: mcpServers
-      transports:
-        stdio: {}
+      merge:
+        servers_key: mcpServers
+        transports:
+          stdio: {}
 """,
     )
     config = load_config(cfg_path)
@@ -1056,8 +1131,8 @@ target_definitions:
     assert "my-tool" in config.target_definitions
     td = config.target_definitions["my-tool"]
     assert td.resources["skills"].path == ".my-tool/skills"
-    assert td.mcp is not None
-    assert td.mcp.path == ".my-tool/config.json"
+    mcp = td.resources["mcp"]
+    assert mcp.path == ".my-tool/config.json"
 
 
 def test_target_definitions_overrides_builtin(tmp_path: Path) -> None:
@@ -1070,7 +1145,7 @@ targets:
 target_definitions:
   claude:
     skills:
-      layout: directory
+      kind: copy-directory
       path: .my-claude/skills
 """,
     )
@@ -1079,7 +1154,7 @@ target_definitions:
     td = config.target_definitions["claude"]
     assert td.resources["skills"].path == ".my-claude/skills"
     # Replace semantics: only what's defined is present; no mcp inherited
-    assert td.mcp is None
+    assert "mcp" not in td.resources
     assert "commands" not in td.resources
 
 
@@ -1108,11 +1183,11 @@ targets:
 target_definitions:
   my-tool:
     skills:
-      layout: not-a-real-layout
+      kind: not-a-real-kind
       path: .x/skills
 """,
     )
-    with pytest.raises(ConfigError, match="layout"):
+    with pytest.raises(ConfigError, match="kind"):
         load_config(cfg_path)
 
 
@@ -1139,7 +1214,7 @@ def test_merge_carries_global_target_definitions(tmp_path: Path) -> None:
 target_definitions:
   shared-tool:
     skills:
-      layout: directory
+      kind: copy-directory
       path: .shared/skills
 """,
         encoding="utf-8",
@@ -1168,7 +1243,7 @@ targets:
 target_definitions:
   my-tool:
     skills:
-      layout: directory
+      kind: copy-directory
       path: .project-override/skills
 """,
     )
@@ -1179,10 +1254,10 @@ target_definitions:
 target_definitions:
   my-tool:
     skills:
-      layout: directory
+      kind: copy-directory
       path: .global-version/skills
     commands:
-      layout: file
+      kind: copy-file
       path: .global-version/commands
 """,
         encoding="utf-8",

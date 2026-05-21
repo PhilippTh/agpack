@@ -125,7 +125,8 @@ def resolve_config(
     merged = _build_env(project_root, global_config, verbose=verbose)
 
     # Dependency fields: urls, path, ref
-    for dep in [*config.skills, *config.commands, *config.agents]:
+    all_deps = [dep for deps in config.dependencies.values() for dep in deps]
+    for dep in all_deps:
         ctx = f"dependency '{dep.name}'"
         dep.urls = [resolve_env_vars(u, merged, context=ctx) for u in dep.urls]
         if dep.path is not None:

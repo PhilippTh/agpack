@@ -1,11 +1,11 @@
 # Windsurf (Codeium)
 
 skills:
-  layout: directory
+  kind: copy-directory
   path: .windsurf/skills
 
 commands:
-  layout: file
+  kind: copy-file
   path: .windsurf/workflows
 
 # MCP omitted: Windsurf MCP is global only

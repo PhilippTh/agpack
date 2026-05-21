@@ -1,25 +1,26 @@
 # GitHub Copilot in VS Code
 
 skills:
-  layout: directory
+  kind: copy-directory
   path: .github/skills
 
 commands:
-  layout: file
+  kind: copy-file
   path: .github/prompts
 
 agents:
-  layout: file
+  kind: copy-file
   path: .github/agents
 
 mcp:
+  kind: edit-file
   path: .vscode/mcp.json
-  format: json
-  servers_key: servers
-  transports:
-    stdio:
-      type_value: stdio
-    http:
-      type_value: http
-    sse:
-      type_value: sse
+  merge:
+    servers_key: servers
+    transports:
+      stdio:
+        type_value: stdio
+      http:
+        type_value: http
+      sse:
+        type_value: sse

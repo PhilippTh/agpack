@@ -17,6 +17,14 @@ from agpack import __version__
 
 LOCKFILE_NAME = ".agpack.lock.yml"
 
+# Lockfiles written by agpack ≤ 0.4.0 stored a singular resource type
+# label on each installed entry ("skill"/"command"/"agent").  From the
+# resource-taxonomy refactor onward, agpack stores the resource type
+# name verbatim from agpack.yml ("skills"/"commands"/"agents" — or any
+# user-defined name).  The legacy values are remapped on read so an
+# old lockfile still cleans up correctly.
+_LEGACY_TYPE_REMAP = {"skill": "skills", "command": "commands", "agent": "agents"}
+
 
 @dataclass
 class InstalledEntry:
@@ -25,7 +33,11 @@ class InstalledEntry:
     url: str
     path: str | None
     resolved_ref: str
-    type: str  # "skill", "command", "agent"
+    type: str
+    """Resource type name as it appears in agpack.yml (``skills`` /
+    ``commands`` / ``agents`` / any user-defined name). Legacy
+    singular values (``skill`` / ``command`` / ``agent``) are remapped
+    on read for back-compat — see :data:`_LEGACY_TYPE_REMAP`."""
     deployed_files: list[str] = field(default_factory=list)
 
     @property
@@ -43,12 +55,12 @@ class McpTargetRef:
 
     Carries enough metadata to remove the server later without
     consulting the target manifest — important because the target may
-    have been deleted from agpack.yml between syncs.
+    have been deleted from agpack.yml between syncs. The config format
+    is inferred from :attr:`path`'s extension at cleanup time.
     """
 
     path: str
     servers_key: str
-    format: str  # "json" | "toml"
 
 
 @dataclass
@@ -94,12 +106,14 @@ def read_lockfile(project_root: Path) -> Lockfile | None:
     for entry_data in data.get("installed", []):
         if not isinstance(entry_data, dict):
             continue
+        type_: str = entry_data.get("type") or ""
+        type_ = _LEGACY_TYPE_REMAP.get(type_, type_)
         lockfile.installed.append(
             InstalledEntry(
                 url=entry_data.get("url", ""),
                 path=entry_data.get("path"),
                 resolved_ref=entry_data.get("resolved_ref", "unknown"),
-                type=entry_data.get("type", ""),
+                type=type_,
                 deployed_files=entry_data.get("deployed_files", []),
             )
         )
@@ -110,19 +124,19 @@ def read_lockfile(project_root: Path) -> Lockfile | None:
         targets: list[McpTargetRef] = []
         for raw_t in mcp_data.get("targets", []):
             if isinstance(raw_t, dict):
+                # Legacy "format" field is silently dropped — the
+                # format is now inferred from the file extension.
                 targets.append(
                     McpTargetRef(
                         path=raw_t.get("path", ""),
                         servers_key=raw_t.get("servers_key", ""),
-                        format=raw_t.get("format", ""),
                     )
                 )
             elif isinstance(raw_t, str):
-                # Pre-0.4.0 lockfile: only the path was stored.  Cleanup
-                # for such entries is best-effort; without servers_key /
-                # format we skip them, and the next sync writes the new
-                # format.
-                targets.append(McpTargetRef(path=raw_t, servers_key="", format=""))
+                # Pre-0.4.0 lockfile: only the path was stored. Cleanup
+                # for such entries is best-effort; without servers_key
+                # we skip them, and the next sync writes the new format.
+                targets.append(McpTargetRef(path=raw_t, servers_key=""))
         lockfile.mcp.append(
             McpLockEntry(name=mcp_data.get("name", ""), targets=targets)
         )
@@ -158,11 +172,7 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
             {
                 "name": mcp_entry.name,
                 "targets": [
-                    {
-                        "path": t.path,
-                        "servers_key": t.servers_key,
-                        "format": t.format,
-                    }
+                    {"path": t.path, "servers_key": t.servers_key}
                     for t in mcp_entry.targets
                 ],
             }

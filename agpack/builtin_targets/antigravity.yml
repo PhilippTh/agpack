@@ -1,11 +1,11 @@
 # Google Antigravity
 
 skills:
-  layout: directory
+  kind: copy-directory
   path: .agent/skills
 
 commands:
-  layout: file
+  kind: copy-file
   path: .agent/workflows
 
 # MCP omitted: Antigravity MCP is global only

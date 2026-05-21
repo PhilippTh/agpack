@@ -1,29 +1,30 @@
 # OpenCode (opencode.ai)
 
 skills:
-  layout: directory
+  kind: copy-directory
   path: .opencode/skills
 
 commands:
-  layout: file
+  kind: copy-file
   path: .opencode/commands
 
 agents:
-  layout: file
+  kind: copy-file
   path: .opencode/agents
 
 mcp:
+  kind: edit-file
   path: opencode.json
-  format: json
-  servers_key: mcp
-  defaults:
-    $schema: https://opencode.ai/config.json
-  transports:
-    stdio:
-      type_value: local
-      command_format: array
-      env_key: environment
-    http:
-      type_value: remote
-    sse:
-      type_value: remote
+  merge:
+    servers_key: mcp
+    defaults:
+      $schema: https://opencode.ai/config.json
+    transports:
+      stdio:
+        type_value: local
+        command_format: array
+        env_key: environment
+      http:
+        type_value: remote
+      sse:
+        type_value: remote

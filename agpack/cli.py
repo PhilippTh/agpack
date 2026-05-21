@@ -27,7 +27,6 @@ from agpack.config import load_config
 from agpack.config import load_global_config
 from agpack.config import merge_configs
 from agpack.config import resolve_global_config_path
-from agpack.deployer import McpError
 from agpack.deployer import cleanup_deployed_files
 from agpack.deployer import cleanup_mcp_server
 from agpack.deployer import deploy_item
@@ -40,6 +39,7 @@ from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
 from agpack.fetcher import cleanup_fetch
 from agpack.fetcher import fetch_dependency
+from agpack.kinds import EditFileError
 from agpack.lockfile import InstalledEntry
 from agpack.lockfile import Lockfile
 from agpack.lockfile import McpLockEntry
@@ -83,8 +83,7 @@ class SyncResult:
 
 def _sync_resource_type(
     deps: list[DependencySource],
-    resource_type_key: str,
-    resource_type_label: str,
+    resource_type: str,
     target_defs: list[TargetDef],
     project_root: Path,
     new_lockfile: Lockfile,
@@ -93,13 +92,25 @@ def _sync_resource_type(
     dry_run: bool,
     verbose: bool,
 ) -> SyncResult:
-    """Fetch and deploy a list of dependencies of a single type.
+    """Fetch and deploy a list of copy-kind dependencies.
 
-    On error, writes a partial lockfile (with what has been synced so far)
-    before raising ClickException.
+    The resource type's kind (``copy-directory`` / ``copy-file``) is
+    looked up from any target that declares it — all targets sharing
+    the resource type share the kind (validated by
+    :func:`_resource_kinds`). On error, writes a partial lockfile
+    (with what has been synced so far) before raising ClickException.
     """
     if not deps:
         return SyncResult()
+
+    # Pick a representative resource for the detect phase — any target
+    # supporting this resource type works, since _resource_kinds
+    # validated they all use the same kind.
+    detect_resource = next(
+        target.resources[resource_type]
+        for target in target_defs
+        if resource_type in target.resources
+    )
 
     # Phase 1: parallel fetch — collect all results and errors
     results: list[tuple[DependencySource, FetchResult]] = []
@@ -109,7 +120,7 @@ def _sync_resource_type(
     task_ids: dict[str, TaskID] = {}
     for dep in deps:
         task_ids[dep.identity] = progress.add_task(
-            f"{resource_type_label} [bold]{dep.name}[/bold]",
+            f"{resource_type} [bold]{dep.name}[/bold]",
             total=2,
             icon=" ",
             detail=f"Fetching from {dep.url}",
@@ -124,7 +135,7 @@ def _sync_resource_type(
                 results.append((dep, future.result()))
                 progress.update(tid, completed=1, detail="Deploying...")
             except FetchError as exc:
-                errors.append(f"  - {resource_type_label} '{dep.name}': {exc}")
+                errors.append(f"  - {resource_type} '{dep.name}': {exc}")
                 progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
 
     # Phase 2: collect-all error handling
@@ -135,7 +146,7 @@ def _sync_resource_type(
             write_lockfile(project_root, new_lockfile)
         raise click.ClickException(
             "\n".join(
-                [f"Failed to fetch {len(errors)} {resource_type_label}(s):"] + errors
+                [f"Failed to fetch {len(errors)} {resource_type} dep(s):"] + errors
             )
         )
 
@@ -145,14 +156,14 @@ def _sync_resource_type(
         tid = task_ids[dep.identity]
 
         try:
-            items = detect_items(result, resource_type_key)
+            items = detect_items(result, detect_resource, resource_type)
         except Exception as exc:
             progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
             cleanup_fetch(result)
             if not dry_run:
                 write_lockfile(project_root, new_lockfile)
             raise click.ClickException(
-                f"Error deploying {resource_type_label} '{dep.name}': {exc}"
+                f"Error deploying {resource_type} '{dep.name}': {exc}"
             ) from exc
 
         is_expanded = len(items) > 1
@@ -178,7 +189,7 @@ def _sync_resource_type(
                 files = deploy_item(
                     item_name,
                     item_path,
-                    resource_type_key,
+                    resource_type,
                     target_defs,
                     project_root,
                     dry_run,
@@ -197,7 +208,7 @@ def _sync_resource_type(
                 if not dry_run:
                     write_lockfile(project_root, new_lockfile)
                 raise click.ClickException(
-                    f"Error deploying {resource_type_label} '{dep.name}': {exc}"
+                    f"Error deploying {resource_type} '{dep.name}': {exc}"
                 ) from exc
 
             all_deployed.extend(files)
@@ -213,10 +224,7 @@ def _sync_resource_type(
 
         # Update parent row — count source files (not multiplied across targets)
         if is_expanded:
-            item_label = (
-                f"{resource_type_label}s" if len(items) != 1 else resource_type_label
-            )
-            detail = f"Copied {len(items)} {item_label}"
+            detail = f"Copied {len(items)} {resource_type}"
             sync.count += len(items)
         else:
             src_files = _source_file_count(items[0][1])
@@ -234,13 +242,42 @@ def _sync_resource_type(
                 url=dep.url,
                 path=dep.path,
                 resolved_ref=result.resolved_ref,
-                type=resource_type_label,
+                type=resource_type,
                 deployed_files=all_deployed,
             )
         )
         cleanup_fetch(result)
 
     return sync
+
+
+def _resource_kinds(targets: list[TargetDef]) -> dict[str, str]:
+    """Build the resource-type → kind map across all configured targets.
+
+    Raises:
+        click.ClickException: If two targets declare the same resource
+            type name with different kinds. Resource type names are
+            cross-target identifiers; agpack will not treat
+            ``commands`` as copy-directory for one target and
+            copy-file for another.
+    """
+    kinds: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    for idx, target in enumerate(targets):
+        target_label = f"target #{idx}"
+        for rt, resource in target.resources.items():
+            seen = kinds.get(rt)
+            if seen is None:
+                kinds[rt] = resource.kind
+                sources[rt] = target_label
+            elif seen != resource.kind:
+                raise click.ClickException(
+                    f"Resource '{rt}' has conflicting kinds across "
+                    f"configured targets: '{seen}' (from {sources[rt]}) vs "
+                    f"'{resource.kind}' (from {target_label}). All targets "
+                    f"declaring the same resource type must agree on its kind."
+                )
+    return kinds
 
 
 def _resolve_targets(config: AgpackConfig) -> list[TargetDef]:
@@ -339,16 +376,18 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    # 4. Resolve target names to manifests
+    # 4. Resolve target names to manifests + build the kind map
     target_defs = _resolve_targets(config)
+    resource_kinds = _resource_kinds(target_defs)
 
     # 5. Read existing lockfile
     old_lockfile = read_lockfile(project_root)
 
     # 5. Build set of current dependency identities
     current_identities: set[str] = set()
-    for dep in [*config.skills, *config.commands, *config.agents]:
-        current_identities.add(dep.identity)
+    for deps_list in config.dependencies.values():
+        for dep in deps_list:
+            current_identities.add(dep.identity)
 
     current_mcp_names = {m.name for m in config.mcp}
 
@@ -374,24 +413,27 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             verbose=verbose,
         )
 
-    # 8. Fetch and deploy dependencies
+    # 8. Fetch and deploy dependencies — iterate over every resource type
+    # that has either a config entry or a layout from some target.
+    # Resource types with deps but no matching target are silently
+    # skipped (matches the "codex has no commands" precedent).
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
-
-    resource_types = [
-        (config.skills, "skills", "skill"),
-        (config.commands, "commands", "command"),
-        (config.agents, "agents", "agent"),
-    ]
 
     all_verbose_lines: list[str] = []
 
     with create_sync_progress() as progress:
-        for deps, resource_type_key, resource_type_label in resource_types:
+        # Iterate in the order the user spelled them in agpack.yml so
+        # the progress display and summary match the YAML layout.
+        # Only copy kinds (copy-directory / copy-file) go through this
+        # loop — edit-file resources are handled separately below.
+        for resource_type in config.dependencies:
+            kind = resource_kinds.get(resource_type)
+            if kind is None or kind == "edit-file":
+                continue
             sync = _sync_resource_type(
-                deps,
-                resource_type_key,
-                resource_type_label,
+                config.dependencies[resource_type],
+                resource_type,
                 target_defs,
                 project_root,
                 new_lockfile,
@@ -399,7 +441,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                 dry_run=dry_run,
                 verbose=verbose,
             )
-            counts[resource_type_label] = sync.count
+            counts[resource_type] = sync.count
             all_verbose_lines.extend(sync.verbose_lines)
 
     for line in all_verbose_lines:
@@ -417,7 +459,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                     dry_run=dry_run,
                     verbose=verbose,
                 )
-            except McpError as exc:
+            except EditFileError as exc:
                 if not dry_run:
                     write_lockfile(project_root, new_lockfile)
                 raise click.ClickException(str(exc)) from exc
@@ -432,15 +474,14 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     if not dry_run:
         write_lockfile(project_root, new_lockfile)
 
-    # 10. Summary
+    # 10. Summary — one chip per resource type that had configured deps,
+    # plus MCP. Resource types with zero configured deps are omitted.
     elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
-    items = [
-        ("skills", "skill"),
-        ("commands", "command"),
-        ("agents", "agent"),
+    parts = [
+        f"[bold]{counts.get(rt, 0)}[/bold] {rt}"
+        for rt in config.dependencies
     ]
-    parts = [f"[bold]{counts.get(k, 0)}[/bold] {name}" for name, k in items]
     parts.append(f"[bold]{mcp_count}[/bold] MCP servers")
     summary = ", ".join(parts)
     targets = f"[bold]{target_count}[/bold] targets"
@@ -488,12 +529,8 @@ def status(config_path: str, no_global: bool) -> None:
         for mcp_entry in lockfile.mcp:
             mcp_map[mcp_entry.name] = mcp_entry
 
-    resource_sections = [
-        ("Skills", config.skills),
-        ("Commands", config.commands),
-        ("Agents", config.agents),
-    ]
-    for label, deps in resource_sections:
+    for resource_type, deps in config.dependencies.items():
+        label = resource_type.capitalize()
         table = Table(
             title=label,
             title_style="bold",
@@ -666,29 +703,36 @@ dependencies:
 #   claude:
 #     # Override the built-in claude target — replace semantics (no merge).
 #     skills:
-#       layout: directory
+#       kind: copy-directory       # one of: copy-directory, copy-file, edit-file
 #       path: .my-claude/skills
 #     commands:
-#       layout: file
+#       kind: copy-file
 #       path: .my-claude/commands
 #     mcp:
-#       path: .mcp.json
-#       format: json
-#       servers_key: mcpServers
-#       transports:
-#         stdio: {}
+#       kind: edit-file            # merges entries into a structured config
+#       path: .mcp.json            # format (json|toml) inferred from extension
+#       merge:
+#         servers_key: mcpServers
+#         transports:
+#           stdio: {}
 #
 #   my-internal-tool:
 #     # Brand-new target — also listed under 'targets:' above to be used.
 #     skills:
-#       layout: directory
+#       kind: copy-directory
 #       path: .myaitool/skills
+#     # Resource type names are open — declare any name (rules, prompts,
+#     # personas, …) and use the same name in 'dependencies:' above.
+#     rules:
+#       kind: copy-file
+#       path: .myaitool/rules
 #     mcp:
+#       kind: edit-file
 #       path: .myaitool/config.json
-#       format: json
-#       servers_key: mcpServers
-#       transports:
-#         stdio: {}
+#       merge:
+#         servers_key: mcpServers
+#         transports:
+#           stdio: {}
 """
     path.write_text(template, encoding="utf-8")
     console.print(f"[green]✓[/green] Created [bold]{path.name}[/bold]")
@@ -776,10 +820,9 @@ def _read_builtin_yaml(name: str) -> str:
 
 
 def _resource_summary(target: TargetDef) -> str:
-    parts = list(target.resources)
-    if target.mcp is not None:
-        parts.append("mcp")
-    return ", ".join(parts) or "[dim]none[/dim]"
+    if not target.resources:
+        return "[dim]none[/dim]"
+    return ", ".join(target.resources)
 
 
 @main.group()

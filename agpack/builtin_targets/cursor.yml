@@ -1,18 +1,19 @@
 # Cursor (cursor.com)
 
 skills:
-  layout: directory
+  kind: copy-directory
   path: .cursor/skills
 
 commands:
-  layout: file
+  kind: copy-file
   path: .cursor/commands
 
 mcp:
+  kind: edit-file
   path: .cursor/mcp.json
-  format: json
-  servers_key: mcpServers
-  transports:
-    stdio: {}
-    http: {}
-    sse: {}
+  merge:
+    servers_key: mcpServers
+    transports:
+      stdio: {}
+      http: {}
+      sse: {}

@@ -212,28 +212,61 @@ target_definitions:
   # Override a built-in: full replacement, no deep-merge.
   claude:
     skills:
-      layout: directory
+      kind: copy-directory
       path: .my-claude/skills
 
     commands:
-      layout: file
+      kind: copy-file
       path: .my-claude/commands
 
   # Define a brand-new target — also list it under `targets:` to use it.
   my-internal-tool:
     skills:
-      layout: directory
+      kind: copy-directory
       path: .myaitool/skills
 
     mcp:
-      path: .myaitool/config.json
-      format: json
-      servers_key: mcpServers
-      transports:
-        stdio: {}
+      kind: edit-file
+      path: .myaitool/config.json    # format inferred from .json/.toml suffix
+      merge:
+        servers_key: mcpServers
+        transports:
+          stdio: {}
 ```
 
 Resolution precedence (highest first): project `target_definitions` → global `target_definitions` (in `~/.config/agpack/agpack.yml`) → bundled built-in. When a name appears in `target_definitions`, that entry **fully replaces** the built-in; agpack does not deep-merge.
+
+### The three kinds
+
+Every resource block declares a `kind:` that tells agpack how to deploy it. There are exactly three:
+
+| Kind | What it does | Used by |
+|------|--------------|---------|
+| `copy-directory` | Copies a directory tree from a fetched git repo into `<path>/<name>/`. A dependency that points at a folder of subfolders expands to one bundle per subfolder. | Skills |
+| `copy-file` | Copies individual files from a fetched git repo into `<path>/<name>`. A dependency that points at a folder of files expands to one item per file. | Commands, agents |
+| `edit-file` | Reads a structured config file (JSON or TOML, inferred from the path), merges entries into a configured top-level key, writes it back. Only touches keys agpack put there. | MCP servers |
+
+### Arbitrary resource types
+
+`skills`, `commands`, `agents`, and `mcp` are not reserved — they are just the resource type names the built-in targets happen to declare. Your own targets can declare any resource type by name (`rules`, `prompts`, `personas`, `lints`, anything your tool consumes):
+
+```yaml
+targets:
+  - my-tool
+
+dependencies:
+  rules:                            # arbitrary resource type name
+    - url: https://github.com/owner/rules-repo
+      path: rules
+
+target_definitions:
+  my-tool:
+    rules:                          # matched by name
+      kind: copy-file
+      path: .my-tool/rules
+```
+
+agpack does not interpret the name; it only matches it between `dependencies:` and the target's resource block. If the same resource type appears in multiple targets, they must agree on `kind:` — agpack refuses to deploy `commands` as a folder bundle for one target and as a flat file for another. Resource types configured under `dependencies:` but not declared by any target are silently skipped.
 
 To see a starting point for customisation, run:
 
@@ -255,26 +288,27 @@ For human-readable context, use YAML comments at the top of the file.
 # place of a "description" field).
 
 skills:                         # one entry per supported resource type;
-  layout: directory|file        # omit unsupported types
+  kind: copy-directory          # omit unsupported types
   path: <relative path>
-commands: { layout: ..., path: ... }
-agents:   { layout: ..., path: ... }
+commands: { kind: copy-file, path: ... }
+agents:   { kind: copy-file, path: ... }
 
 mcp:                            # omit if the target has no per-project MCP
-  path: <relative path>
-  format: json|toml
-  servers_key: <top-level key>
-  defaults: { ... }             # optional constant fields merged at root
-  transports:                   # only listed transports are emitted
-    stdio:
-      type_value: <str>         # omit to suppress the "type" key entirely
-      command_format: string|array
-      env_key: env              # rename to "environment" (opencode) etc.
-    http:
-      type_value: <str>
-      url_key: url              # rename to "httpUrl" (gemini), etc.
-      headers_key: headers      # rename to "http_headers" (codex), etc.
-    sse: { ... same shape ... }
+  kind: edit-file
+  path: <relative path>         # extension (.json|.toml) drives the format
+  merge:                        # encoder-specific config (mcp-servers)
+    servers_key: <top-level key>
+    defaults: { ... }           # optional constant fields merged at root
+    transports:                 # only listed transports are emitted
+      stdio:
+        type_value: <str>       # omit to suppress the "type" key entirely
+        command_format: string|array
+        env_key: env            # rename to "environment" (opencode) etc.
+      http:
+        type_value: <str>
+        url_key: url            # rename to "httpUrl" (gemini), etc.
+        headers_key: headers    # rename to "http_headers" (codex), etc.
+      sse: { ... same shape ... }
 ```
 
 ## Commands

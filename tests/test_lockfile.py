@@ -44,6 +44,9 @@ class TestReadLockfile:
         assert read_lockfile(tmp_path) is None
 
     def test_parses_valid_lockfile(self, tmp_path: Path):
+        """A lockfile with legacy singular type fields (skill / command /
+        agent) is read back with the values remapped to the new plural
+        form so cleanup can match the current dependency identities."""
         data = {
             "generated_at": "2025-01-01T00:00:00+00:00",
             "agpack_version": "0.1.0",
@@ -78,12 +81,13 @@ class TestReadLockfile:
         assert first.url == "https://github.com/owner/repo"
         assert first.path == "skills/foo"
         assert first.resolved_ref == "abc123"
-        assert first.type == "skill"
+        assert first.type == "skills"  # legacy "skill" remapped
         assert first.deployed_files == ["skills/foo.md"]
 
         second = lf.installed[1]
         assert second.url == "https://gitlab.com/owner/other"
         assert second.path is None
+        assert second.type == "commands"  # legacy "command" remapped
 
         assert len(lf.mcp) == 1
         assert lf.mcp[0].name == "my-server"
@@ -92,7 +96,37 @@ class TestReadLockfile:
         assert len(lf.mcp[0].targets) == 1
         assert lf.mcp[0].targets[0].path == "claude"
         assert lf.mcp[0].targets[0].servers_key == ""
-        assert lf.mcp[0].targets[0].format == ""
+
+    def test_parses_modern_lockfile_with_plural_types(self, tmp_path: Path):
+        """Lockfiles written after the resource-taxonomy refactor store
+        the plural resource type verbatim (skills/commands/agents or any
+        user-defined name like 'rules'). These pass through unchanged."""
+        data = {
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "agpack_version": "0.5.0",
+            "installed": [
+                {
+                    "url": "https://github.com/owner/repo",
+                    "resolved_ref": "abc123",
+                    "type": "skills",
+                    "deployed_files": [],
+                    "path": "skills/foo",
+                },
+                {
+                    "url": "https://github.com/owner/rules-repo",
+                    "resolved_ref": "def456",
+                    "type": "rules",
+                    "deployed_files": [],
+                },
+            ],
+            "mcp": [],
+        }
+        _write_raw(tmp_path, _make_lockfile_yaml(data))
+
+        lf = read_lockfile(tmp_path)
+        assert lf is not None
+        assert lf.installed[0].type == "skills"
+        assert lf.installed[1].type == "rules"
 
     def test_returns_none_for_corrupt_yaml(self, tmp_path: Path):
         _write_raw(tmp_path, "{{{{not: valid: yaml::::")
@@ -254,13 +288,10 @@ class TestWriteLockfile:
                 McpLockEntry(
                     name="srv-a",
                     targets=[
-                        McpTargetRef(
-                            path=".mcp.json", servers_key="mcpServers", format="json"
-                        ),
+                        McpTargetRef(path=".mcp.json", servers_key="mcpServers"),
                         McpTargetRef(
                             path=".cursor/mcp.json",
                             servers_key="mcpServers",
-                            format="json",
                         ),
                     ],
                 ),
@@ -274,15 +305,36 @@ class TestWriteLockfile:
         assert data["mcp"][0] == {
             "name": "srv-a",
             "targets": [
-                {"path": ".mcp.json", "servers_key": "mcpServers", "format": "json"},
-                {
-                    "path": ".cursor/mcp.json",
-                    "servers_key": "mcpServers",
-                    "format": "json",
-                },
+                {"path": ".mcp.json", "servers_key": "mcpServers"},
+                {"path": ".cursor/mcp.json", "servers_key": "mcpServers"},
             ],
         }
         assert data["mcp"][1] == {"name": "srv-b", "targets": []}
+
+    def test_drops_legacy_format_field_on_read(self, tmp_path: Path):
+        """Lockfiles written by 0.4.0 stored format: in each MCP target
+        ref. New code silently discards the field — format is inferred
+        from the path extension at cleanup time."""
+        from agpack.lockfile import read_lockfile
+
+        legacy = """\
+generated_at: "2026-04-05T00:00:00+00:00"
+agpack_version: "0.4.0"
+installed: []
+mcp:
+  - name: srv-a
+    targets:
+      - path: .mcp.json
+        servers_key: mcpServers
+        format: json
+"""
+        (tmp_path / LOCKFILE_NAME).write_text(legacy, encoding="utf-8")
+        lf = read_lockfile(tmp_path)
+        assert lf is not None
+        ref = lf.mcp[0].targets[0]
+        assert ref.path == ".mcp.json"
+        assert ref.servers_key == "mcpServers"
+        assert not hasattr(ref, "format")
 
 
 # ---------------------------------------------------------------------------
@@ -433,14 +485,14 @@ class TestRoundTrip:
                     url="https://github.com/owner/repo-a",
                     path="skills/foo",
                     resolved_ref="abc123",
-                    type="skill",
+                    type="skills",
                     deployed_files=["skills/foo.md", "skills/foo/bar.txt"],
                 ),
                 InstalledEntry(
                     url="https://gitlab.com/owner/repo-b",
                     path=None,
                     resolved_ref="def456",
-                    type="command",
+                    type="commands",
                     deployed_files=[],
                 ),
             ],
@@ -448,13 +500,10 @@ class TestRoundTrip:
                 McpLockEntry(
                     name="srv-1",
                     targets=[
-                        McpTargetRef(
-                            path=".mcp.json", servers_key="mcpServers", format="json"
-                        ),
+                        McpTargetRef(path=".mcp.json", servers_key="mcpServers"),
                         McpTargetRef(
                             path=".cursor/mcp.json",
                             servers_key="mcpServers",
-                            format="json",
                         ),
                     ],
                 ),

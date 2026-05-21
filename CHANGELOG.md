@@ -7,92 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- `agpack targets list` / `agpack targets show <name>` — inspect built-in
-  and user-defined target manifests; `show` prints the on-disk YAML for
-  built-ins and the user's raw YAML for project/global definitions.
-- `target_definitions:` in `agpack.yml` and the global config — users can
-  override a built-in target or define a brand-new one in YAML. Project
-  entries take precedence over global; both replace the matching
-  built-in entirely (no deep merge).
-- Built-in target manifests under `agpack/builtin_targets/*.yml` — every
-  per-tool quirk (paths, MCP key, format, transport encoding, opencode's
-  array-form `command`, Copilot's explicit `type: stdio`, Gemini's
-  `httpUrl`, Codex's `http_headers`, opencode's `environment`, …) now
-  lives in YAML instead of Python.
-- Verbose stderr warning when an MCP server matches no configured
-  target (transport not supported, or the only configured targets have
-  no `mcp` block).
-
 ### Changed
 
-- **Schema is flat** — a target manifest's top-level keys are now
-  `skills` / `commands` / `agents` / `mcp` directly; the previous
-  `resources:` wrapper was removed. The `name:` and `description:`
-  fields are gone too: the target name is its YAML filename (built-ins)
-  or its key under `target_definitions:` (user manifests), and
-  human-readable context belongs in YAML comments.
-- **Lockfile MCP entries** now carry `{path, servers_key, format}` per
-  config file (previously just the path). Cleanup no longer guesses
-  the servers key — it reads it from the lockfile. Pre-0.4.0 string
-  entries are read with `servers_key=""` and skipped on cleanup; the
-  next sync rewrites the entry in the new format.
-- `deploy_item(name, src, resource_type, targets, …)` is now the single
-  file-deployment entrypoint (was `deploy_single_skill` /
-  `deploy_single_command` / `deploy_single_agent`).
-- `detect_items(fetch_result, resource_type)` is the single detection
-  entrypoint (replacing `detect_skill_items` / `detect_command_items`
-  / `detect_agent_items`).
-- File deployment and MCP deployment now both live in `agpack.deployer`
-  (the separate `agpack.mcp` module was folded in).
-- `agpack targets show` prints YAML directly from the built-in file or
-  the user's `agpack.yml` (no longer round-trips through a serializer).
+- **Three asset kinds are now first-class in the manifest schema.**
+  Every resource block declares ``kind:`` — one of ``copy-directory``,
+  ``copy-file``, or ``edit-file`` — instead of the implicit
+  ``layout: directory|file`` (for copy resources) + reserved ``mcp:``
+  branch (for the edit-file case). Behavior:
+  - `mcp:` is no longer a special top-level key; it's a regular
+    resource entry whose ``kind`` is ``edit-file``. ``servers_key`` /
+    ``defaults`` / ``transports`` move under a nested ``merge:`` block.
+  - The old ``layout: directory|file`` form is rejected with an error
+    pointing to the matching ``kind:`` value.
+  - Per-kind deploy and cleanup logic lives on the kind classes
+    themselves (in `agpack.kinds`); the deployer is now a thin
+    orchestration layer.
 
-### Fixed
-
-- **Sync summary** no longer assumes a target's deployment path has
-  exactly two components. User-defined targets can now use any path
-  depth without inflating the "Copied N files" count.
-- **Codex** skills moved from `.agents/skills/` to `.codex/skills/`,
-  and `.codex/agents/` is now populated (TOML files).
-- **Cursor** never had `.cursor/agents/`; that path is removed.
-  `.cursor/commands/` is now populated.
-- **Gemini** MCP no longer writes a `type:` field; HTTP servers use
-  `httpUrl` instead of `url`.
-- **Antigravity** uses its own `.agent/skills/` and `.agent/workflows/`
-  namespaces (no longer sharing `.gemini/`).
-- **Windsurf** populates `.windsurf/workflows/` from the `commands:`
-  dependency type.
-- **MCP cleanup** correctly uses each target's actual `servers_key`
-  instead of falling back to a hard-coded list — important for
-  user-defined targets removed between syncs.
+  Migration: in any custom `target_definitions:` you maintain, replace
+  ``layout: directory`` → ``kind: copy-directory``, ``layout: file`` →
+  ``kind: copy-file``, and wrap the `mcp:` block's encoder fields under
+  a ``merge:`` key (plus ``kind: edit-file`` on the block itself).
 
 ### Removed
 
-- `agpack.mcp` module (merged into `agpack.deployer`).
-- `agpack.targets` module (replaced by YAML manifests + `agpack.registry`).
-- `target_def_to_dict` serializer (~60 lines): `agpack targets show`
-  now prints YAML directly from disk.
-- `description:` field on target manifests — never displayed anywhere;
-  use YAML comments to add human-readable context.
-- `name:` field on target manifests — the manifest's name is its
-  filename (built-ins) or mapping key (`target_definitions`).
-- `_load_user_target_definitions` no longer swallows `ConfigError`:
-  a broken `agpack.yml` now surfaces as an error from
-  `agpack targets list` / `agpack targets show` instead of silently
-  hiding user definitions.
+- **`format:` field on MCP manifests.** The config format (`json` /
+  `toml`) is now inferred from the file extension of `path`; the
+  manifest can no longer declare it. Built-in targets and user
+  `target_definitions:` should drop `format:`. A manifest that still
+  sets it errors out with a clear "drop this field" message. Lockfile
+  entries also drop the field (read silently ignores legacy `format`
+  keys for back-compat).
 
-### Migration notes
+### Changed
 
-- **Lockfile**: 0.4.0 changes the on-disk MCP entry shape. Existing
-  lockfiles still load; cleanup of MCP entries written by older agpack
-  versions is skipped until the next sync rewrites them in the new
-  format. No manual action required.
-- **YAML schema for custom `target_definitions`**: the `resources:`
-  wrapper is gone; lift skills/commands/agents/mcp to the top level
-  of each entry. The `name:` and `description:` fields, if present,
-  must be removed (they now raise "unknown keys").
+- **Resource taxonomy is now open.** `skills`, `commands`, and `agents`
+  are no longer hard-coded into the schema — any string can be used as
+  a resource type name in both `agpack.yml`'s `dependencies:` block
+  and a target manifest's resource entries. Users with tools that need
+  a different resource category (e.g. `rules`, `prompts`, `personas`)
+  can now declare it directly without forking agpack.
+- **`detect_items` is layout-driven.** Detection now branches on the
+  `layout: directory|file` declared in the manifest instead of
+  dispatching on the resource type name. As a consequence, a single
+  resource type must use the same layout across every target that
+  supports it; agpack rejects mismatched layouts at sync time with a
+  clear error.
+- **`AgpackConfig.dependencies` is now a dict.** The named fields
+  `skills` / `commands` / `agents` on `AgpackConfig` and `GlobalConfig`
+  are replaced by a single `dependencies: dict[str, list[…]]` keyed
+  by resource type name. External callers reading these fields must
+  update to `config.dependencies["skills"]` etc.
+- **Lockfile `type` field stores the resource type verbatim.**
+  Previously stored as singular (`skill` / `command` / `agent`); now
+  stored as it appears in `agpack.yml` (`skills` / `commands` /
+  `agents` / or any user-defined name). Legacy singulars are remapped
+  on read for back-compat — existing lockfiles continue to clean up
+  correctly without manual migration.
 
 ## [0.3.1] - 2026-04-05
 

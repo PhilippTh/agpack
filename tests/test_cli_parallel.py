@@ -11,6 +11,7 @@ import click
 import pytest
 
 from agpack.cli import _MAX_FETCH_WORKERS
+from agpack.cli import _resource_kinds
 from agpack.cli import _sync_resource_type
 from agpack.config import DependencySource
 from agpack.display import create_sync_progress
@@ -36,7 +37,7 @@ def _make_targets(names: list[str] | None = None) -> list[TargetDef]:
 
 
 def _fake_detect_items(
-    result: FetchResult, _resource_type: str
+    result: FetchResult, _resource: object, _resource_type: str
 ) -> list[tuple[str, Path]]:
     """Stand-in for ``agpack.deployer.detect_items``."""
     return [(result.source.name, result.local_path)]
@@ -77,7 +78,6 @@ class TestParallelFetchAllSucceed:
             sync = _sync_resource_type(
                 deps,
                 "skills",
-                "skill",
                 target_defs,
                 tmp_path,
                 new_lockfile,
@@ -106,7 +106,6 @@ class TestParallelFetchAllSucceed:
             _sync_resource_type(
                 deps,
                 "skills",
-                "skill",
                 target_defs,
                 tmp_path,
                 new_lockfile,
@@ -142,7 +141,6 @@ class TestParallelFetchCollectAllErrors:
             _sync_resource_type(
                 deps,
                 "skills",
-                "skill",
                 target_defs,
                 tmp_path,
                 new_lockfile,
@@ -182,7 +180,6 @@ class TestParallelFetchCollectAllErrors:
             _sync_resource_type(
                 deps,
                 "skills",
-                "skill",
                 target_defs,
                 tmp_path,
                 Lockfile(),
@@ -207,7 +204,6 @@ class TestParallelFetchCollectAllErrors:
             _sync_resource_type(
                 deps,
                 "skills",
-                "skill",
                 target_defs,
                 tmp_path,
                 Lockfile(),
@@ -242,7 +238,6 @@ class TestParallelFetchCollectAllErrors:
             _sync_resource_type(
                 deps,
                 "skills",
-                "skill",
                 target_defs,
                 tmp_path,
                 Lockfile(),
@@ -264,7 +259,6 @@ class TestParallelFetchEdgeCases:
             sync = _sync_resource_type(
                 [],
                 "skills",
-                "skill",
                 _make_targets(),
                 tmp_path,
                 Lockfile(),
@@ -301,7 +295,6 @@ class TestParallelFetchEdgeCases:
             _sync_resource_type(
                 deps,
                 "skills",
-                "skill",
                 target_defs,
                 tmp_path,
                 Lockfile(),
@@ -333,7 +326,6 @@ class TestParallelFetchEdgeCases:
             _sync_resource_type(
                 deps,
                 "skills",
-                "skill",
                 target_defs,
                 tmp_path,
                 Lockfile(),
@@ -343,3 +335,33 @@ class TestParallelFetchEdgeCases:
             )
 
         mock_write.assert_called_once()
+
+class TestResourceKinds:
+    def test_returns_union_of_target_resources(self) -> None:
+        kinds = _resource_kinds(_make_targets(["claude", "codex"]))
+        # claude has skills/commands/agents/mcp; codex has skills/agents/mcp.
+        assert kinds["skills"] == "copy-directory"
+        assert kinds["commands"] == "copy-file"
+        assert kinds["agents"] == "copy-file"
+        assert kinds["mcp"] == "edit-file"
+
+    def test_raises_on_conflicting_kinds(self) -> None:
+        from agpack.target_schema import parse_target_def
+
+        target_a = parse_target_def(
+            {"rules": {"kind": "copy-directory", "path": ".a/rules"}}
+        )
+        target_b = parse_target_def(
+            {"rules": {"kind": "copy-file", "path": ".b/rules"}}
+        )
+        with pytest.raises(click.ClickException, match="conflicting kinds"):
+            _resource_kinds([target_a, target_b])
+
+    def test_arbitrary_resource_name_supported(self) -> None:
+        from agpack.target_schema import parse_target_def
+
+        target = parse_target_def(
+            {"rules": {"kind": "copy-file", "path": ".my-tool/rules"}}
+        )
+        kinds = _resource_kinds([target])
+        assert kinds == {"rules": "copy-file"}
