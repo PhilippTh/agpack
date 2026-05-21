@@ -125,19 +125,19 @@ class McpSpec:
 class TargetDef:
     """A fully-resolved target manifest.
 
+    The target's name is not stored on the dataclass — it's the key
+    that addresses the manifest (filename for built-ins, mapping key
+    for ``target_definitions`` in ``agpack.yml``).  That key is the
+    single source of truth, so there is nowhere for a stale or
+    mismatched ``name`` to hide.
+
     Attributes:
-        name: Unique target name (matches the key used in
-            ``agpack.yml`` ``targets``).
-        description: Optional human-readable description shown by
-            ``agpack targets list``.
         resources: Per-resource-type deployment layouts.  Missing keys
             mean the target does not support that resource type.
         mcp: MCP encoding spec, or ``None`` if the target has no
             project-level MCP config (e.g. Windsurf, Antigravity).
     """
 
-    name: str
-    description: str = ""
     resources: dict[str, ResourceLayout] = field(default_factory=dict)
     mcp: McpSpec | None = None
 
@@ -275,6 +275,10 @@ def _parse_mcp(raw: Any, context: str) -> McpSpec:
 def parse_target_def(raw: Any, context: str = "target") -> TargetDef:
     """Parse a target manifest from a raw dict (loaded YAML).
 
+    The YAML is flat: each top-level key is either a resource type
+    (``skills`` / ``commands`` / ``agents``) or ``mcp``.  Unknown keys
+    are rejected.
+
     Args:
         raw: The mapping produced by ``yaml.safe_load``.
         context: Error-message prefix identifying the source
@@ -286,93 +290,22 @@ def parse_target_def(raw: Any, context: str = "target") -> TargetDef:
     """
     data = _require_mapping(raw, context)
 
-    known = {"name", "description", "resources", "mcp"}
+    known = set(_VALID_RESOURCE_TYPES) | {"mcp"}
     extra = set(data) - known
     if extra:
-        raise TargetSchemaError(f"{context}: unknown keys {sorted(extra)}")
-
-    name = _require_string(data.get("name"), f"{context}.name")
-    description = data.get("description", "")
-    if not isinstance(description, str):
-        raise TargetSchemaError(f"{context}.description: must be a string")
-
-    resources_raw = data.get("resources", {}) or {}
-    resources_map = _require_mapping(resources_raw, f"{context}.resources")
-    resources: dict[str, ResourceLayout] = {}
-    for resource_name, resource_raw in resources_map.items():
-        if resource_name not in _VALID_RESOURCE_TYPES:
-            raise TargetSchemaError(
-                f"{context}.resources: unknown resource type {resource_name!r}; "
-                f"valid: {_VALID_RESOURCE_TYPES}"
-            )
-        resources[resource_name] = _parse_resource(
-            resource_raw, f"{context}.resources.{resource_name}"
+        raise TargetSchemaError(
+            f"{context}: unknown keys {sorted(extra)}; "
+            f"valid: {sorted(known)}"
         )
+
+    resources: dict[str, ResourceLayout] = {}
+    for resource_name in _VALID_RESOURCE_TYPES:
+        if resource_name in data:
+            resources[resource_name] = _parse_resource(
+                data[resource_name], f"{context}.{resource_name}"
+            )
 
     mcp_raw = data.get("mcp")
     mcp = _parse_mcp(mcp_raw, f"{context}.mcp") if mcp_raw is not None else None
 
-    return TargetDef(name=name, description=description, resources=resources, mcp=mcp)
-
-
-# ---------------------------------------------------------------------------
-# Serializer (back to a YAML-friendly dict)
-# ---------------------------------------------------------------------------
-
-
-_TRANSPORT_DEFAULTS = TransportSpec()
-_TRANSPORT_FIELDS = (
-    "type_value",
-    "type_field",
-    "command_key",
-    "command_format",
-    "args_key",
-    "env_key",
-    "url_key",
-    "headers_key",
-)
-
-
-def _transport_to_dict(spec: TransportSpec) -> dict[str, Any]:
-    """Render a TransportSpec, omitting fields that match defaults."""
-    result: dict[str, Any] = {}
-    for field_name in _TRANSPORT_FIELDS:
-        value = getattr(spec, field_name)
-        if value != getattr(_TRANSPORT_DEFAULTS, field_name):
-            result[field_name] = value
-    return result
-
-
-def _mcp_to_dict(mcp: McpSpec) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "path": mcp.path,
-        "format": mcp.format,
-        "servers_key": mcp.servers_key,
-    }
-    if mcp.defaults:
-        result["defaults"] = dict(mcp.defaults)
-    if mcp.transports:
-        result["transports"] = {
-            name: _transport_to_dict(spec) for name, spec in mcp.transports.items()
-        }
-    return result
-
-
-def target_def_to_dict(target: TargetDef) -> dict[str, Any]:
-    """Render a TargetDef as a YAML-friendly dict.
-
-    The output omits empty optional sections and TransportSpec fields
-    that match their defaults, so the result is a clean starting point
-    that users can paste under ``target_definitions:`` and tweak.
-    """
-    result: dict[str, Any] = {"name": target.name}
-    if target.description:
-        result["description"] = target.description
-    if target.resources:
-        result["resources"] = {
-            name: {"layout": layout.layout, "path": layout.path}
-            for name, layout in target.resources.items()
-        }
-    if target.mcp is not None:
-        result["mcp"] = _mcp_to_dict(target.mcp)
-    return result
+    return TargetDef(resources=resources, mcp=mcp)

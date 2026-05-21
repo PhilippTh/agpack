@@ -38,11 +38,25 @@ class InstalledEntry:
 
 
 @dataclass
+class McpTargetRef:
+    """A single MCP config file an MCP server was written to.
+
+    Carries enough metadata to remove the server later without
+    consulting the target manifest — important because the target may
+    have been deleted from agpack.yml between syncs.
+    """
+
+    path: str
+    servers_key: str
+    format: str  # "json" | "toml"
+
+
+@dataclass
 class McpLockEntry:
     """A single MCP server entry in the lockfile."""
 
     name: str
-    targets: list[str] = field(default_factory=list)
+    targets: list[McpTargetRef] = field(default_factory=list)
 
 
 @dataclass
@@ -93,11 +107,24 @@ def read_lockfile(project_root: Path) -> Lockfile | None:
     for mcp_data in data.get("mcp", []):
         if not isinstance(mcp_data, dict):
             continue
+        targets: list[McpTargetRef] = []
+        for raw_t in mcp_data.get("targets", []):
+            if isinstance(raw_t, dict):
+                targets.append(
+                    McpTargetRef(
+                        path=raw_t.get("path", ""),
+                        servers_key=raw_t.get("servers_key", ""),
+                        format=raw_t.get("format", ""),
+                    )
+                )
+            elif isinstance(raw_t, str):
+                # Pre-0.4.0 lockfile: only the path was stored.  Cleanup
+                # for such entries is best-effort; without servers_key /
+                # format we skip them, and the next sync writes the new
+                # format.
+                targets.append(McpTargetRef(path=raw_t, servers_key="", format=""))
         lockfile.mcp.append(
-            McpLockEntry(
-                name=mcp_data.get("name", ""),
-                targets=mcp_data.get("targets", []),
-            )
+            McpLockEntry(name=mcp_data.get("name", ""), targets=targets)
         )
 
     return lockfile
@@ -130,7 +157,14 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
         data["mcp"].append(
             {
                 "name": mcp_entry.name,
-                "targets": mcp_entry.targets,
+                "targets": [
+                    {
+                        "path": t.path,
+                        "servers_key": t.servers_key,
+                        "format": t.format,
+                    }
+                    for t in mcp_entry.targets
+                ],
             }
         )
 

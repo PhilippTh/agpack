@@ -57,15 +57,7 @@ def load_builtin(name: str) -> TargetDef:
             f"Failed to parse built-in target '{name}': {exc}"
         ) from exc
 
-    target = parse_target_def(data, context=f"builtin_targets/{name}{_BUILTIN_SUFFIX}")
-
-    if target.name != name:
-        raise TargetSchemaError(
-            f"builtin_targets/{name}{_BUILTIN_SUFFIX}: 'name' field "
-            f"({target.name!r}) does not match filename ({name!r})"
-        )
-
-    return target
+    return parse_target_def(data, context=f"builtin_targets/{name}{_BUILTIN_SUFFIX}")
 
 
 def load_all_builtins() -> dict[str, TargetDef]:

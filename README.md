@@ -192,7 +192,7 @@ To skip the global config, either pass `--no-global` on the command line or add 
 | Copilot | `.github/skills/<name>/` | `.github/prompts/<file>` | `.github/agents/<file>` | `.vscode/mcp.json` |
 | Gemini CLI | `.gemini/skills/<name>/` | `.gemini/commands/<file>` | -- | `.gemini/settings.json` |
 | Windsurf | `.windsurf/skills/<name>/` | `.windsurf/workflows/<file>` | -- | -- *(global only)* |
-| Antigravity | `.agents/skills/<name>/` | `.agent/workflows/<file>` | -- | -- *(global only)* |
+| Antigravity | `.agent/skills/<name>/` | `.agent/workflows/<file>` | -- | -- *(global only)* |
 
 Unsupported resource types are skipped silently. MCP definitions are merged into each tool's config file without touching servers agpack didn't create. Windsurf and Antigravity store MCP configs globally (`~/.codeium/windsurf/mcp_config.json` and `~/.gemini/antigravity/mcp_config.json`), so agpack does not manage them.
 
@@ -211,21 +211,20 @@ target_definitions:
 
   # Override a built-in: full replacement, no deep-merge.
   claude:
-    resources:
-      skills:
-        layout: directory
-        path: .my-claude/skills
-      commands:
-        layout: file
-        path: .my-claude/commands
+    skills:
+      layout: directory
+      path: .my-claude/skills
+
+    commands:
+      layout: file
+      path: .my-claude/commands
 
   # Define a brand-new target — also list it under `targets:` to use it.
   my-internal-tool:
-    description: Custom internal tool
-    resources:
-      skills:
-        layout: directory
-        path: .myaitool/skills
+    skills:
+      layout: directory
+      path: .myaitool/skills
+
     mcp:
       path: .myaitool/config.json
       format: json
@@ -246,16 +245,20 @@ Copy the output under `target_definitions:` and edit the parts you want to chang
 
 ### Manifest schema
 
-```yaml
-name: <target name>             # required; usually inferred from the key
-description: <short label>      # optional
+A manifest is a flat YAML mapping. The target's name is the YAML
+filename (built-ins) or the mapping key under `target_definitions:`
+in `agpack.yml` — there is no `name:` field on the manifest itself.
+For human-readable context, use YAML comments at the top of the file.
 
-resources:                      # omit unsupported resource types
-  skills:
-    layout: directory|file      # required
-    path: <relative path>       # required
-  commands: { layout: ..., path: ... }
-  agents:   { layout: ..., path: ... }
+```yaml
+# Comments at the top of the file (built-in manifests use these in
+# place of a "description" field).
+
+skills:                         # one entry per supported resource type;
+  layout: directory|file        # omit unsupported types
+  path: <relative path>
+commands: { layout: ..., path: ... }
+agents:   { layout: ..., path: ... }
 
 mcp:                            # omit if the target has no per-project MCP
   path: <relative path>
@@ -287,17 +290,12 @@ agpack targets show <name> [--config PATH] [--no-global]
                                                 Print the resolved manifest for one target
 ```
 
-## Upgrading from 0.3.x
+## Changelog
 
-0.4.0 corrects several long-standing per-target path bugs that ship as edits in the bundled YAML manifests:
-
-- **Codex** skills moved from `.agents/skills/` to `.codex/skills/`, and `.codex/agents/` is now populated (TOML files).
-- **Cursor** never had `.cursor/agents/`; that path is removed. `.cursor/commands/` is now populated.
-- **Gemini** MCP no longer writes a `type:` field; HTTP servers use `httpUrl` instead of `url`.
-- **Antigravity** now uses its own `.agents/skills/` and `.agent/workflows/` namespaces instead of sharing `.gemini/`.
-- **Windsurf** now populates `.windsurf/workflows/` from the `commands:` dependency type.
-
-On first `agpack sync` after upgrading, files in the old (buggy) locations are cleaned up automatically because the lockfile remembers exactly where the previous sync wrote them.
+See [CHANGELOG.md](CHANGELOG.md) for the per-version list of changes.
+On first `agpack sync` after upgrading a major version, files in the
+old (pre-upgrade) locations are cleaned up automatically because the
+lockfile remembers exactly where the previous sync wrote them.
 
 ## How it works
 

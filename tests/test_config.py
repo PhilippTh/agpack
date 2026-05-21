@@ -1040,11 +1040,9 @@ targets:
 
 target_definitions:
   my-tool:
-    description: Custom internal tool
-    resources:
-      skills:
-        layout: directory
-        path: .my-tool/skills
+    skills:
+      layout: directory
+      path: .my-tool/skills
     mcp:
       path: .my-tool/config.json
       format: json
@@ -1057,8 +1055,6 @@ target_definitions:
 
     assert "my-tool" in config.target_definitions
     td = config.target_definitions["my-tool"]
-    assert td.name == "my-tool"
-    assert td.description == "Custom internal tool"
     assert td.resources["skills"].path == ".my-tool/skills"
     assert td.mcp is not None
     assert td.mcp.path == ".my-tool/config.json"
@@ -1073,10 +1069,9 @@ targets:
 
 target_definitions:
   claude:
-    resources:
-      skills:
-        layout: directory
-        path: .my-claude/skills
+    skills:
+      layout: directory
+      path: .my-claude/skills
 """,
     )
     config = load_config(cfg_path)
@@ -1086,26 +1081,6 @@ target_definitions:
     # Replace semantics: only what's defined is present; no mcp inherited
     assert td.mcp is None
     assert "commands" not in td.resources
-
-
-def test_target_definitions_name_field_must_match_key(tmp_path: Path) -> None:
-    cfg_path = _write_config(
-        tmp_path,
-        """\
-targets:
-  - my-tool
-
-target_definitions:
-  my-tool:
-    name: something-else
-    resources:
-      skills:
-        layout: directory
-        path: .x/skills
-""",
-    )
-    with pytest.raises(ConfigError, match="does not match the key"):
-        load_config(cfg_path)
 
 
 def test_target_definitions_not_a_mapping(tmp_path: Path) -> None:
@@ -1132,10 +1107,9 @@ targets:
 
 target_definitions:
   my-tool:
-    resources:
-      skills:
-        layout: not-a-real-layout
-        path: .x/skills
+    skills:
+      layout: not-a-real-layout
+      path: .x/skills
 """,
     )
     with pytest.raises(ConfigError, match="layout"):
@@ -1164,10 +1138,9 @@ def test_merge_carries_global_target_definitions(tmp_path: Path) -> None:
         """\
 target_definitions:
   shared-tool:
-    resources:
-      skills:
-        layout: directory
-        path: .shared/skills
+    skills:
+      layout: directory
+      path: .shared/skills
 """,
         encoding="utf-8",
     )
@@ -1194,10 +1167,9 @@ targets:
 
 target_definitions:
   my-tool:
-    resources:
-      skills:
-        layout: directory
-        path: .project-override/skills
+    skills:
+      layout: directory
+      path: .project-override/skills
 """,
     )
     project = load_config(project_path)
@@ -1206,13 +1178,12 @@ target_definitions:
         """\
 target_definitions:
   my-tool:
-    resources:
-      skills:
-        layout: directory
-        path: .global-version/skills
-      commands:
-        layout: file
-        path: .global-version/commands
+    skills:
+      layout: directory
+      path: .global-version/skills
+    commands:
+      layout: file
+      path: .global-version/commands
 """,
         encoding="utf-8",
     )

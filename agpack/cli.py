@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from dataclasses import dataclass
 from dataclasses import field
+from importlib.resources import files as importlib_files
 from pathlib import Path
+from typing import Any
 
 import click
+import yaml
 from rich.progress import Progress
 from rich.progress import TaskID
 from rich.rule import Rule
@@ -24,13 +26,13 @@ from agpack.config import GlobalConfig
 from agpack.config import load_config
 from agpack.config import load_global_config
 from agpack.config import merge_configs
+from agpack.config import resolve_global_config_path
+from agpack.deployer import McpError
 from agpack.deployer import cleanup_deployed_files
-from agpack.deployer import deploy_single_agent
-from agpack.deployer import deploy_single_command
-from agpack.deployer import deploy_single_skill
-from agpack.deployer import detect_agent_items
-from agpack.deployer import detect_command_items
-from agpack.deployer import detect_skill_items
+from agpack.deployer import cleanup_mcp_server
+from agpack.deployer import deploy_item
+from agpack.deployer import deploy_mcp_servers
+from agpack.deployer import detect_items
 from agpack.display import console
 from agpack.display import create_sync_progress
 from agpack.envsubst import resolve_config
@@ -45,29 +47,30 @@ from agpack.lockfile import find_removed_dependencies
 from agpack.lockfile import find_removed_mcp_servers
 from agpack.lockfile import read_lockfile
 from agpack.lockfile import write_lockfile
-from agpack.mcp import McpError
-from agpack.mcp import cleanup_mcp_server
-from agpack.mcp import deploy_mcp_servers
 from agpack.registry import list_builtins
 from agpack.registry import load_builtin
 from agpack.target_schema import TargetDef
 from agpack.target_schema import TargetSchemaError
-from agpack.target_schema import target_def_to_dict
 
 _MAX_FETCH_WORKERS = 8
 
 
-def _source_file_count(deployed: list[str]) -> int:
-    """Count unique source files from a deployed-paths list.
+def _source_file_count(item_path: Path) -> int:
+    """Count source files in a deploy item.
 
-    Deployed paths look like ``<target_dir>/<resource>/<file…>`` where
-    ``<target_dir>`` is always two components (e.g. ``.claude/skills``).
-    Stripping those two components and deduplicating gives the number of
-    unique source files, regardless of how many targets received copies.
+    A file item is 1; a directory item is the number of non-``.git``
+    files in its tree.  Counting on the source side avoids any
+    assumption about target path depth — user-defined targets can put
+    deployments at any nesting level.
     """
-    if not deployed:
-        return 0
-    return len({Path(f).parts[2:] for f in deployed})
+    if item_path.is_file():
+        return 1
+    return sum(
+        1
+        for f in item_path.rglob("*")
+        if f.is_file()
+        and not any(p.startswith(".git") for p in f.relative_to(item_path).parts)
+    )
 
 
 @dataclass
@@ -80,9 +83,8 @@ class SyncResult:
 
 def _sync_resource_type(
     deps: list[DependencySource],
-    detect_fn: Callable[[FetchResult], list[tuple[str, Path]]],
-    deploy_item_fn: Callable[[str, Path, list[TargetDef], Path, bool, bool], list[str]],
-    resource_type: str,
+    resource_type_key: str,
+    resource_type_label: str,
     target_defs: list[TargetDef],
     project_root: Path,
     new_lockfile: Lockfile,
@@ -107,7 +109,7 @@ def _sync_resource_type(
     task_ids: dict[str, TaskID] = {}
     for dep in deps:
         task_ids[dep.identity] = progress.add_task(
-            f"{resource_type} [bold]{dep.name}[/bold]",
+            f"{resource_type_label} [bold]{dep.name}[/bold]",
             total=2,
             icon=" ",
             detail=f"Fetching from {dep.url}",
@@ -122,7 +124,7 @@ def _sync_resource_type(
                 results.append((dep, future.result()))
                 progress.update(tid, completed=1, detail="Deploying...")
             except FetchError as exc:
-                errors.append(f"  - {resource_type} '{dep.name}': {exc}")
+                errors.append(f"  - {resource_type_label} '{dep.name}': {exc}")
                 progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
 
     # Phase 2: collect-all error handling
@@ -132,7 +134,9 @@ def _sync_resource_type(
         if not dry_run:
             write_lockfile(project_root, new_lockfile)
         raise click.ClickException(
-            "\n".join([f"Failed to fetch {len(errors)} {resource_type}(s):"] + errors)
+            "\n".join(
+                [f"Failed to fetch {len(errors)} {resource_type_label}(s):"] + errors
+            )
         )
 
     # Phase 3: sequential deploy — update progress rows, collect verbose output
@@ -141,14 +145,14 @@ def _sync_resource_type(
         tid = task_ids[dep.identity]
 
         try:
-            items = detect_fn(result)
+            items = detect_items(result, resource_type_key)
         except Exception as exc:
             progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
             cleanup_fetch(result)
             if not dry_run:
                 write_lockfile(project_root, new_lockfile)
             raise click.ClickException(
-                f"Error deploying {resource_type} '{dep.name}': {exc}"
+                f"Error deploying {resource_type_label} '{dep.name}': {exc}"
             ) from exc
 
         is_expanded = len(items) > 1
@@ -171,9 +175,10 @@ def _sync_resource_type(
         all_deployed: list[str] = []
         for idx, (item_name, item_path) in enumerate(items):
             try:
-                files = deploy_item_fn(
+                files = deploy_item(
                     item_name,
                     item_path,
+                    resource_type_key,
                     target_defs,
                     project_root,
                     dry_run,
@@ -192,13 +197,13 @@ def _sync_resource_type(
                 if not dry_run:
                     write_lockfile(project_root, new_lockfile)
                 raise click.ClickException(
-                    f"Error deploying {resource_type} '{dep.name}': {exc}"
+                    f"Error deploying {resource_type_label} '{dep.name}': {exc}"
                 ) from exc
 
             all_deployed.extend(files)
 
             if is_expanded:
-                n = _source_file_count(files)
+                n = _source_file_count(item_path)
                 progress.update(
                     sub_task_ids[idx],
                     completed=1,
@@ -206,13 +211,15 @@ def _sync_resource_type(
                     detail=f"Copied {n} {'file' if n == 1 else 'files'}",
                 )
 
-        # Update parent row — show source file count, not total across targets
-        src_files = _source_file_count(all_deployed)
+        # Update parent row — count source files (not multiplied across targets)
         if is_expanded:
-            item_label = f"{resource_type}s" if len(items) != 1 else resource_type
+            item_label = (
+                f"{resource_type_label}s" if len(items) != 1 else resource_type_label
+            )
             detail = f"Copied {len(items)} {item_label}"
             sync.count += len(items)
         else:
+            src_files = _source_file_count(items[0][1])
             file_label = "file" if src_files == 1 else "files"
             detail = f"Copied {src_files} {file_label}"
             sync.count += 1
@@ -227,7 +234,7 @@ def _sync_resource_type(
                 url=dep.url,
                 path=dep.path,
                 resolved_ref=result.resolved_ref,
-                type=resource_type,
+                type=resource_type_label,
                 deployed_files=all_deployed,
             )
         )
@@ -363,7 +370,6 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             mcp_entry.name,
             mcp_entry.targets,
             project_root,
-            target_defs,
             dry_run=dry_run,
             verbose=verbose,
         )
@@ -373,20 +379,19 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     counts: dict[str, int] = {}
 
     resource_types = [
-        (config.skills, detect_skill_items, deploy_single_skill, "skill"),
-        (config.commands, detect_command_items, deploy_single_command, "command"),
-        (config.agents, detect_agent_items, deploy_single_agent, "agent"),
+        (config.skills, "skills", "skill"),
+        (config.commands, "commands", "command"),
+        (config.agents, "agents", "agent"),
     ]
 
     all_verbose_lines: list[str] = []
 
     with create_sync_progress() as progress:
-        for deps, detect_fn, deploy_item_fn, resource_type in resource_types:
+        for deps, resource_type_key, resource_type_label in resource_types:
             sync = _sync_resource_type(
                 deps,
-                detect_fn,
-                deploy_item_fn,
-                resource_type,
+                resource_type_key,
+                resource_type_label,
                 target_defs,
                 project_root,
                 new_lockfile,
@@ -394,7 +399,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                 dry_run=dry_run,
                 verbose=verbose,
             )
-            counts[resource_type] = sync.count
+            counts[resource_type_label] = sync.count
             all_verbose_lines.extend(sync.verbose_lines)
 
     for line in all_verbose_lines:
@@ -417,9 +422,9 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                     write_lockfile(project_root, new_lockfile)
                 raise click.ClickException(str(exc)) from exc
 
-        for server_name, target_paths in mcp_result.items():
+        for server_name, target_refs in mcp_result.items():
             new_lockfile.mcp.append(
-                McpLockEntry(name=server_name, targets=target_paths)
+                McpLockEntry(name=server_name, targets=target_refs)
             )
             mcp_count += 1
 
@@ -535,7 +540,7 @@ def status(config_path: str, no_global: bool) -> None:
         for server in config.mcp:
             mcp_installed = mcp_map.get(server.name)
             if mcp_installed and mcp_installed.targets:
-                targets_str = ", ".join(mcp_installed.targets)
+                targets_str = ", ".join(t.path for t in mcp_installed.targets)
                 table.add_row(
                     f"[green]✓[/green] {server.name}",
                     f"→ {targets_str}",
@@ -564,10 +569,8 @@ def status(config_path: str, no_global: bool) -> None:
 )
 def init(config_path: str, is_global: bool) -> None:
     """Scaffold a new agpack.yml."""
-    from agpack.config import _resolve_global_config_path
-
     if is_global:
-        path = _resolve_global_config_path()
+        path = resolve_global_config_path()
         if path.exists():
             console.print(f"{path} already exists — doing nothing.")
             return
@@ -662,13 +665,12 @@ dependencies:
 # target_definitions:
 #   claude:
 #     # Override the built-in claude target — replace semantics (no merge).
-#     resources:
-#       skills:
-#         layout: directory
-#         path: .my-claude/skills
-#       commands:
-#         layout: file
-#         path: .my-claude/commands
+#     skills:
+#       layout: directory
+#       path: .my-claude/skills
+#     commands:
+#       layout: file
+#       path: .my-claude/commands
 #     mcp:
 #       path: .mcp.json
 #       format: json
@@ -678,11 +680,9 @@ dependencies:
 #
 #   my-internal-tool:
 #     # Brand-new target — also listed under 'targets:' above to be used.
-#     description: Custom internal tool
-#     resources:
-#       skills:
-#         layout: directory
-#         path: .myaitool/skills
+#     skills:
+#       layout: directory
+#       path: .myaitool/skills
 #     mcp:
 #       path: .myaitool/config.json
 #       format: json
@@ -702,12 +702,12 @@ dependencies:
 def _load_user_target_definitions(
     config_path: str, no_global: bool
 ) -> dict[str, TargetDef]:
-    """Load target_definitions from project + global config (best-effort).
+    """Load target_definitions from project + global config.
 
-    Returns an empty dict if the project config is absent or invalid,
-    so the ``targets`` subcommands can still list built-ins for users
-    who haven't initialised a project yet.  Project entries win by name
-    over global; global entries with fresh names are appended.
+    A missing project config is fine (the user may not have run ``init``
+    yet) but a broken one is not — config errors are propagated so the
+    user sees the parse failure instead of silently losing their
+    target_definitions.  Project entries win by name over global.
     """
     cfg_path = Path(config_path).resolve()
     project_defs: dict[str, TargetDef] = {}
@@ -716,8 +716,8 @@ def _load_user_target_definitions(
     if cfg_path.exists():
         try:
             config = load_config(cfg_path)
-        except ConfigError:
-            return {}
+        except ConfigError as exc:
+            raise click.ClickException(str(exc)) from exc
         project_defs = dict(config.target_definitions)
         include_global = include_global and config.use_global
 
@@ -726,8 +726,8 @@ def _load_user_target_definitions(
 
     try:
         global_cfg = load_global_config()
-    except ConfigError:
-        return project_defs
+    except ConfigError as exc:
+        raise click.ClickException(f"Global config error: {exc}") from exc
 
     if global_cfg is None:
         return project_defs
@@ -736,6 +736,43 @@ def _load_user_target_definitions(
     for name, td in global_cfg.target_definitions.items():
         merged.setdefault(name, td)
     return merged
+
+
+def _load_raw_target_definition(
+    name: str, config_path: str, no_global: bool
+) -> dict[str, Any] | None:
+    """Re-read the raw YAML for a user-defined target, or None if absent.
+
+    Used by ``targets show`` so we can print exactly what the user wrote
+    rather than round-tripping through TargetDef and reconstructing.
+    """
+    cfg_path = Path(config_path).resolve()
+    include_global = not no_global
+    if cfg_path.exists():
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        td = (data.get("target_definitions") or {}).get(name)
+        if isinstance(td, dict):
+            return td
+        include_global = include_global and data.get("global", True)
+
+    if not include_global:
+        return None
+
+    global_path = resolve_global_config_path()
+    if not global_path.exists():
+        return None
+    data = yaml.safe_load(global_path.read_text(encoding="utf-8")) or {}
+    td = (data.get("target_definitions") or {}).get(name)
+    return td if isinstance(td, dict) else None
+
+
+def _read_builtin_yaml(name: str) -> str:
+    """Return the on-disk YAML text for a built-in target."""
+    return (
+        importlib_files("agpack.builtin_targets")
+        .joinpath(f"{name}.yml")
+        .read_text(encoding="utf-8")
+    )
 
 
 def _resource_summary(target: TargetDef) -> str:
@@ -817,27 +854,22 @@ def targets_show(name: str, config_path: str, no_global: bool) -> None:
     Useful as a starting point for copying into ``target_definitions:``
     to customise a built-in.
     """
-    import yaml
+    raw = _load_raw_target_definition(name, config_path, no_global)
+    if raw is not None:
+        click.echo(
+            yaml.safe_dump(raw, default_flow_style=False, sort_keys=False), nl=False
+        )
+        return
+
+    if name in list_builtins():
+        click.echo(_read_builtin_yaml(name), nl=False)
+        return
 
     user_defs = _load_user_target_definitions(config_path, no_global)
-
-    if name in user_defs:
-        target = user_defs[name]
-    else:
-        try:
-            target = load_builtin(name)
-        except TargetSchemaError as exc:
-            builtins = ", ".join(list_builtins())
-            user_names = ", ".join(sorted(user_defs)) or "(none)"
-            raise click.ClickException(
-                f"Unknown target '{name}'.\n"
-                f"  Built-in targets: {builtins}\n"
-                f"  Your target_definitions: {user_names}"
-            ) from exc
-
-    yaml_text = yaml.safe_dump(
-        target_def_to_dict(target),
-        default_flow_style=False,
-        sort_keys=False,
+    builtins = ", ".join(list_builtins())
+    user_names = ", ".join(sorted(user_defs)) or "(none)"
+    raise click.ClickException(
+        f"Unknown target '{name}'.\n"
+        f"  Built-in targets: {builtins}\n"
+        f"  Your target_definitions: {user_names}"
     )
-    click.echo(yaml_text, nl=False)

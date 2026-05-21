@@ -1,13 +1,12 @@
-name: cursor
-description: Cursor (cursor.com)
+# Cursor (cursor.com)
 
-resources:
-  skills:
-    layout: directory
-    path: .cursor/skills
-  commands:
-    layout: file
-    path: .cursor/commands
+skills:
+  layout: directory
+  path: .cursor/skills
+
+commands:
+  layout: file
+  path: .cursor/commands
 
 mcp:
   path: .cursor/mcp.json

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,13 +11,10 @@ import pytest
 
 from agpack.config import DependencySource
 from agpack.deployer import DeployError
-from agpack.deployer import DeployResult
 from agpack.deployer import _atomic_copy_file
 from agpack.deployer import cleanup_deployed_files
-from agpack.deployer import deploy_agent as _raw_deploy_agent
-from agpack.deployer import deploy_command as _raw_deploy_command
-from agpack.deployer import deploy_single_skill as _raw_deploy_single_skill
-from agpack.deployer import deploy_skill as _raw_deploy_skill
+from agpack.deployer import deploy_item
+from agpack.deployer import detect_items
 from agpack.fetcher import FetchResult
 from agpack.registry import load_all_builtins
 from agpack.target_schema import TargetDef
@@ -45,25 +44,46 @@ AGENT_DIRS = {
 }
 
 
+@dataclass
+class _Deployed:
+    """Aggregate result of a detect → deploy run, matching the old API shape."""
+
+    files: list[str] = field(default_factory=list)
+    expanded_items: list[str] = field(default_factory=list)
+
+
 def _resolve(names: list[str]) -> list[TargetDef]:
     return [_BUILTINS[n] for n in names if n in _BUILTINS]
 
 
+def _run(resource_type, fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
+    """Mirror what the CLI does: detect items, then deploy each one."""
+    items = detect_items(fr, resource_type)
+    target_defs = _resolve(targets)
+    files: list[str] = []
+    for name, path in items:
+        files.extend(
+            deploy_item(name, path, resource_type, target_defs, project, **kwargs)
+        )
+    expanded = [name for name, _ in items] if len(items) > 1 else []
+    return _Deployed(files=files, expanded_items=expanded)
+
+
 def deploy_skill(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
-    return _raw_deploy_skill(fr, _resolve(targets), project, **kwargs)
+    return _run("skills", fr, targets, project, **kwargs)
 
 
 def deploy_command(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
-    return _raw_deploy_command(fr, _resolve(targets), project, **kwargs)
+    return _run("commands", fr, targets, project, **kwargs)
 
 
 def deploy_agent(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
-    return _raw_deploy_agent(fr, _resolve(targets), project, **kwargs)
+    return _run("agents", fr, targets, project, **kwargs)
 
 
 def deploy_single_skill(name, path, targets, project, dry_run, verbose):  # type: ignore[no-untyped-def]
-    return _raw_deploy_single_skill(
-        name, path, _resolve(targets), project, dry_run, verbose
+    return deploy_item(
+        name, path, "skills", _resolve(targets), project, dry_run, verbose
     )
 
 
@@ -126,7 +146,7 @@ class TestDeploySkill:
 
         result = deploy_skill(fr, ALL_TARGETS, project)
 
-        assert isinstance(result, DeployResult)
+        assert isinstance(result, _Deployed)
         assert result.expanded_items == []
 
         # Should produce files under every target's skill dir
@@ -216,7 +236,7 @@ class TestDeployCommand:
 
         result = deploy_command(fr, ALL_TARGETS, project)
 
-        assert isinstance(result, DeployResult)
+        assert isinstance(result, _Deployed)
         assert result.expanded_items == []
 
         # Only targets with entries in COMMAND_DIRS should have files
@@ -260,7 +280,7 @@ class TestDeployAgent:
 
         result = deploy_agent(fr, ALL_TARGETS, project)
 
-        assert isinstance(result, DeployResult)
+        assert isinstance(result, _Deployed)
         assert result.expanded_items == []
 
         assert len(result.files) == len(AGENT_DIRS)

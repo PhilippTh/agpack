@@ -1,13 +1,12 @@
-name: gemini
-description: Gemini CLI (Google)
+# Gemini CLI (Google)
 
-resources:
-  skills:
-    layout: directory
-    path: .gemini/skills
-  commands:
-    layout: file
-    path: .gemini/commands
+skills:
+  layout: directory
+  path: .gemini/skills
+
+commands:
+  layout: file
+  path: .gemini/commands
 
 mcp:
   path: .gemini/settings.json

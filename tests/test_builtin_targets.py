@@ -123,8 +123,8 @@ def test_windsurf_workflows_added_no_mcp() -> None:
 
 def test_antigravity_own_namespace_no_mcp() -> None:
     target = load_builtin("antigravity")
-    # Bug fix: own namespace, not shared with Gemini
-    assert target.resources["skills"].path == ".agents/skills"
+    # Antigravity uses the singular .agent/ workspace namespace
+    assert target.resources["skills"].path == ".agent/skills"
     assert target.resources["commands"].path == ".agent/workflows"
     assert "agents" not in target.resources
     # Antigravity MCP is global-only

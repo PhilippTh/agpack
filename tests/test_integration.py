@@ -12,7 +12,7 @@ from click.testing import CliRunner
 
 from agpack.cli import main
 from agpack.config import load_config
-from agpack.mcp import McpError
+from agpack.deployer import McpError
 from agpack.target_schema import parse_target_def
 
 
@@ -900,11 +900,13 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0
 
-    # Now make detect_command_items raise on second sync
-    def failing_detect(fetch_result):  # noqa: ARG001
-        raise RuntimeError("detection failed")
+    # Now make item detection raise on the commands pass
+    def failing_detect(fetch_result, resource_type):  # noqa: ARG001
+        if resource_type == "commands":
+            raise RuntimeError("detection failed")
+        return [(fetch_result.source.name, fetch_result.local_path)]
 
-    with patch("agpack.cli.detect_command_items", side_effect=failing_detect):
+    with patch("agpack.cli.detect_items", side_effect=failing_detect):
         result = runner.invoke(
             main,
             ["sync", "--config", str(config_path), "--no-global"],
@@ -987,9 +989,7 @@ def test_sync_with_target_definitions_overriding_builtin(tmp_path: Path) -> None
         },
         "target_definitions": {
             "claude": {
-                "resources": {
-                    "skills": {"layout": "directory", "path": ".my-claude/skills"},
-                },
+                "skills": {"layout": "directory", "path": ".my-claude/skills"},
             },
         },
     }
@@ -1029,9 +1029,7 @@ def test_sync_with_brand_new_custom_target(tmp_path: Path) -> None:
         },
         "target_definitions": {
             "my-internal-tool": {
-                "resources": {
-                    "skills": {"layout": "directory", "path": ".myaitool/skills"},
-                },
+                "skills": {"layout": "directory", "path": ".myaitool/skills"},
                 "mcp": {
                     "path": ".myaitool/config.json",
                     "format": "json",
@@ -1093,19 +1091,15 @@ def test_targets_list_marks_user_override(tmp_path: Path) -> None:
                 "targets": ["claude"],
                 "target_definitions": {
                     "claude": {
-                        "resources": {
-                            "skills": {
-                                "layout": "directory",
-                                "path": ".my-claude/skills",
-                            },
+                        "skills": {
+                            "layout": "directory",
+                            "path": ".my-claude/skills",
                         },
                     },
                     "my-tool": {
-                        "resources": {
-                            "skills": {
-                                "layout": "directory",
-                                "path": ".my-tool/skills",
-                            },
+                        "skills": {
+                            "layout": "directory",
+                            "path": ".my-tool/skills",
                         },
                     },
                 },
@@ -1145,7 +1139,6 @@ def test_targets_show_prints_yaml_for_builtin(tmp_path: Path) -> None:
 
     # Output must be valid YAML that parses back into a TargetDef
     parsed = parse_target_def(yaml.safe_load(result.output))
-    assert parsed.name == "claude"
     assert parsed.resources["skills"].path == ".claude/skills"
 
 
@@ -1160,11 +1153,9 @@ def test_targets_show_uses_user_definition(tmp_path: Path) -> None:
                 "targets": ["claude"],
                 "target_definitions": {
                     "claude": {
-                        "resources": {
-                            "skills": {
-                                "layout": "directory",
-                                "path": ".my-claude/skills",
-                            },
+                        "skills": {
+                            "layout": "directory",
+                            "path": ".my-claude/skills",
                         },
                     },
                 },
@@ -1181,7 +1172,7 @@ def test_targets_show_uses_user_definition(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
 
     parsed = yaml.safe_load(result.output)
-    assert parsed["resources"]["skills"]["path"] == ".my-claude/skills"
+    assert parsed["skills"]["path"] == ".my-claude/skills"
     # User definition has no mcp block — the built-in's mcp must NOT leak in
     assert "mcp" not in parsed
 

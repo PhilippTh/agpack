@@ -1,16 +1,16 @@
-name: claude
-description: Claude Code (Anthropic CLI)
+# Claude Code (Anthropic CLI)
 
-resources:
-  skills:
-    layout: directory
-    path: .claude/skills
-  commands:
-    layout: file
-    path: .claude/commands
-  agents:
-    layout: file
-    path: .claude/agents
+skills:
+  layout: directory
+  path: .claude/skills
+
+commands:
+  layout: file
+  path: .claude/commands
+
+agents:
+  layout: file
+  path: .claude/agents
 
 mcp:
   path: .mcp.json

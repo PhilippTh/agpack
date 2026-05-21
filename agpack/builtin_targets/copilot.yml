@@ -1,16 +1,16 @@
-name: copilot
-description: GitHub Copilot in VS Code
+# GitHub Copilot in VS Code
 
-resources:
-  skills:
-    layout: directory
-    path: .github/skills
-  commands:
-    layout: file
-    path: .github/prompts
-  agents:
-    layout: file
-    path: .github/agents
+skills:
+  layout: directory
+  path: .github/skills
+
+commands:
+  layout: file
+  path: .github/prompts
+
+agents:
+  layout: file
+  path: .github/agents
 
 mcp:
   path: .vscode/mcp.json

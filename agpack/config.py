@@ -203,9 +203,8 @@ def _parse_mcp(raw: dict[str, Any], context: str) -> McpServer:
 def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef]:
     """Parse a ``target_definitions`` mapping into TargetDef objects.
 
-    The mapping key is treated as the target name.  An explicit ``name``
-    field inside the entry, if present, must match the key.  A missing
-    ``name`` is filled in from the key for convenience.
+    The mapping key is the target name; there is no separate ``name``
+    field on the manifest itself (the parser rejects one if present).
     """
     if raw is None:
         return {}
@@ -217,20 +216,8 @@ def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef
     result: dict[str, TargetDef] = {}
     for key, value in raw.items():
         context = f"{prefix}target_definitions.{key}"
-
         if not isinstance(key, str) or not key:
             raise ConfigError(f"{context}: target name must be a non-empty string")
-
-        if isinstance(value, dict):
-            value = dict(value)
-            if "name" not in value:
-                value["name"] = key
-            elif value["name"] != key:
-                raise ConfigError(
-                    f"{context}: 'name' ({value['name']!r}) does not match "
-                    f"the key ({key!r})"
-                )
-
         try:
             result[key] = parse_target_def(value, context=context)
         except TargetSchemaError as exc:
@@ -333,7 +320,7 @@ def load_config(path: Path) -> AgpackConfig:
     )
 
 
-def _resolve_global_config_path() -> Path:
+def resolve_global_config_path() -> Path:
     """Return the global config file path.
 
     Respects the ``AGPACK_GLOBAL_CONFIG`` environment variable.
@@ -361,7 +348,7 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
         ConfigError: If the file exists but is malformed.
     """
     if path is None:
-        path = _resolve_global_config_path()
+        path = resolve_global_config_path()
 
     if not path.exists():
         return None

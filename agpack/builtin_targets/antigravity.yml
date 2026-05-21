@@ -1,13 +1,12 @@
-name: antigravity
-description: Google Antigravity
+# Google Antigravity
 
-resources:
-  skills:
-    layout: directory
-    path: .agents/skills
-  commands:
-    layout: file
-    path: .agent/workflows
+skills:
+  layout: directory
+  path: .agent/skills
+
+commands:
+  layout: file
+  path: .agent/workflows
 
 # MCP omitted: Antigravity MCP is global only
 # (~/.gemini/antigravity/mcp_config.json).

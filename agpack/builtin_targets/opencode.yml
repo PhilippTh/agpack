@@ -1,16 +1,16 @@
-name: opencode
-description: OpenCode (opencode.ai)
+# OpenCode (opencode.ai)
 
-resources:
-  skills:
-    layout: directory
-    path: .opencode/skills
-  commands:
-    layout: file
-    path: .opencode/commands
-  agents:
-    layout: file
-    path: .opencode/agents
+skills:
+  layout: directory
+  path: .opencode/skills
+
+commands:
+  layout: file
+  path: .opencode/commands
+
+agents:
+  layout: file
+  path: .opencode/agents
 
 mcp:
   path: opencode.json

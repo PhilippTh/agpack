@@ -13,6 +13,7 @@ from agpack.lockfile import LOCKFILE_NAME
 from agpack.lockfile import InstalledEntry
 from agpack.lockfile import Lockfile
 from agpack.lockfile import McpLockEntry
+from agpack.lockfile import McpTargetRef
 from agpack.lockfile import find_removed_dependencies
 from agpack.lockfile import find_removed_mcp_servers
 from agpack.lockfile import read_lockfile
@@ -86,7 +87,12 @@ class TestReadLockfile:
 
         assert len(lf.mcp) == 1
         assert lf.mcp[0].name == "my-server"
-        assert lf.mcp[0].targets == ["claude"]
+        # Pre-0.4.0 string entries are upgraded to McpTargetRef with empty
+        # servers_key/format (best effort — cleanup will skip them).
+        assert len(lf.mcp[0].targets) == 1
+        assert lf.mcp[0].targets[0].path == "claude"
+        assert lf.mcp[0].targets[0].servers_key == ""
+        assert lf.mcp[0].targets[0].format == ""
 
     def test_returns_none_for_corrupt_yaml(self, tmp_path: Path):
         _write_raw(tmp_path, "{{{{not: valid: yaml::::")
@@ -245,7 +251,19 @@ class TestWriteLockfile:
     def test_writes_mcp_entries(self, tmp_path: Path):
         lf = Lockfile(
             mcp=[
-                McpLockEntry(name="srv-a", targets=["claude", "cursor"]),
+                McpLockEntry(
+                    name="srv-a",
+                    targets=[
+                        McpTargetRef(
+                            path=".mcp.json", servers_key="mcpServers", format="json"
+                        ),
+                        McpTargetRef(
+                            path=".cursor/mcp.json",
+                            servers_key="mcpServers",
+                            format="json",
+                        ),
+                    ],
+                ),
                 McpLockEntry(name="srv-b", targets=[]),
             ],
         )
@@ -253,7 +271,17 @@ class TestWriteLockfile:
 
         data = yaml.safe_load((tmp_path / LOCKFILE_NAME).read_text(encoding="utf-8"))
         assert len(data["mcp"]) == 2
-        assert data["mcp"][0] == {"name": "srv-a", "targets": ["claude", "cursor"]}
+        assert data["mcp"][0] == {
+            "name": "srv-a",
+            "targets": [
+                {"path": ".mcp.json", "servers_key": "mcpServers", "format": "json"},
+                {
+                    "path": ".cursor/mcp.json",
+                    "servers_key": "mcpServers",
+                    "format": "json",
+                },
+            ],
+        }
         assert data["mcp"][1] == {"name": "srv-b", "targets": []}
 
 
@@ -417,7 +445,19 @@ class TestRoundTrip:
                 ),
             ],
             mcp=[
-                McpLockEntry(name="srv-1", targets=["claude", "cursor"]),
+                McpLockEntry(
+                    name="srv-1",
+                    targets=[
+                        McpTargetRef(
+                            path=".mcp.json", servers_key="mcpServers", format="json"
+                        ),
+                        McpTargetRef(
+                            path=".cursor/mcp.json",
+                            servers_key="mcpServers",
+                            format="json",
+                        ),
+                    ],
+                ),
                 McpLockEntry(name="srv-2", targets=[]),
             ],
         )

@@ -1,13 +1,12 @@
-name: windsurf
-description: Windsurf (Codeium)
+# Windsurf (Codeium)
 
-resources:
-  skills:
-    layout: directory
-    path: .windsurf/skills
-  commands:
-    layout: file
-    path: .windsurf/workflows
+skills:
+  layout: directory
+  path: .windsurf/skills
+
+commands:
+  layout: file
+  path: .windsurf/workflows
 
 # MCP omitted: Windsurf MCP is global only
 # (~/.codeium/windsurf/mcp_config.json).

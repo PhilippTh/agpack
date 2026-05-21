@@ -1,4 +1,4 @@
-"""Tests for agpack.mcp – MCP config merge / deploy / cleanup logic."""
+"""Tests for the MCP code path in agpack.deployer."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import tomli_w
 
 from agpack.config import McpServer
-from agpack.mcp import McpError
-from agpack.mcp import _atomic_write
-from agpack.mcp import cleanup_mcp_server as _raw_cleanup_mcp_server
-from agpack.mcp import deploy_mcp_servers as _raw_deploy_mcp_servers
+from agpack.deployer import McpError
+from agpack.deployer import _atomic_write
+from agpack.deployer import cleanup_mcp_server as _raw_cleanup_mcp_server
+from agpack.deployer import deploy_mcp_servers as _raw_deploy_mcp_servers
+from agpack.lockfile import McpTargetRef
 from agpack.registry import load_builtin
 from agpack.target_schema import TargetDef
 
@@ -26,9 +26,9 @@ from agpack.target_schema import TargetDef
 def _resolve_targets(names: list[str]) -> list[TargetDef]:
     """Resolve target name strings to TargetDef objects.
 
-    Unknown names are silently dropped so the existing tests for
-    "this target has no MCP block" (windsurf, antigravity) and
-    "this target name is not a built-in" keep their old, lax shape.
+    Unknown names are silently dropped so tests can pass "this target
+    has no MCP block" (windsurf, antigravity) and "this target name is
+    not a built-in" the same lax way as before.
     """
     from agpack.registry import list_builtins
 
@@ -42,8 +42,27 @@ def deploy_mcp_servers(
     project_root: Path,
     **kwargs: object,
 ) -> dict[str, list[str]]:
-    """Test shim: accept name strings, forward TargetDef list to production."""
-    return _raw_deploy_mcp_servers(  # type: ignore[arg-type]
+    """Test shim: take name strings, return path strings.
+
+    The production API returns ``list[McpTargetRef]``; we flatten to
+    paths so existing assertions like ``".mcp.json" in result["x"]``
+    keep working.  Tests that need to assert servers_key/format check
+    the underlying refs via ``deploy_mcp_servers_raw`` below.
+    """
+    refs = _raw_deploy_mcp_servers(
+        servers, _resolve_targets(targets), project_root, **kwargs  # type: ignore[arg-type]
+    )
+    return {name: [r.path for r in target_refs] for name, target_refs in refs.items()}
+
+
+def deploy_mcp_servers_raw(
+    servers: list[McpServer],
+    targets: list[str],
+    project_root: Path,
+    **kwargs: object,
+) -> dict[str, list[McpTargetRef]]:
+    """Test shim that preserves the McpTargetRef return shape."""
+    return _raw_deploy_mcp_servers(  # type: ignore[arg-type, no-any-return]
         servers, _resolve_targets(targets), project_root, **kwargs
     )
 
@@ -55,10 +74,34 @@ def cleanup_mcp_server(
     targets: list[str],
     **kwargs: object,
 ) -> None:
-    """Test shim: accept name strings, forward TargetDef list."""
-    _raw_cleanup_mcp_server(  # type: ignore[arg-type]
-        server_name, target_paths, project_root, _resolve_targets(targets), **kwargs
-    )
+    """Test shim: build McpTargetRefs from current target manifests by path.
+
+    Paths that don't match any current target are passed with an empty
+    servers_key/format — the production cleanup will skip them, which
+    matches the new "no fuzzy fallback" contract.
+    """
+    target_defs = _resolve_targets(targets)
+    refs: list[McpTargetRef] = []
+    for path in target_paths:
+        match = next(
+            (
+                t.mcp
+                for t in target_defs
+                if t.mcp is not None and t.mcp.path == path
+            ),
+            None,
+        )
+        if match is not None:
+            refs.append(
+                McpTargetRef(
+                    path=path,
+                    servers_key=match.servers_key,
+                    format=match.format,
+                )
+            )
+        else:
+            refs.append(McpTargetRef(path=path, servers_key="", format=""))
+    _raw_cleanup_mcp_server(server_name, refs, project_root, **kwargs)  # type: ignore[arg-type]
 
 
 def _stdio_server(
@@ -612,47 +655,23 @@ class TestMergeCorruptFiles:
 
 
 # ---------------------------------------------------------------------------
-# 16. cleanup_mcp_server with unknown target — fuzzy key matching by format
+# 16. cleanup_mcp_server – skips entries with no servers_key (pre-0.4.0 lockfile)
 # ---------------------------------------------------------------------------
 
 
-class TestCleanupFuzzyKeys:
-    @pytest.mark.parametrize("key", ["mcpServers", "mcp", "servers"])
-    def test_removes_server_under_various_json_keys(
-        self, tmp_path: Path, key: str
-    ) -> None:
-        """When the target is not known, JSON cleanup tries common keys."""
+class TestCleanupSkipsLegacyEntries:
+    def test_skips_entries_missing_servers_key(self, tmp_path: Path) -> None:
+        """Refs without servers_key/format (pre-0.4.0 lockfile) are skipped."""
         config_path = tmp_path / "custom.json"
-        data = {key: {"my-server": {"command": "npx"}, "keep": {"command": "y"}}}
-        config_path.write_text(json.dumps(data), encoding="utf-8")
-
-        cleanup_mcp_server("my-server", ["custom.json"], tmp_path, targets=[])
-
-        result = json.loads(config_path.read_text(encoding="utf-8"))
-        assert "my-server" not in result[key]
-        assert "keep" in result[key]
-
-    def test_removes_server_under_mcp_servers_toml_key(self, tmp_path: Path) -> None:
-        """When the target is not known, TOML cleanup tries mcp_servers."""
-        config_path = tmp_path / "custom.toml"
-        data = {
-            "mcp_servers": {"my-server": {"command": "npx"}, "keep": {"command": "y"}}
-        }
-        config_path.write_text(tomli_w.dumps(data), encoding="utf-8")
-
-        cleanup_mcp_server("my-server", ["custom.toml"], tmp_path, targets=[])
-
-        result = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        assert "my-server" not in result["mcp_servers"]
-        assert "keep" in result["mcp_servers"]
-
-    def test_noop_when_server_not_found(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "custom.json"
-        original = {"mcpServers": {"other": {"command": "x"}}}
+        original = {"mcpServers": {"my-server": {"command": "npx"}}}
         config_path.write_text(json.dumps(original), encoding="utf-8")
 
-        cleanup_mcp_server("nonexistent", ["custom.json"], tmp_path, targets=[])
+        # An unknown target name yields a ref with empty servers_key/format.
+        cleanup_mcp_server(
+            "my-server", ["custom.json"], tmp_path, targets=["not-a-real-target"]
+        )
 
+        # File untouched — cleanup didn't guess.
         assert json.loads(config_path.read_text(encoding="utf-8")) == original
 
     def test_dry_run_skips_removal(self, tmp_path: Path) -> None:
@@ -668,48 +687,7 @@ class TestCleanupFuzzyKeys:
 
 
 # ---------------------------------------------------------------------------
-# 18. cleanup_mcp_server – unknown target config (infer from extension)
-# ---------------------------------------------------------------------------
-
-
-class TestCleanupUnknownTarget:
-    def test_cleanup_json_file_with_unknown_target(self, tmp_path: Path) -> None:
-        """When target config is not found, format is inferred from .json extension."""
-        config_path = tmp_path / "custom.json"
-        data = {"mcpServers": {"my-server": {"command": "npx"}}}
-        config_path.write_text(json.dumps(data), encoding="utf-8")
-
-        cleanup_mcp_server(
-            "my-server",
-            ["custom.json"],
-            tmp_path,
-            targets=[],  # no targets match
-        )
-
-        result = json.loads(config_path.read_text(encoding="utf-8"))
-        assert "my-server" not in result["mcpServers"]
-
-    def test_cleanup_toml_file_with_unknown_target(self, tmp_path: Path) -> None:
-        """When target config is not found, format is inferred from .toml extension."""
-        config_dir = tmp_path / "custom"
-        config_dir.mkdir()
-        config_path = config_dir / "config.toml"
-        data = {"mcp_servers": {"my-server": {"command": "npx"}}}
-        config_path.write_text(tomli_w.dumps(data), encoding="utf-8")
-
-        cleanup_mcp_server(
-            "my-server",
-            ["custom/config.toml"],
-            tmp_path,
-            targets=[],  # no targets match
-        )
-
-        result = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        assert "my-server" not in result["mcp_servers"]
-
-
-# ---------------------------------------------------------------------------
-# 19. cleanup_mcp_server – dry-run with known target
+# 18. cleanup_mcp_server – dry-run with known target
 # ---------------------------------------------------------------------------
 
 
@@ -742,7 +720,10 @@ class TestDeployErrorHandling:
         server = _stdio_server()
 
         with (
-            patch("agpack.mcp._merge_into_config", side_effect=OSError("disk full")),
+            patch(
+                "agpack.deployer._merge_into_config",
+                side_effect=OSError("disk full"),
+            ),
             pytest.raises(McpError, match="Failed to write MCP config.*disk full"),
         ):
             deploy_mcp_servers([server], ["claude"], tmp_path)
@@ -753,7 +734,7 @@ class TestDeployErrorHandling:
 
         with (
             patch(
-                "agpack.mcp._merge_into_config",
+                "agpack.deployer._merge_into_config",
                 side_effect=McpError("corrupt config"),
             ),
             pytest.raises(McpError, match="corrupt config"),
@@ -777,7 +758,7 @@ class TestAtomicWriteFailure:
         target = tmp_path / "output.json"
 
         with (
-            patch("agpack.mcp.os.replace", side_effect=OSError("disk full")),
+            patch("agpack.deployer.os.replace", side_effect=OSError("disk full")),
             pytest.raises(OSError, match="disk full"),
         ):
             _atomic_write(target, '{"test": true}\n')
