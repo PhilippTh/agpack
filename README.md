@@ -187,14 +187,92 @@ To skip the global config, either pass `--no-global` on the command line or add 
 |--------|--------|----------|--------|------------|
 | Claude | `.claude/skills/<name>/` | `.claude/commands/<file>` | `.claude/agents/<file>` | `.mcp.json` |
 | OpenCode | `.opencode/skills/<name>/` | `.opencode/commands/<file>` | `.opencode/agents/<file>` | `opencode.json` |
-| Codex | `.agents/skills/<name>/` | -- | -- | `.codex/config.toml` |
-| Cursor | `.cursor/skills/<name>/` | -- | `.cursor/agents/<file>` | `.cursor/mcp.json` |
+| Codex | `.codex/skills/<name>/` | -- | `.codex/agents/<file>` | `.codex/config.toml` |
+| Cursor | `.cursor/skills/<name>/` | `.cursor/commands/<file>` | -- | `.cursor/mcp.json` |
 | Copilot | `.github/skills/<name>/` | `.github/prompts/<file>` | `.github/agents/<file>` | `.vscode/mcp.json` |
 | Gemini CLI | `.gemini/skills/<name>/` | `.gemini/commands/<file>` | -- | `.gemini/settings.json` |
-| Windsurf | `.windsurf/skills/<name>/` | -- | -- | -- *(global only)* |
-| Antigravity | `.gemini/skills/<name>/` | `.gemini/commands/<file>` | -- | `.gemini/settings.json` |
+| Windsurf | `.windsurf/skills/<name>/` | `.windsurf/workflows/<file>` | -- | -- *(global only)* |
+| Antigravity | `.agents/skills/<name>/` | `.agent/workflows/<file>` | -- | -- *(global only)* |
 
-Unsupported resource types are skipped silently. MCP definitions are merged into each tool's config file without touching servers agpack didn't create. Windsurf's MCP config is global (`~/.codeium/windsurf/mcp_config.json`) rather than per-project, so agpack does not manage it.
+Unsupported resource types are skipped silently. MCP definitions are merged into each tool's config file without touching servers agpack didn't create. Windsurf and Antigravity store MCP configs globally (`~/.codeium/windsurf/mcp_config.json` and `~/.gemini/antigravity/mcp_config.json`), so agpack does not manage them.
+
+These paths are not hardcoded — they live in YAML manifests bundled with agpack and can be overridden per-project, see [Customising targets](#customising-targets) below.
+
+## Customising targets
+
+Targets are declarative. Each one is described by a YAML manifest that tells agpack where to deploy skills/commands/agents and how to encode the MCP config. agpack ships built-in manifests for the eight tools in the table above. You can override any of them — or define brand-new ones for tools agpack doesn't know about — by adding a `target_definitions:` block to your `agpack.yml`.
+
+```yaml
+targets:
+  - claude
+  - my-internal-tool          # custom target defined below
+
+target_definitions:
+
+  # Override a built-in: full replacement, no deep-merge.
+  claude:
+    resources:
+      skills:
+        layout: directory
+        path: .my-claude/skills
+      commands:
+        layout: file
+        path: .my-claude/commands
+
+  # Define a brand-new target — also list it under `targets:` to use it.
+  my-internal-tool:
+    description: Custom internal tool
+    resources:
+      skills:
+        layout: directory
+        path: .myaitool/skills
+    mcp:
+      path: .myaitool/config.json
+      format: json
+      servers_key: mcpServers
+      transports:
+        stdio: {}
+```
+
+Resolution precedence (highest first): project `target_definitions` → global `target_definitions` (in `~/.config/agpack/agpack.yml`) → bundled built-in. When a name appears in `target_definitions`, that entry **fully replaces** the built-in; agpack does not deep-merge.
+
+To see a starting point for customisation, run:
+
+```bash
+agpack targets show claude         # prints the resolved manifest as YAML
+```
+
+Copy the output under `target_definitions:` and edit the parts you want to change.
+
+### Manifest schema
+
+```yaml
+name: <target name>             # required; usually inferred from the key
+description: <short label>      # optional
+
+resources:                      # omit unsupported resource types
+  skills:
+    layout: directory|file      # required
+    path: <relative path>       # required
+  commands: { layout: ..., path: ... }
+  agents:   { layout: ..., path: ... }
+
+mcp:                            # omit if the target has no per-project MCP
+  path: <relative path>
+  format: json|toml
+  servers_key: <top-level key>
+  defaults: { ... }             # optional constant fields merged at root
+  transports:                   # only listed transports are emitted
+    stdio:
+      type_value: <str>         # omit to suppress the "type" key entirely
+      command_format: string|array
+      env_key: env              # rename to "environment" (opencode) etc.
+    http:
+      type_value: <str>
+      url_key: url              # rename to "httpUrl" (gemini), etc.
+      headers_key: headers      # rename to "http_headers" (codex), etc.
+    sse: { ... same shape ... }
+```
 
 ## Commands
 
@@ -203,7 +281,23 @@ agpack init    [--config PATH] [--global]       Scaffold a new config file
 agpack sync    [--config PATH] [--no-global]    Fetch and deploy all dependencies
                [--dry-run] [--verbose]
 agpack status  [--config PATH] [--no-global]    Show installed vs configured state
+agpack targets list  [--config PATH] [--no-global]
+                                                Show all available targets and their source
+agpack targets show <name> [--config PATH] [--no-global]
+                                                Print the resolved manifest for one target
 ```
+
+## Upgrading from 0.3.x
+
+0.4.0 corrects several long-standing per-target path bugs that ship as edits in the bundled YAML manifests:
+
+- **Codex** skills moved from `.agents/skills/` to `.codex/skills/`, and `.codex/agents/` is now populated (TOML files).
+- **Cursor** never had `.cursor/agents/`; that path is removed. `.cursor/commands/` is now populated.
+- **Gemini** MCP no longer writes a `type:` field; HTTP servers use `httpUrl` instead of `url`.
+- **Antigravity** now uses its own `.agents/skills/` and `.agent/workflows/` namespaces instead of sharing `.gemini/`.
+- **Windsurf** now populates `.windsurf/workflows/` from the `commands:` dependency type.
+
+On first `agpack sync` after upgrading, files in the old (buggy) locations are cleaned up automatically because the lockfile remembers exactly where the previous sync wrote them.
 
 ## How it works
 
