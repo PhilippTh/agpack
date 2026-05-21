@@ -1,0 +1,20 @@
+name: gemini
+description: Gemini CLI (Google)
+
+resources:
+  skills:
+    layout: directory
+    path: .gemini/skills
+  commands:
+    layout: file
+    path: .gemini/commands
+
+mcp:
+  path: .gemini/settings.json
+  format: json
+  servers_key: mcpServers
+  transports:
+    stdio: {}
+    http:
+      url_key: httpUrl
+    sse: {}

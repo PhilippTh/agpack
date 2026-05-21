@@ -1,0 +1,19 @@
+name: cursor
+description: Cursor (cursor.com)
+
+resources:
+  skills:
+    layout: directory
+    path: .cursor/skills
+  commands:
+    layout: file
+    path: .cursor/commands
+
+mcp:
+  path: .cursor/mcp.json
+  format: json
+  servers_key: mcpServers
+  transports:
+    stdio: {}
+    http: {}
+    sse: {}

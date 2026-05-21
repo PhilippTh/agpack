@@ -1,0 +1,19 @@
+name: codex
+description: OpenAI Codex CLI
+
+resources:
+  skills:
+    layout: directory
+    path: .codex/skills
+  agents:
+    layout: file
+    path: .codex/agents
+
+mcp:
+  path: .codex/config.toml
+  format: toml
+  servers_key: mcp_servers
+  transports:
+    stdio: {}
+    http:
+      headers_key: http_headers

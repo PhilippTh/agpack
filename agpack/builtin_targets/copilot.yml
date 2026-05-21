@@ -1,0 +1,25 @@
+name: copilot
+description: GitHub Copilot in VS Code
+
+resources:
+  skills:
+    layout: directory
+    path: .github/skills
+  commands:
+    layout: file
+    path: .github/prompts
+  agents:
+    layout: file
+    path: .github/agents
+
+mcp:
+  path: .vscode/mcp.json
+  format: json
+  servers_key: servers
+  transports:
+    stdio:
+      type_value: stdio
+    http:
+      type_value: http
+    sse:
+      type_value: sse
