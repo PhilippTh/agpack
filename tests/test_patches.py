@@ -117,8 +117,7 @@ class TestDottedKeyEscape:
             _apply_patch({}, Patch(key=".a", value=1))
 
     def test_cleanup_understands_escapes(self) -> None:
-        """Round-trip: a key applied with an escaped dot can also be
-        undone with the same escaped key."""
+        """Round-trip: a key applied with an escaped dot can also be undone with the same escaped key."""
         root: dict = {}
         _apply_patch(root, Patch(key="mcpServers.example\\.com", value="x"))
         from agpack.kinds.edit_file import _cleanup_patch as cleanup
@@ -154,9 +153,7 @@ def test_apply_append_nested_path() -> None:
             strategy="append",
         ),
     )
-    assert root["hooks"]["PreToolUse"] == [
-        {"matcher": "Write", "hooks": [{"type": "command"}]}
-    ]
+    assert root["hooks"]["PreToolUse"] == [{"matcher": "Write", "hooks": [{"type": "command"}]}]
 
 
 def test_apply_append_on_non_list_raises() -> None:
@@ -301,9 +298,7 @@ class TestApplyPatchesJson:
             tmp_path,
         )
         cfg = _read_json(tmp_path / "settings.json")
-        assert cfg["hooks"]["PreToolUse"] == [
-            {"matcher": "Write", "hooks": [{"type": "command"}]}
-        ]
+        assert cfg["hooks"]["PreToolUse"] == [{"matcher": "Write", "hooks": [{"type": "command"}]}]
         assert cfg["permissions"]["allow"] == ["Read(/etc/**)"]
 
 
@@ -387,8 +382,8 @@ class TestCleanupPatches:
 class TestPreviousValueRestoration:
     """Removing a ``replace`` patch must restore the user's prior value.
 
-    The pre-fix behaviour was to delete the leaf on cleanup, silently
-    destroying any data that was at the key before agpack first ran.
+    The pre-fix behaviour was to delete the leaf on cleanup, silently destroying any data that was at the key before
+    agpack first ran.
     """
 
     def test_replace_records_pre_existing_value(self, tmp_path: Path) -> None:
@@ -452,12 +447,9 @@ class TestPreviousValueRestoration:
         cfg = json.loads((tmp_path / ".mcp.json").read_text())
         assert "new" not in cfg.get("mcpServers", {})
 
-    def test_value_change_preserves_original_previous_value(
-        self, tmp_path: Path
-    ) -> None:
-        """A patch whose value updates must keep the original
-        previous_value so a future removal still restores the user's
-        pre-agpack content."""
+    def test_value_change_preserves_original_previous_value(self, tmp_path: Path) -> None:
+        """A patch whose value updates must keep the original previous_value so a future removal still restores the
+        user's pre-agpack content."""
         (tmp_path / ".mcp.json").write_text(
             json.dumps({"mcpServers": {"fs": {"command": "user"}}}),
             encoding="utf-8",
@@ -489,11 +481,11 @@ class TestTomlPreservation:
             "# leading comment\n"
             "[mcp_servers]\n"
             "# inline comment\n"
-            "existing = { command = \"old\" }\n"
+            'existing = { command = "old" }\n'
             "\n"
             "[other]\n"
             "# unrelated\n"
-            "key = \"value\"\n"
+            'key = "value"\n'
         )
         (tmp_path / "config.toml").write_text(original, encoding="utf-8")
         resource = EditFileResource(path="config.toml")
@@ -512,9 +504,7 @@ class TestTomlPreservation:
 class TestIdempotency:
     """No-op syncs must not rewrite the file."""
 
-    def test_resync_identical_state_does_not_touch_file(
-        self, tmp_path: Path
-    ) -> None:
+    def test_resync_identical_state_does_not_touch_file(self, tmp_path: Path) -> None:
         (tmp_path / ".mcp.json").write_text("{}", encoding="utf-8")
         resource = EditFileResource(path=".mcp.json")
         applied = resource.sync_patches(
@@ -566,11 +556,11 @@ class TestErrors:
 
     def test_oserror_on_write_wrapped(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
-        with mock_patch(
-            "agpack.kinds._shared._atomic_write", side_effect=OSError("disk full")
+        with (
+            mock_patch("agpack.kinds._shared._atomic_write", side_effect=OSError("disk full")),
+            pytest.raises(EditFileError, match="Failed to write.*disk full"),
         ):
-            with pytest.raises(EditFileError, match="Failed to write.*disk full"):
-                resource.apply_patches([Patch(key="x", value=1)], tmp_path)
+            resource.apply_patches([Patch(key="x", value=1)], tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -579,8 +569,8 @@ class TestErrors:
 
 
 class TestVariableSubstitution:
-    """${name} in patch keys and values resolves at apply time, with
-    the target's own ``vars`` taking precedence over env_vars."""
+    """${name} in patch keys and values resolves at apply time, with the target's own ``vars`` taking precedence over
+    env_vars."""
 
     def test_target_var_substituted_in_key(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
@@ -609,9 +599,7 @@ class TestVariableSubstitution:
 
     def test_target_var_overrides_env_var(self, tmp_path: Path) -> None:
         """Same-name collision: target wins."""
-        resource = EditFileResource(
-            path=".mcp.json", vars={"bucket": "from-target"}
-        )
+        resource = EditFileResource(path=".mcp.json", vars={"bucket": "from-target"})
         resource.apply_patches(
             [Patch(key="${bucket}.fs", value={"command": "x"})],
             tmp_path,
@@ -662,8 +650,8 @@ class TestVariableSubstitution:
         assert cfg == {"x": {"fs": {}}}
 
     def test_dollar_dollar_escapes_to_literal_dollar(self, tmp_path: Path) -> None:
-        """$${X} writes ${X} literally — needed for runtime vars (e.g.
-        Claude Code's ${CLAUDE_PROJECT_DIR} inside hook commands)."""
+        """$${X} writes ${X} literally — needed for runtime vars (e.g. Claude Code's ${CLAUDE_PROJECT_DIR} inside hook
+        commands)."""
         resource = EditFileResource(path="settings.json")
         resource.apply_patches(
             [
@@ -690,9 +678,7 @@ class TestVariableSubstitution:
 
     def test_escape_alongside_substitution(self, tmp_path: Path) -> None:
         """$$ and ${} can appear in the same string."""
-        resource = EditFileResource(
-            path=".mcp.json", vars={"bucket": "mcpServers"}
-        )
+        resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
         resource.apply_patches(
             [
                 Patch(
@@ -707,8 +693,7 @@ class TestVariableSubstitution:
         assert cfg["mcpServers"]["fs"] == "literal ${X} and substituted OK"
 
     def test_resolved_patches_returned(self, tmp_path: Path) -> None:
-        """Return value carries the post-substitution keys/values for
-        the lockfile to record."""
+        """Return value carries the post-substitution keys/values for the lockfile to record."""
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
         resolved = resource.apply_patches(
             [

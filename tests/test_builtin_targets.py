@@ -1,8 +1,7 @@
 """Regression tests for the shipped built-in target manifests.
 
-Built-in manifests are intentionally tiny in the patch-based world:
-each entry is just ``kind`` + ``path``. These assertions lock in
-the file locations so a typo can't silently break a target.
+Built-in manifests are intentionally tiny in the patch-based world: each entry is just ``kind`` + ``path``. These
+assertions lock in the file locations so a typo can't silently break a target.
 """
 
 from __future__ import annotations

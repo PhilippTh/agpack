@@ -36,9 +36,7 @@ def _make_targets(names: list[str] | None = None) -> list[TargetDef]:
     return [load_builtin(n) for n in (names or ["claude"])]
 
 
-def _fake_detect_items(
-    result: FetchResult, _resource: object, _resource_type: str
-) -> list[tuple[str, Path]]:
+def _fake_detect_items(result: FetchResult, _resource: object, _resource_type: str) -> list[tuple[str, Path]]:
     """Stand-in for ``agpack.deployer.detect_items``."""
     return [(result.source.name, result.local_path)]
 
@@ -49,8 +47,8 @@ def _fake_deploy_item(
     _resource_type: str,
     _targets: list[TargetDef],
     _project_root: Path,
-    _dry_run: bool = False,
-    _verbose: bool = False,
+    dry_run: bool = False,  # noqa: ARG001  # mock must mirror deploy_item's kwargs
+    verbose: bool = False,  # noqa: ARG001
 ) -> list[str]:
     """Stand-in for ``agpack.deployer.deploy_item``."""
     return [f"{name}.md"]
@@ -63,7 +61,7 @@ class TestParallelFetchAllSucceed:
         target_defs = _make_targets()
         new_lockfile = Lockfile()
 
-        def fake_fetch(dep: DependencySource) -> FetchResult:
+        def fake_fetch(dep: DependencySource, _env=None) -> FetchResult:
             return fake_results[dep.name]
 
         deploy_item_mock = MagicMock(side_effect=_fake_deploy_item)
@@ -82,6 +80,7 @@ class TestParallelFetchAllSucceed:
                 tmp_path,
                 new_lockfile,
                 progress,
+                {},
                 dry_run=False,
                 verbose=False,
             )
@@ -110,6 +109,7 @@ class TestParallelFetchAllSucceed:
                 tmp_path,
                 new_lockfile,
                 progress,
+                {},
                 dry_run=False,
                 verbose=False,
             )
@@ -124,8 +124,9 @@ class TestParallelFetchCollectAllErrors:
         target_defs = _make_targets()
         new_lockfile = Lockfile()
 
-        def fake_fetch(dep: DependencySource) -> FetchResult:
-            raise FetchError(f"failed {dep.name}")
+        def fake_fetch(dep: DependencySource, _env=None) -> FetchResult:
+            msg = f"failed {dep.name}"
+            raise FetchError(msg)
 
         detect_items_mock = MagicMock()
         deploy_item_mock = MagicMock()
@@ -145,6 +146,7 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 new_lockfile,
                 progress,
+                {},
                 dry_run=False,
                 verbose=False,
             )
@@ -163,9 +165,10 @@ class TestParallelFetchCollectAllErrors:
         fake_result = _make_result(deps[0], tmp_path)
         target_defs = _make_targets()
 
-        def fake_fetch(dep: DependencySource) -> FetchResult:
+        def fake_fetch(dep: DependencySource, _env=None) -> FetchResult:
             if dep.name == "bad":
-                raise FetchError("boom")
+                msg = "boom"
+                raise FetchError(msg)
             return fake_result
 
         with (
@@ -184,6 +187,7 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 Lockfile(),
                 progress,
+                {},
                 dry_run=False,
                 verbose=False,
             )
@@ -208,6 +212,7 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 Lockfile(),
                 progress,
+                {},
                 dry_run=True,
                 verbose=False,
             )
@@ -221,9 +226,10 @@ class TestParallelFetchCollectAllErrors:
         detect_items_mock = MagicMock()
         deploy_item_mock = MagicMock()
 
-        def fake_fetch(dep: DependencySource) -> FetchResult:
+        def fake_fetch(dep: DependencySource, _env=None) -> FetchResult:
             if dep.name == "b":
-                raise FetchError("nope")
+                msg = "nope"
+                raise FetchError(msg)
             return fake_result
 
         with (
@@ -242,6 +248,7 @@ class TestParallelFetchCollectAllErrors:
                 tmp_path,
                 Lockfile(),
                 progress,
+                {},
                 dry_run=False,
                 verbose=False,
             )
@@ -263,6 +270,7 @@ class TestParallelFetchEdgeCases:
                 tmp_path,
                 Lockfile(),
                 progress,
+                {},
                 dry_run=False,
                 verbose=False,
             )
@@ -281,7 +289,7 @@ class TestParallelFetchEdgeCases:
                 captured.append(max_workers)
             real_init(self, *args, max_workers=max_workers, **kwargs)
 
-        def fake_fetch(dep: DependencySource) -> FetchResult:
+        def fake_fetch(dep: DependencySource, _env=None) -> FetchResult:
             return _make_result(dep, tmp_path)
 
         with (
@@ -299,6 +307,7 @@ class TestParallelFetchEdgeCases:
                 tmp_path,
                 Lockfile(),
                 progress,
+                {},
                 dry_run=False,
                 verbose=False,
             )
@@ -330,11 +339,13 @@ class TestParallelFetchEdgeCases:
                 tmp_path,
                 Lockfile(),
                 progress,
+                {},
                 dry_run=False,
                 verbose=False,
             )
 
         mock_write.assert_called_once()
+
 
 class TestResourceKinds:
     def test_returns_union_of_target_resources(self) -> None:
@@ -348,20 +359,14 @@ class TestResourceKinds:
     def test_raises_on_conflicting_kinds(self) -> None:
         from agpack.target_schema import parse_target_def
 
-        target_a = parse_target_def(
-            {"rules": {"kind": "copy-directory", "path": ".a/rules"}}
-        )
-        target_b = parse_target_def(
-            {"rules": {"kind": "copy-file", "path": ".b/rules"}}
-        )
+        target_a = parse_target_def({"rules": {"kind": "copy-directory", "path": ".a/rules"}})
+        target_b = parse_target_def({"rules": {"kind": "copy-file", "path": ".b/rules"}})
         with pytest.raises(click.ClickException, match="conflicting kinds"):
             _resource_kinds([target_a, target_b])
 
     def test_arbitrary_resource_name_supported(self) -> None:
         from agpack.target_schema import parse_target_def
 
-        target = parse_target_def(
-            {"rules": {"kind": "copy-file", "path": ".my-tool/rules"}}
-        )
+        target = parse_target_def({"rules": {"kind": "copy-file", "path": ".my-tool/rules"}})
         kinds = _resource_kinds([target])
         assert kinds == {"rules": "copy-file"}

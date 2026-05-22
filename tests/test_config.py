@@ -43,8 +43,10 @@ def _make_project_config(
 ) -> AgpackConfig:
     deps: dict[str, list[DependencyEntry]] = {}
     for name, lst in (
-        ("skills", skills), ("commands", commands),
-        ("agents", agents), ("mcp", mcp),
+        ("skills", skills),
+        ("commands", commands),
+        ("agents", agents),
+        ("mcp", mcp),
     ):
         if lst:
             deps[name] = lst
@@ -63,8 +65,10 @@ def _make_global_config(
 ) -> GlobalConfig:
     deps: dict[str, list[DependencyEntry]] = {}
     for name, lst in (
-        ("skills", skills), ("commands", commands),
-        ("agents", agents), ("mcp", mcp),
+        ("skills", skills),
+        ("commands", commands),
+        ("agents", agents),
+        ("mcp", mcp),
     ):
         if lst:
             deps[name] = lst
@@ -462,15 +466,11 @@ def test_load_global_config_empty_file(tmp_path: Path) -> None:
     assert cfg.dependencies == {}
 
 
-def test_load_global_config_env_var_override(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_global_config_env_var_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     custom_dir = tmp_path / "custom"
     custom_dir.mkdir()
     custom_path = custom_dir / "my-global.yml"
-    custom_path.write_text(
-        "dependencies:\n  skills:\n    - url: https://example.com/repo\n"
-    )
+    custom_path.write_text("dependencies:\n  skills:\n    - url: https://example.com/repo\n")
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(custom_path))
     cfg = load_global_config()
     assert cfg is not None
@@ -491,9 +491,7 @@ def test_load_global_config_not_a_mapping(tmp_path: Path) -> None:
 
 def test_load_global_config_dependencies_not_a_mapping(tmp_path: Path) -> None:
     path = _write_global_config(tmp_path, "dependencies: [bad]\n")
-    with pytest.raises(
-        ConfigError, match="Global config 'dependencies' must be a mapping"
-    ):
+    with pytest.raises(ConfigError, match="Global config 'dependencies' must be a mapping"):
         load_global_config(path)
 
 
@@ -506,9 +504,7 @@ def test_merge_basic() -> None:
     project = _make_project_config(
         skills=[DependencySource(urls=["https://github.com/a/b"], path="skills/proj")],
     )
-    global_skill = DependencySource(
-        urls=["https://github.com/c/d"], path="skills/global"
-    )
+    global_skill = DependencySource(urls=["https://github.com/c/d"], path="skills/global")
     global_cfg = _make_global_config(
         skills=[global_skill],
         commands=[DependencySource(urls=["https://github.com/e/f"])],
@@ -537,12 +533,8 @@ def test_merge_dedupes_patches_by_content() -> None:
 
 
 def test_merge_keeps_distinct_patches() -> None:
-    project = _make_project_config(
-        mcp=[Patch(key="mcpServers.fs", value={"command": "npx"})]
-    )
-    global_cfg = _make_global_config(
-        mcp=[Patch(key="mcpServers.other", value={"command": "x"})]
-    )
+    project = _make_project_config(mcp=[Patch(key="mcpServers.fs", value={"command": "npx"})])
+    global_cfg = _make_global_config(mcp=[Patch(key="mcpServers.other", value={"command": "x"})])
     merged = merge_configs(project, global_cfg)
     assert len(merged.dependencies["mcp"]) == 2
 

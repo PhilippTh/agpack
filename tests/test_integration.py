@@ -109,8 +109,7 @@ def test_full_sync_flow(tmp_path: Path) -> None:
             ],
             "mcp": [
                 {
-                    # ${bucket} resolves per target: 'mcpServers' for
-                    # claude, 'mcp' for opencode. One patch, both
+                    # ${bucket} resolves per target: 'mcpServers' for claude, 'mcp' for opencode. One patch, both
                     # targets, correct bucket name on each.
                     "key": "${bucket}.filesystem",
                     "value": {
@@ -127,9 +126,7 @@ def test_full_sync_flow(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -197,9 +194,7 @@ def test_sync_cleanup_removed_dependency(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -215,9 +210,7 @@ def test_sync_cleanup_removed_dependency(tmp_path: Path) -> None:
 
     # Remove the skill from config, keep command
     config["dependencies"]["skills"] = []
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     # Second sync
     result = runner.invoke(
@@ -255,9 +248,7 @@ def test_sync_dry_run(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -298,9 +289,7 @@ def test_status_command(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
 
@@ -388,9 +377,7 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
     }
 
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -410,9 +397,7 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
             "value": {"command": "node", "args": ["server.js"]},
         }
     ]
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     # Re-sync
     result = runner.invoke(
@@ -433,9 +418,7 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sync_with_global_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sync_with_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Global config dependencies are included in sync."""
     bare_repo = _create_bare_repo(tmp_path)
 
@@ -453,9 +436,7 @@ def test_sync_with_global_config(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(
-        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
-    )
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False, sort_keys=False))
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     # Set up project directory with skills only
@@ -473,9 +454,7 @@ def test_sync_with_global_config(
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -509,9 +488,7 @@ def test_sync_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(
-        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
-    )
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False, sort_keys=False))
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     # Project with skills only
@@ -529,9 +506,7 @@ def test_sync_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -547,9 +522,7 @@ def test_sync_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert not (project_dir / ".claude/agents/backend-expert.md").exists()
 
 
-def test_sync_global_false_in_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sync_global_false_in_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """'global: false' in project config prevents global config from loading."""
     bare_repo = _create_bare_repo(tmp_path)
 
@@ -567,9 +540,7 @@ def test_sync_global_false_in_project(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(
-        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
-    )
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False, sort_keys=False))
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     # Project config with global: false
@@ -601,9 +572,7 @@ dependencies:
     assert not (project_dir / ".claude/agents/backend-expert.md").exists()
 
 
-def test_sync_global_mcp_merged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sync_global_mcp_merged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Global MCP servers are merged and deployed alongside project ones."""
     _create_bare_repo(tmp_path)
 
@@ -621,9 +590,7 @@ def test_sync_global_mcp_merged(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(
-        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
-    )
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False, sort_keys=False))
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     project_dir = tmp_path / "project"
@@ -640,9 +607,7 @@ def test_sync_global_mcp_merged(
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -657,9 +622,7 @@ def test_sync_global_mcp_merged(
     assert "global-server" in mcp_data["mcpServers"]
 
 
-def test_sync_global_mcp_project_wins_duplicate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sync_global_mcp_project_wins_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When project and global define the same MCP server name, project wins."""
     _create_bare_repo(tmp_path)
 
@@ -676,9 +639,7 @@ def test_sync_global_mcp_project_wins_duplicate(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(
-        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
-    )
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False, sort_keys=False))
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     project_dir = tmp_path / "project"
@@ -695,9 +656,7 @@ def test_sync_global_mcp_project_wins_duplicate(
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -737,9 +696,7 @@ def test_init_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert "\ntargets:" not in content
 
 
-def test_init_global_already_exists(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_init_global_already_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test 'agpack init --global' when file already exists."""
     global_path = tmp_path / "agpack.yml"
     global_path.write_text("existing content\n")
@@ -755,9 +712,7 @@ def test_init_global_already_exists(
     assert global_path.read_text() == "existing content\n"
 
 
-def test_status_with_global_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_status_with_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Status command includes global config dependencies."""
     bare_repo = _create_bare_repo(tmp_path)
 
@@ -775,9 +730,7 @@ def test_status_with_global_config(
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(
-        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
-    )
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False, sort_keys=False))
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     # Project with skills only
@@ -795,9 +748,7 @@ def test_status_with_global_config(
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
 
@@ -829,9 +780,7 @@ def test_status_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         },
     }
     global_path = global_dir / "agpack.yml"
-    global_path.write_text(
-        yaml.dump(global_config, default_flow_style=False, sort_keys=False)
-    )
+    global_path.write_text(yaml.dump(global_config, default_flow_style=False, sort_keys=False))
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
     project_dir = tmp_path / "project"
@@ -848,9 +797,7 @@ def test_status_no_global_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -889,9 +836,7 @@ def test_sync_url_fallback(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -931,9 +876,7 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     # First sync succeeds, establishing a lockfile
     runner = CliRunner()
@@ -947,7 +890,8 @@ def test_sync_detect_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     # Now make item detection raise on the commands pass
     def failing_detect(fetch_result, layout, resource_type):  # noqa: ARG001
         if resource_type == "commands":
-            raise RuntimeError("detection failed")
+            msg = "detection failed"
+            raise RuntimeError(msg)
         return [(fetch_result.source.name, fetch_result.local_path)]
 
     with patch("agpack.cli.detect_items", side_effect=failing_detect):
@@ -994,9 +938,7 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     with patch(
         "agpack.cli.sync_edit_resource",
@@ -1021,8 +963,8 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
 
 
 def test_sync_with_claude_hooks_and_permissions(tmp_path: Path) -> None:
-    """End-to-end: hooks + permissions resources deploy realistic
-    Claude Code settings.json content via the patch model."""
+    """End-to-end: hooks + permissions resources deploy realistic Claude Code settings.json content via the patch
+    model."""
     project_dir = tmp_path / "project"
     project_dir.mkdir()
 
@@ -1038,11 +980,8 @@ def test_sync_with_claude_hooks_and_permissions(tmp_path: Path) -> None:
                         "hooks": [
                             {
                                 "type": "command",
-                                # $${} escapes — Claude Code resolves this
-                                # at hook execution time, not agpack.
-                                "command": (
-                                    "$${CLAUDE_PROJECT_DIR}/.claude/hooks/block.sh"
-                                ),
+                                # $${} escapes — Claude Code resolves this at hook execution time, not agpack.
+                                "command": ("$${CLAUDE_PROJECT_DIR}/.claude/hooks/block.sh"),
                             }
                         ],
                     },
@@ -1058,9 +997,7 @@ def test_sync_with_claude_hooks_and_permissions(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -1071,8 +1008,8 @@ def test_sync_with_claude_hooks_and_permissions(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
 
     settings = json.loads((project_dir / ".claude/settings.json").read_text())
-    # ${bucket} resolved to "hooks" and "permissions" respectively;
-    # the runtime variable inside the command was preserved literally.
+    # ${bucket} resolved to "hooks" and "permissions" respectively; the runtime variable inside the command was
+    # preserved literally.
     assert settings["hooks"]["PreToolUse"] == [
         {
             "matcher": "Bash",
@@ -1105,9 +1042,7 @@ def test_sync_with_target_definitions_overriding_builtin(tmp_path: Path) -> None
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -1150,9 +1085,7 @@ def test_sync_with_brand_new_custom_target(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -1320,10 +1253,86 @@ def test_init_template_parses_when_uncommented(tmp_path: Path) -> None:
     assert init_result.exit_code == 0, init_result.output
     assert config_path.exists()
 
-    # The scaffold has only commented entries — load should report missing
-    # targets, since 'targets' is required.
+    # The scaffold has only commented entries — load should report missing targets, since 'targets' is required.
     with pytest.raises(Exception, match="targets"):
         load_config(config_path)
+
+
+def test_sync_warns_on_misspelled_resource_type(tmp_path: Path) -> None:
+    """A dependency key no target declares warns instead of silently dropping.
+
+    Regression: open-ended resource type names make typos the most common failure mode. ``mpc:`` (typo of ``mcp:``)
+    used to produce a clean sync with zero entries deployed.
+    """
+    bare_repo = _create_bare_repo(tmp_path)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "targets": ["claude"],
+                "dependencies": {
+                    # ``mpc`` instead of ``mcp`` — no target declares it.
+                    "mpc": [
+                        {
+                            "key": "mcpServers.fs",
+                            "value": {"command": "npx"},
+                        }
+                    ],
+                    # A real dependency so sync has something to do.
+                    "skills": [
+                        {"url": str(bare_repo), "path": "skills/my-skill"},
+                    ],
+                },
+            },
+            default_flow_style=False,
+        )
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert "warning" in result.output.lower()
+    assert "mpc" in result.output
+    # The hint must enumerate the resource types the user *could* have meant.
+    assert "mcp" in result.output
+
+
+def test_sync_warns_on_duplicate_target(tmp_path: Path) -> None:
+    """``targets: [claude, claude]`` warns and dedups to one application."""
+    bare_repo = _create_bare_repo(tmp_path)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "targets": ["claude", "claude"],
+                "dependencies": {
+                    "skills": [
+                        {"url": str(bare_repo), "path": "skills/my-skill"},
+                    ],
+                },
+            },
+            default_flow_style=False,
+        )
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert "warning" in result.output.lower()
+    assert "multiple times" in result.output.lower()
+    assert (project_dir / ".claude/skills/my-skill/SKILL.md").exists()
 
 
 def test_sync_unknown_target_lists_options_in_error(tmp_path: Path) -> None:
@@ -1372,9 +1381,7 @@ def test_sync_url_multiple_fallbacks(tmp_path: Path) -> None:
         },
     }
     config_path = project_dir / "agpack.yml"
-    config_path.write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False)
-    )
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
     runner = CliRunner()
     result = runner.invoke(

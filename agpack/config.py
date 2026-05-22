@@ -31,10 +31,8 @@ DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
 class DependencySource:
     """A parsed skill, command, or agent dependency (copy-kind input).
 
-    The ``urls`` list contains one or more git clone URLs. The first
-    entry is the canonical (primary) URL used for identity and display.
-    Remaining entries are fallback URLs tried in order when earlier ones
-    fail.
+    The ``urls`` list contains one or more git clone URLs. The first entry is the canonical (primary) URL used for
+    identity and display. Remaining entries are fallback URLs tried in order when earlier ones fail.
     """
 
     urls: list[str]
@@ -65,9 +63,8 @@ class DependencySource:
         return key
 
 
-# A dependency entry under ``dependencies.<rt>`` is either a fetched
-# resource (``DependencySource``) for copy kinds, or a structured patch
-# (``Patch``) for edit-file kinds.
+# A dependency entry under ``dependencies.<rt>`` is either a fetched resource (``DependencySource``) for copy kinds,
+# or a structured patch (``Patch``) for edit-file kinds.
 DependencyEntry = DependencySource | Patch
 
 
@@ -75,12 +72,10 @@ DependencyEntry = DependencySource | Patch
 class AgpackConfig:
     """Parsed and validated agpack.yml.
 
-    ``dependencies`` is an open dict keyed by resource type name. Each
-    entry is either a :class:`DependencySource` (copy kinds — fetched
-    from git) or a :class:`Patch` (edit-file kinds — applied to a
-    structured config file). All entries under a given key must be of
-    the same type; the actual kind is enforced at sync time against
-    the target manifest.
+    ``dependencies`` is an open dict keyed by resource type name. Each entry is either a :class:`DependencySource`
+    (copy kinds — fetched from git) or a :class:`Patch` (edit-file kinds — applied to a structured config file). All
+    entries under a given key must be of the same type; the actual kind is enforced at sync time against the target
+    manifest.
     """
 
     targets: list[str]
@@ -121,18 +116,22 @@ def _parse_fetch_entry(raw: dict[str, Any], context: str) -> DependencySource:
     raw_url = raw.get("url")
     if isinstance(raw_url, str):
         if not raw_url:
-            raise ConfigError(f"{context}: 'url' must not be empty")
+            msg = f"{context}: 'url' must not be empty"
+            raise ConfigError(msg)
         urls = [raw_url]
     elif isinstance(raw_url, list):
         if not raw_url:
-            raise ConfigError(f"{context}: 'url' must not be empty")
+            msg = f"{context}: 'url' must not be empty"
+            raise ConfigError(msg)
         urls = [str(u) for u in raw_url]
     else:
-        raise ConfigError(f"{context}: 'url' must be a string or list of strings")
+        msg = f"{context}: 'url' must be a string or list of strings"
+        raise ConfigError(msg)
 
     path = raw.get("path")
     if path is not None and not isinstance(path, str):
-        raise ConfigError(f"{context}: 'path' must be a string")
+        msg = f"{context}: 'path' must be a string"
+        raise ConfigError(msg)
 
     ref = raw.get("ref")
     if ref is not None:
@@ -141,7 +140,8 @@ def _parse_fetch_entry(raw: dict[str, Any], context: str) -> DependencySource:
     known = {"url", "path", "ref"}
     extra = set(raw) - known
     if extra:
-        raise ConfigError(f"{context}: unknown fields {sorted(extra)}")
+        msg = f"{context}: unknown fields {sorted(extra)}"
+        raise ConfigError(msg)
 
     return DependencySource(urls=urls, path=path, ref=ref)
 
@@ -153,22 +153,23 @@ def _parse_patch_entry(raw: dict[str, Any], context: str) -> Patch:
     """Parse an edit-file entry: ``key``, ``value``, optional ``strategy``."""
     key = raw.get("key")
     if not isinstance(key, str) or not key:
-        raise ConfigError(f"{context}: 'key' must be a non-empty string")
+        msg = f"{context}: 'key' must be a non-empty string"
+        raise ConfigError(msg)
 
     if "value" not in raw:
-        raise ConfigError(f"{context}: missing required field 'value'")
+        msg = f"{context}: missing required field 'value'"
+        raise ConfigError(msg)
 
     strategy = raw.get("strategy", "replace")
     if strategy not in _VALID_STRATEGIES:
-        raise ConfigError(
-            f"{context}: 'strategy' must be one of {_VALID_STRATEGIES}, "
-            f"got {strategy!r}"
-        )
+        msg = f"{context}: 'strategy' must be one of {_VALID_STRATEGIES}, got {strategy!r}"
+        raise ConfigError(msg)
 
     known = {"key", "value", "strategy"}
     extra = set(raw) - known
     if extra:
-        raise ConfigError(f"{context}: unknown fields {sorted(extra)}")
+        msg = f"{context}: unknown fields {sorted(extra)}"
+        raise ConfigError(msg)
 
     return Patch(key=key, value=raw["value"], strategy=strategy)
 
@@ -176,27 +177,23 @@ def _parse_patch_entry(raw: dict[str, Any], context: str) -> Patch:
 def _parse_dependency_entry(raw: Any, context: str) -> DependencyEntry:
     """Parse one entry; the shape decides fetch vs patch.
 
-    An entry with ``url`` is a fetch entry (copy kind). An entry with
-    ``key`` is a patch entry (edit-file kind). Anything else is an error.
+    An entry with ``url`` is a fetch entry (copy kind). An entry with ``key`` is a patch entry (edit-file kind).
+    Anything else is an error.
     """
     if not isinstance(raw, dict):
-        raise ConfigError(
-            f"{context}: expected an object, got {type(raw).__name__}"
-        )
+        msg = f"{context}: expected an object, got {type(raw).__name__}"
+        raise ConfigError(msg)
     has_url = "url" in raw
     has_key = "key" in raw
     if has_url and has_key:
-        raise ConfigError(
-            f"{context}: entry has both 'url' (fetch) and 'key' (patch) — "
-            f"these are mutually exclusive"
-        )
+        msg = f"{context}: entry has both 'url' (fetch) and 'key' (patch) — these are mutually exclusive"
+        raise ConfigError(msg)
     if has_url:
         return _parse_fetch_entry(raw, context)
     if has_key:
         return _parse_patch_entry(raw, context)
-    raise ConfigError(
-        f"{context}: entry must have either 'url' (fetch) or 'key' (patch)"
-    )
+    msg = f"{context}: entry must have either 'url' (fetch) or 'key' (patch)"
+    raise ConfigError(msg)
 
 
 def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef]:
@@ -204,15 +201,15 @@ def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        raise ConfigError(
-            f"{prefix}target_definitions: must be a mapping, got {type(raw).__name__}"
-        )
+        msg = f"{prefix}target_definitions: must be a mapping, got {type(raw).__name__}"
+        raise ConfigError(msg)
 
     result: dict[str, TargetDef] = {}
     for key, value in raw.items():
         context = f"{prefix}target_definitions.{key}"
         if not isinstance(key, str) or not key:
-            raise ConfigError(f"{context}: target name must be a non-empty string")
+            msg = f"{context}: target name must be a non-empty string"
+            raise ConfigError(msg)
         try:
             result[key] = parse_target_def(value, context=context)
         except TargetSchemaError as exc:
@@ -221,36 +218,31 @@ def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef
     return result
 
 
-def _parse_dependencies(
-    deps: dict[str, Any], prefix: str = ""
-) -> dict[str, list[DependencyEntry]]:
+def _parse_dependencies(deps: dict[str, Any], prefix: str = "") -> dict[str, list[DependencyEntry]]:
     """Parse the ``dependencies`` mapping into a {resource_type: [entries]} dict.
 
-    Each entry is either a :class:`DependencySource` (fetch) or a
-    :class:`Patch` (patch) depending on whether it has ``url:`` or
-    ``key:``. Mixed lists are rejected — a resource type is either
-    fetch-only or patch-only.
+    Each entry is either a :class:`DependencySource` (fetch) or a :class:`Patch` (patch) depending on whether it has
+    ``url:`` or ``key:``. Mixed lists are rejected — a resource type is either fetch-only or patch-only.
     """
     out: dict[str, list[DependencyEntry]] = {}
     for rt, raw_list in deps.items():
         if not isinstance(rt, str) or not rt:
-            raise ConfigError(
-                f"{prefix}dependencies: keys must be non-empty strings, got {rt!r}"
-            )
+            msg = f"{prefix}dependencies: keys must be non-empty strings, got {rt!r}"
+            raise ConfigError(msg)
         items = raw_list or []
         entries: list[DependencyEntry] = [
-            _parse_dependency_entry(item, f"{prefix}dependencies.{rt}[{i}]")
-            for i, item in enumerate(items)
+            _parse_dependency_entry(item, f"{prefix}dependencies.{rt}[{i}]") for i, item in enumerate(items)
         ]
         # Reject mixed fetch + patch within one resource type.
         if entries:
             first_kind = type(entries[0])
             for i, entry in enumerate(entries[1:], 1):
                 if type(entry) is not first_kind:
-                    raise ConfigError(
+                    msg = (
                         f"{prefix}dependencies.{rt}[{i}]: cannot mix fetch and "
                         f"patch entries under the same resource type"
                     )
+                    raise ConfigError(msg)
         out[rt] = entries
     return out
 
@@ -258,31 +250,38 @@ def _parse_dependencies(
 def load_config(path: Path) -> AgpackConfig:
     """Load and validate agpack.yml."""
     if not path.exists():
-        raise ConfigError(f"Config file not found: {path}")
+        msg = f"Config file not found: {path}"
+        raise ConfigError(msg)
 
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise ConfigError(f"Failed to parse YAML: {exc}") from exc
+        msg = f"Failed to parse YAML: {exc}"
+        raise ConfigError(msg) from exc
 
     if not isinstance(data, dict):
-        raise ConfigError("Config file must be a YAML mapping")
+        msg = "Config file must be a YAML mapping"
+        raise ConfigError(msg)
 
     targets = data.get("targets")
     if not targets or not isinstance(targets, list):
-        raise ConfigError("Missing or invalid 'targets' (must be a list)")
+        msg = "Missing or invalid 'targets' (must be a list)"
+        raise ConfigError(msg)
 
     for t in targets:
         if not isinstance(t, str) or not t:
-            raise ConfigError(f"'targets' entries must be non-empty strings, got {t!r}")
+            msg = f"'targets' entries must be non-empty strings, got {t!r}"
+            raise ConfigError(msg)
 
     use_global = data.get("global", True)
     if not isinstance(use_global, bool):
-        raise ConfigError("'global' must be true or false")
+        msg = "'global' must be true or false"
+        raise ConfigError(msg)
 
     deps = data.get("dependencies", {})
     if not isinstance(deps, dict):
-        raise ConfigError("'dependencies' must be a mapping")
+        msg = "'dependencies' must be a mapping"
+        raise ConfigError(msg)
 
     dependencies = _parse_dependencies(deps)
     target_definitions = _parse_target_definitions(data.get("target_definitions"))
@@ -317,22 +316,23 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise ConfigError(f"Failed to parse global config YAML: {exc}") from exc
+        msg = f"Failed to parse global config YAML: {exc}"
+        raise ConfigError(msg) from exc
 
     if data is None:
         return GlobalConfig(config_dir=path.parent)
 
     if not isinstance(data, dict):
-        raise ConfigError("Global config file must be a YAML mapping")
+        msg = "Global config file must be a YAML mapping"
+        raise ConfigError(msg)
 
     deps = data.get("dependencies", {})
     if not isinstance(deps, dict):
-        raise ConfigError("Global config 'dependencies' must be a mapping")
+        msg = "Global config 'dependencies' must be a mapping"
+        raise ConfigError(msg)
 
     dependencies = _parse_dependencies(deps, prefix="global ")
-    target_definitions = _parse_target_definitions(
-        data.get("target_definitions"), prefix="global "
-    )
+    target_definitions = _parse_target_definitions(data.get("target_definitions"), prefix="global ")
 
     return GlobalConfig(
         dependencies=dependencies,
@@ -344,16 +344,13 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
 def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConfig:
     """Merge a global config into a project config.
 
-    Global dependencies are appended after project dependencies. Fetch
-    entries are deduplicated by :attr:`DependencySource.identity`;
-    patch entries are deduplicated by ``(key, value, strategy)``
-    content. Project entries always win on conflict.
+    Global dependencies are appended after project dependencies. Fetch entries are deduplicated by
+    :attr:`DependencySource.identity`; patch entries are deduplicated by ``(key, value, strategy)`` content. Project
+    entries always win on conflict.
 
     Returns a **new** :class:`AgpackConfig`; the inputs are not mutated.
     """
-    dependencies: dict[str, list[DependencyEntry]] = {
-        rt: list(deps) for rt, deps in project.dependencies.items()
-    }
+    dependencies: dict[str, list[DependencyEntry]] = {rt: list(deps) for rt, deps in project.dependencies.items()}
     for rt, global_deps in global_cfg.dependencies.items():
         bucket = dependencies.setdefault(rt, [])
         seen: set[Any] = {_dedup_key(e) for e in bucket}
@@ -391,8 +388,7 @@ def _dedup_key(entry: DependencyEntry) -> Any:
         return ("fetch", entry.identity)
     if entry.strategy == "replace":
         return ("patch", "replace", entry.key)
-    # ``default=str`` covers any oddballs that aren't natively JSON-encodable
-    # (datetimes, custom scalars from YAML). The output is a deterministic
-    # string identity for dict-key use, not something we round-trip.
+    # ``default=str`` covers any oddballs that aren't natively JSON-encodable (datetimes, custom scalars from YAML).
+    # The output is a deterministic string identity for dict-key use, not something we round-trip.
     value_repr = json.dumps(entry.value, sort_keys=True, default=str)
     return ("patch", "append", entry.key, value_repr)

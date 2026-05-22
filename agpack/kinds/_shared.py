@@ -1,14 +1,13 @@
 """Shared infrastructure for the three deploy kinds.
 
-Sits below all three kind modules in the import graph: error
-classes, atomic file I/O, directory-traversal helpers used by both
-copy kinds. Nothing kind-specific belongs here — if you find yourself
-about to add behaviour that knows about a single kind, put it in
-that kind's module instead.
+Sits below all three kind modules in the import graph: error classes, atomic file I/O, directory-traversal helpers
+used by both copy kinds. Nothing kind-specific belongs here — if you find yourself about to add behaviour that knows
+about a single kind, put it in that kind's module instead.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import tempfile
@@ -27,15 +26,14 @@ def atomic_copy_file(src: Path, dst: Path) -> None:
     """Copy a file atomically using write-to-temp-then-rename."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=dst.parent, prefix=".agpack-tmp-")
+    tmp = Path(tmp_path)
     try:
         os.close(fd)
-        shutil.copy2(str(src), tmp_path)
-        os.replace(tmp_path, str(dst))
+        shutil.copy2(src, tmp)
+        tmp.replace(dst)
     except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            tmp.unlink()
         raise
 
 
@@ -43,25 +41,22 @@ def _atomic_write(path: Path, content: str) -> None:
     """Write text content to a file atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".agpack-edit-")
+    tmp = Path(tmp_path)
     try:
         os.close(fd)
-        Path(tmp_path).write_text(content, encoding="utf-8")
-        os.replace(tmp_path, str(path))
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
     except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            tmp.unlink()
         raise
 
 
 def write_if_changed(path: Path, new_text: str) -> bool:
     """Atomic write, but skip when the file already has this exact content.
 
-    Returns ``True`` if a write happened, ``False`` if we noticed the
-    file was already byte-identical and skipped. This is what keeps
-    every-sync churn off the user's structured config files when
-    nothing semantically changed.
+    Returns ``True`` if a write happened, ``False`` if we noticed the file was already byte-identical and skipped. This
+    is what keeps every-sync churn off the user's structured config files when nothing semantically changed.
     """
     if path.exists():
         try:
@@ -93,8 +88,7 @@ def find_asset_subfolders(path: Path) -> list[Path]:
     for item in sorted(path.iterdir()):
         if item.is_dir() and not item.name.startswith(".git"):
             has_files = any(
-                f.is_file()
-                and not any(p.startswith(".git") for p in f.relative_to(item).parts)
+                f.is_file() and not any(p.startswith(".git") for p in f.relative_to(item).parts)
                 for f in item.rglob("*")
             )
             if has_files:
@@ -104,8 +98,4 @@ def find_asset_subfolders(path: Path) -> list[Path]:
 
 def find_top_level_files(path: Path) -> list[Path]:
     """Return non-hidden files at the top level of a directory."""
-    return sorted(
-        item
-        for item in path.iterdir()
-        if item.is_file() and not item.name.startswith(".")
-    )
+    return sorted(item for item in path.iterdir() if item.is_file() and not item.name.startswith("."))

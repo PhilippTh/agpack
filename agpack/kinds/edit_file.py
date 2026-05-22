@@ -1,21 +1,15 @@
 """``kind: edit-file`` — surgically patch a structured config file.
 
-Reads a JSON or TOML file, applies a list of :class:`Patch`
-operations (``replace`` or ``append``), and writes it back. The
-diff-based :meth:`EditFileResource.sync_patches` is what makes this
-safe across syncs:
+Reads a JSON or TOML file, applies a list of :class:`Patch` operations (``replace`` or ``append``), and writes it
+back. The diff-based :meth:`EditFileResource.sync_patches` is what makes this safe across syncs:
 
-* TOML files round-trip through :mod:`tomlkit` so comments, key
-  ordering, and whitespace on untouched sections survive unchanged.
-* JSON files use :mod:`json` (no format-preserving alternative in
-  stdlib); ``_write_if_changed`` skips the write entirely when the
-  serialised text is byte-identical to disk, so unchanged files
-  don't churn either.
-* Every ``replace`` patch snapshots the *existing* value at its key
-  before overwriting. When the patch is later removed from
-  ``agpack.yml``, cleanup restores that snapshot instead of deleting
-  the key — so agpack can co-exist with files the user also edits
-  by hand without silently destroying their data.
+* TOML files round-trip through :mod:`tomlkit` so comments, key ordering, and whitespace on untouched sections
+  survive unchanged.
+* JSON files use :mod:`json` (no format-preserving alternative in stdlib); ``_write_if_changed`` skips the write
+  entirely when the serialised text is byte-identical to disk, so unchanged files don't churn either.
+* Every ``replace`` patch snapshots the *existing* value at its key before overwriting. When the patch is later
+  removed from ``agpack.yml``, cleanup restores that snapshot instead of deleting the key — so agpack can co-exist
+  with files the user also edits by hand without silently destroying their data.
 """
 
 from __future__ import annotations
@@ -56,10 +50,8 @@ def infer_config_format(path: str) -> Literal["json", "toml"]:
     if lower.endswith(".json"):
         return "json"
     valid = ", ".join(sorted(_FORMAT_BY_SUFFIX))
-    raise EditFileError(
-        f"cannot infer config format from '{path}' — "
-        f"path must end in one of: {valid}"
-    )
+    msg = f"cannot infer config format from '{path}' — path must end in one of: {valid}"
+    raise EditFileError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -67,20 +59,17 @@ def infer_config_format(path: str) -> Literal["json", "toml"]:
 # ---------------------------------------------------------------------------
 
 
-# Matches either ``$$`` (escape — emit literal ``$``) or ``${name}``
-# (substitute). ``$${name}`` therefore writes a literal ``${name}`` to
-# the target file, which lets users pass through runtime variables
-# resolved by the consuming tool (e.g. Claude Code's
-# ``${CLAUDE_PROJECT_DIR}`` inside hook commands).
+# Matches either ``$$`` (escape — emit literal ``$``) or ``${name}`` (substitute). ``$${name}`` therefore writes a
+# literal ``${name}`` to the target file, which lets users pass through runtime variables resolved by the consuming
+# tool (e.g. Claude Code's ``${CLAUDE_PROJECT_DIR}`` inside hook commands).
 _VAR_PATTERN = re.compile(r"\$\$|\$\{([^}]+)}")
 
 
 def _substitute(value: str, table: dict[str, str], context: str) -> str:
     """Substitute ``${name}`` references in ``value`` using ``table``.
 
-    ``$$`` writes a literal ``$`` (so ``$${X}`` produces ``${X}``).
-    Raises :class:`EditFileError` listing the missing name and the
-    surrounding context if a ``${name}`` reference cannot be resolved.
+    ``$$`` writes a literal ``$`` (so ``$${X}`` produces ``${X}``). Raises :class:`EditFileError` listing the missing
+    name and the surrounding context if a ``${name}`` reference cannot be resolved.
     """
 
     def _replace(match: re.Match[str]) -> str:
@@ -89,11 +78,12 @@ def _substitute(value: str, table: dict[str, str], context: str) -> str:
         name = match.group(1)
         if name in table:
             return table[name]
-        raise EditFileError(
+        msg = (
             f"{context}: variable '{name}' is not defined "
             f"(checked target vars and environment). "
             f"Use $${{{name}}} to write a literal ${{{name}}}."
         )
+        raise EditFileError(msg)
 
     return _VAR_PATTERN.sub(_replace, value)
 
@@ -144,21 +134,20 @@ class Patch:
 def _split_key(key: str) -> list[str]:
     """Split a dotted patch key into segments, honouring backslash escapes.
 
-    ``.`` separates segments; ``\\.`` produces a literal dot inside a
-    segment; ``\\\\`` produces a literal backslash. This lets users
-    address keys that contain dots (e.g. MCP server names with dotted
-    identifiers, Java package keys, hostnames):
+    ``.`` separates segments; ``\\.`` produces a literal dot inside a segment; ``\\\\`` produces a literal backslash.
+    This lets users address keys that contain dots (e.g. MCP server names with dotted identifiers, Java package keys,
+    hostnames):
 
     * ``mcpServers.foo``              → ``["mcpServers", "foo"]``
     * ``mcpServers.example\\.com/srv`` → ``["mcpServers", "example.com/srv"]``
     * ``a\\\\b.c``                    → ``["a\\b", "c"]``
 
-    A trailing unescaped backslash is taken literally. Empty segments
-    (``a..b``, ``.x``, ``x.``) are rejected so that ambiguous keys
-    fail loudly instead of silently navigating into ``""``.
+    A trailing unescaped backslash is taken literally. Empty segments (``a..b``, ``.x``, ``x.``) are rejected so that
+    ambiguous keys fail loudly instead of silently navigating into ``""``.
     """
     if not key:
-        raise EditFileError("patch key must be non-empty")
+        msg = "patch key must be non-empty"
+        raise EditFileError(msg)
 
     segments: list[str] = []
     current: list[str] = []
@@ -166,8 +155,7 @@ def _split_key(key: str) -> list[str]:
     while i < len(key):
         c = key[i]
         if c == "\\" and i + 1 < len(key):
-            # Escape: emit the next character literally. Covers both
-            # ``\.`` (literal dot, no segment break) and ``\\``
+            # Escape: emit the next character literally. Covers both ``\.`` (literal dot, no segment break) and ``\\``
             # (literal backslash).
             current.append(key[i + 1])
             i += 2
@@ -182,43 +170,32 @@ def _split_key(key: str) -> list[str]:
     segments.append("".join(current))
 
     if any(not s for s in segments):
-        raise EditFileError(
-            f"patch key {key!r} has an empty segment — "
-            f"use '\\.' to embed a literal dot inside a segment"
-        )
+        msg = f"patch key {key!r} has an empty segment — use '\\.' to embed a literal dot inside a segment"
+        raise EditFileError(msg)
     return segments
 
 
-def _walk_to_parent(
-    root: dict[str, Any], segments: list[str]
-) -> tuple[dict[str, Any], str]:
+def _walk_to_parent(root: dict[str, Any], segments: list[str]) -> tuple[dict[str, Any], str]:
     """Walk ``root`` along ``segments[:-1]``, returning (parent, last_segment).
 
-    Missing intermediate dicts are auto-created. If an existing
-    intermediate value is *not* a dict, raises :class:`EditFileError`
-    rather than silently overwriting user data.
+    Missing intermediate dicts are auto-created. If an existing intermediate value is *not* a dict, raises
+    :class:`EditFileError` rather than silently overwriting user data.
     """
     parent: dict[str, Any] = root
     for seg in segments[:-1]:
         if seg in parent and not isinstance(parent[seg], dict):
-            raise EditFileError(
-                f"patch path traverses non-dict at '{seg}': "
-                f"existing value is {type(parent[seg]).__name__}"
-            )
+            msg = f"patch path traverses non-dict at '{seg}': existing value is {type(parent[seg]).__name__}"
+            raise EditFileError(msg)
         parent = parent.setdefault(seg, {})
     return parent, segments[-1]
 
 
-def _walk_readonly(
-    root: dict[str, Any], segments: list[str]
-) -> tuple[dict[str, Any] | None, str]:
+def _walk_readonly(root: dict[str, Any], segments: list[str]) -> tuple[dict[str, Any] | None, str]:
     """Walk ``root`` along ``segments[:-1]`` without auto-creating anything.
 
-    Returns ``(parent_dict, leaf_segment)`` if every intermediate
-    segment resolved to a dict; ``(None, "")`` if any segment was
-    missing or pointed at a non-dict. Used by every read/undo path
-    where missing keys must silently no-op (cleanup, previous-value
-    capture, undo).
+    Returns ``(parent_dict, leaf_segment)`` if every intermediate segment resolved to a dict; ``(None, "")`` if any
+    segment was missing or pointed at a non-dict. Used by every read/undo path where missing keys must silently no-op
+    (cleanup, previous-value capture, undo).
     """
     parent: Any = root
     for seg in segments[:-1]:
@@ -242,24 +219,20 @@ def _apply_patch(root: dict[str, Any], patch: Patch) -> None:
     # append
     bucket = parent.setdefault(leaf, [])
     if not isinstance(bucket, list):
-        raise EditFileError(
-            f"patch with strategy='append' targets non-list at '{patch.key}': "
-            f"got {type(bucket).__name__}"
-        )
+        msg = f"patch with strategy='append' targets non-list at '{patch.key}': got {type(bucket).__name__}"
+        raise EditFileError(msg)
     bucket.append(patch.value)
 
 
 def _cleanup_patch(root: dict[str, Any], patch: Patch) -> bool:
     """Legacy cleanup that deletes the leaf for replace.
 
-    Kept for backward compatibility with callers that don't carry the
-    previous-value snapshot. Prefer :func:`_undo_applied` for any new
-    code path — it restores instead of deleting and so doesn't
-    silently destroy pre-existing user data.
+    Kept for backward compatibility with callers that don't carry the previous-value snapshot. Prefer
+    :func:`_undo_applied` for any new code path — it restores instead of deleting and so doesn't silently destroy
+    pre-existing user data.
 
-    ``replace`` deletes the leaf key. ``append`` scans the list at
-    the path and removes the first deep-equal match. Either way,
-    silent no-op if the target is missing or already gone.
+    ``replace`` deletes the leaf key. ``append`` scans the list at the path and removes the first deep-equal match.
+    Either way, silent no-op if the target is missing or already gone.
     """
     parent, leaf = _walk_readonly(root, _split_key(patch.key))
     if parent is None or leaf not in parent:
@@ -275,14 +248,12 @@ def _cleanup_patch(root: dict[str, Any], patch: Patch) -> bool:
 def _read_value_at_key(root: dict[str, Any], key: str) -> tuple[bool, Any]:
     """Return ``(key_existed, previous_value)`` for the leaf at ``key``.
 
-    ``previous_value`` is the value already present at the dotted
-    path, unwrapped to plain Python so it round-trips cleanly through
-    YAML in the lockfile. If any segment of the path is missing,
-    ``key_existed`` is ``False`` and ``previous_value`` is ``None``.
+    ``previous_value`` is the value already present at the dotted path, unwrapped to plain Python so it round-trips
+    cleanly through YAML in the lockfile. If any segment of the path is missing, ``key_existed`` is ``False`` and
+    ``previous_value`` is ``None``.
 
-    Used by :meth:`EditFileResource.sync_patches` to capture what was
-    there *before* a ``replace`` patch overwrites it, so cleanup can
-    later restore the original value rather than deleting the key.
+    Used by :meth:`EditFileResource.sync_patches` to capture what was there *before* a ``replace`` patch overwrites it,
+    so cleanup can later restore the original value rather than deleting the key.
     """
     parent, leaf = _walk_readonly(root, _split_key(key))
     if parent is None or leaf not in parent:
@@ -300,8 +271,8 @@ def _undo_applied(root: dict[str, Any], applied: AppliedPatch) -> bool:
     * If False, the patch was the one that created the key, so delete
       it (matches legacy ``_cleanup_patch`` behavior).
 
-    For ``append`` patches, scan the list at the path and remove the
-    first deep-equal match. Returns ``True`` if anything changed.
+    For ``append`` patches, scan the list at the path and remove the first deep-equal match. Returns ``True`` if
+    anything changed.
     """
     parent, leaf = _walk_readonly(root, _split_key(applied.key))
     if parent is None or leaf not in parent:
@@ -320,9 +291,8 @@ def _undo_applied(root: dict[str, Any], applied: AppliedPatch) -> bool:
 def _remove_first_equal(bucket: Any, value: Any) -> bool:
     """Remove the first list element deep-equal to ``value`` (post-unwrap).
 
-    Shared by ``append`` cleanup in both :func:`_cleanup_patch` and
-    :func:`_undo_applied`. Returns ``True`` if an element was
-    removed; ``False`` if ``bucket`` isn't a list or no match exists.
+    Shared by ``append`` cleanup in both :func:`_cleanup_patch` and :func:`_undo_applied`. Returns ``True`` if an
+    element was removed; ``False`` if ``bucket`` isn't a list or no match exists.
     """
     if not isinstance(bucket, list):
         return False
@@ -341,13 +311,10 @@ def _remove_first_equal(bucket: Any, value: Any) -> bool:
 def _match_key(p: Patch | AppliedPatch) -> tuple[Any, ...]:
     """Identity tuple for diffing patches across syncs.
 
-    ``replace`` patches identify by ``(key,)`` — same key with a
-    different value is still the same *slot* (an update). ``append``
-    patches identify by ``(key, value)`` — different appended values
-    are distinct list elements.
+    ``replace`` patches identify by ``(key,)`` — same key with a different value is still the same *slot* (an update).
+    ``append`` patches identify by ``(key, value)`` — different appended values are distinct list elements.
 
-    Works on either :class:`Patch` or :class:`AppliedPatch`; both
-    expose ``strategy``, ``key``, and ``value``.
+    Works on either :class:`Patch` or :class:`AppliedPatch`; both expose ``strategy``, ``key``, and ``value``.
     """
     if p.strategy == "replace":
         return ("replace", p.key)
@@ -357,9 +324,8 @@ def _match_key(p: Patch | AppliedPatch) -> tuple[Any, ...]:
 def _hashable_value(value: Any) -> str:
     """Stable string form of a patch value for dict-key identity.
 
-    JSON with ``sort_keys=True`` gives a deterministic representation
-    that's safe for nested dicts/lists/scalars. ``default=str`` is a
-    cheap fallback for anything ``json`` can't natively encode.
+    JSON with ``sort_keys=True`` gives a deterministic representation that's safe for nested dicts/lists/scalars.
+    ``default=str`` is a cheap fallback for anything ``json`` can't natively encode.
     """
     return json.dumps(_unwrap(value), sort_keys=True, default=str)
 
@@ -372,17 +338,15 @@ def _values_equal(a: Any, b: Any) -> bool:
 def _unwrap(value: Any) -> Any:
     """Convert a tomlkit ``Item`` to its plain-Python equivalent.
 
-    :meth:`tomlkit.items.Item.unwrap` already recurses through nested
-    Tables and Arrays, so a single call returns a fully-plain dict /
-    list / scalar. For values that are already plain (JSON-loaded
-    data, lockfile values, primitives) this is a no-op. Used at the
-    boundary between tomlkit-managed data and the lockfile / equality
-    checks, which both want plain Python.
+    :meth:`tomlkit.items.Item.unwrap` already recurses through nested Tables and Arrays, so a single call returns a
+    fully-plain dict / list / scalar. For values that are already plain (JSON-loaded data, lockfile values, primitives)
+    this is a no-op. Used at the boundary between tomlkit-managed data and the lockfile / equality checks, which both
+    want plain Python.
     """
     if hasattr(value, "unwrap"):
         try:
             return value.unwrap()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110  # defensive: any tomlkit wrapper failure falls through to the plain value
             pass
     return value
 
@@ -395,43 +359,36 @@ def _unwrap(value: Any) -> Any:
 def _read_existing(config_path: Path, format_: str) -> dict[str, Any]:
     """Read an existing JSON/TOML config file, or return an empty dict.
 
-    TOML files are parsed with :mod:`tomlkit` so comments, key
-    ordering, and whitespace survive the round-trip. The returned
-    :class:`tomlkit.TOMLDocument` behaves as a dict for navigation
-    and mutation; ``tomlkit.dumps`` later re-emits the document
-    preserving everything we didn't touch.
+    TOML files are parsed with :mod:`tomlkit` so comments, key ordering, and whitespace survive the round-trip. The
+    returned :class:`tomlkit.TOMLDocument` behaves as a dict for navigation and mutation; ``tomlkit.dumps`` later
+    re-emits the document preserving everything we didn't touch.
 
-    JSON has no equivalent format-preserving parser in stdlib;
-    canonicalization on write is unavoidable, but the
-    :func:`_write_if_changed` guard at write time prevents no-op
-    churn on unchanged content.
+    JSON has no equivalent format-preserving parser in stdlib; canonicalization on write is unavoidable, but the
+    :func:`_write_if_changed` guard at write time prevents no-op churn on unchanged content.
     """
     if not config_path.exists():
         return tomlkit.document() if format_ == "toml" else {}
     text = config_path.read_text(encoding="utf-8")
     try:
         data: Any
-        if format_ == "json":
-            data = json.loads(text)
-        else:
-            data = tomlkit.parse(text)
+        data = json.loads(text) if format_ == "json" else tomlkit.parse(text)
     except (json.JSONDecodeError, TOMLKitError, OSError) as exc:
-        raise EditFileError(f"Failed to read {config_path}: {exc}") from exc
+        msg = f"Failed to read {config_path}: {exc}"
+        raise EditFileError(msg) from exc
 
     if not isinstance(data, dict):
-        raise EditFileError(f"{config_path}: top-level must be a mapping")
+        msg = f"{config_path}: top-level must be a mapping"
+        raise EditFileError(msg)
     return data
 
 
 def _dump(data: dict[str, Any], format_: str) -> str:
     """Serialise a dict back to JSON or TOML text.
 
-    For TOML, ``data`` is always a :class:`TOMLDocument` because
-    :func:`_read_existing` returns one (a fresh
-    :func:`tomlkit.document` if the file didn't exist, otherwise the
-    parsed document). ``tomlkit.dumps`` accepts any mapping, but
-    passing the document we already have keeps comments, ordering,
-    and whitespace intact on untouched sections.
+    For TOML, ``data`` is always a :class:`TOMLDocument` because :func:`_read_existing` returns one (a fresh
+    :func:`tomlkit.document` if the file didn't exist, otherwise the parsed document). ``tomlkit.dumps`` accepts any
+    mapping, but passing the document we already have keeps comments, ordering, and whitespace intact on untouched
+    sections.
     """
     if format_ == "json":
         return json.dumps(data, indent=2) + "\n"
@@ -447,16 +404,13 @@ def _dump(data: dict[str, Any], format_: str) -> str:
 class EditFileResource:
     """Applies :class:`Patch` operations to a JSON or TOML config file.
 
-    The file format is inferred from :attr:`path`'s extension. Patches
-    are fully generic — agpack reads the file, applies each patch
-    (replace or append), and writes it back atomically.
+    The file format is inferred from :attr:`path`'s extension. Patches are fully generic — agpack reads the file,
+    applies each patch (replace or append), and writes it back atomically.
 
-    :attr:`vars` is a mapping of substitution variables made available
-    to every patch when this resource is the apply target. They are
-    referenced as ``${name}`` in patch ``key`` strings and recursively
-    in patch ``value`` strings. Target ``vars`` win over environment
-    variables on name collision — the target manifest is the canonical
-    source for per-target structure like bucket names.
+    :attr:`vars` is a mapping of substitution variables made available to every patch when this resource is the apply
+    target. They are referenced as ``${name}`` in patch ``key`` strings and recursively in patch ``value`` strings.
+    Target ``vars`` win over environment variables on name collision — the target manifest is the canonical source for
+    per-target structure like bucket names.
     """
 
     path: str
@@ -478,11 +432,9 @@ class EditFileResource:
     ) -> list[AppliedPatch]:
         """Apply each patch to the config file at :attr:`path`.
 
-        Thin wrapper around :meth:`sync_patches` with no prior state —
-        every patch is treated as freshly added. The captured
-        :attr:`AppliedPatch.previous_value` lets a later cleanup
-        restore exactly what was at each key before the patch ran,
-        instead of silently deleting it.
+        Thin wrapper around :meth:`sync_patches` with no prior state — every patch is treated as freshly added. The
+        captured :attr:`AppliedPatch.previous_value` lets a later cleanup restore exactly what was at each key before
+        the patch ran, instead of silently deleting it.
         """
         return self.sync_patches(
             applied_old=[],
@@ -506,7 +458,7 @@ class EditFileResource:
             strategy=patch.strategy,
         )
 
-    def cleanup_patches(
+    def cleanup_patches(  # noqa: C901
         self,
         patches: list[Patch] | list[AppliedPatch],
         project_root: Path,
@@ -516,15 +468,12 @@ class EditFileResource:
     ) -> None:
         """Undo patches on the config file at :attr:`path`.
 
-        Accepts either :class:`Patch` (legacy delete-on-replace) or
-        :class:`AppliedPatch` (smart restore from
-        ``previous_value``). New callers should pass ``AppliedPatch``
-        so previously-overwritten user values come back; ``Patch``
-        is kept working for callers that don't carry the snapshot.
+        Accepts either :class:`Patch` (legacy delete-on-replace) or :class:`AppliedPatch` (smart restore from
+        ``previous_value``). New callers should pass ``AppliedPatch`` so previously-overwritten user values come back;
+        ``Patch`` is kept working for callers that don't carry the snapshot.
 
-        Silent no-op if the file is missing or a patch has nothing
-        to remove. Format-inference failures (stale lockfile entries
-        pointing at unknown extensions) are absorbed.
+        Silent no-op if the file is missing or a patch has nothing to remove. Format-inference failures (stale lockfile
+        entries pointing at unknown extensions) are absorbed.
         """
         if not patches:
             return
@@ -537,17 +486,13 @@ class EditFileResource:
             format_ = self.format
         except EditFileError as exc:
             if verbose:
-                console.print(
-                    f"  skipping cleanup of {self.path}: {exc}"
-                )
+                console.print(f"  skipping cleanup of {self.path}: {exc}")
             return
 
         if dry_run:
             if verbose:
                 for p in patches:
-                    console.print(
-                        f"[dry-run]   remove {self.path}:{p.key}"
-                    )
+                    console.print(f"[dry-run]   remove {self.path}:{p.key}")
             return
 
         data = _read_existing(config_path, format_)
@@ -564,15 +509,14 @@ class EditFileResource:
             try:
                 write_if_changed(config_path, new_text)
             except (OSError, TypeError, ValueError) as exc:
-                raise EditFileError(
-                    f"Failed to write {config_path}: {exc}"
-                ) from exc
+                msg = f"Failed to write {config_path}: {exc}"
+                raise EditFileError(msg) from exc
 
         if verbose:
             for p in patches:
                 console.print(f"  removed {self.path}:{p.key}")
 
-    def sync_patches(
+    def sync_patches(  # noqa: C901
         self,
         applied_old: list[AppliedPatch],
         desired_new: list[Patch],
@@ -602,13 +546,10 @@ class EditFileResource:
           forward, so removing the patch entirely later still
           restores the user's pre-agpack content.
 
-        The file is only written when the serialised text actually
-        differs from what's on disk — combined with ``tomlkit`` for
-        TOML, this keeps unrelated formatting and comments intact
-        across syncs.
+        The file is only written when the serialised text actually differs from what's on disk — combined with
+        ``tomlkit`` for TOML, this keeps unrelated formatting and comments intact across syncs.
 
-        Returns the list of :class:`AppliedPatch` records to write
-        to the lockfile.
+        Returns the list of :class:`AppliedPatch` records to write to the lockfile.
         """
         resolved_new = [self._resolve_patch(p, env_vars or {}) for p in desired_new]
 
@@ -617,9 +558,7 @@ class EditFileResource:
         if dry_run:
             if verbose:
                 for p in resolved_new:
-                    console.print(
-                        f"[dry-run]   {p.strategy} {self.path}:{p.key}"
-                    )
+                    console.print(f"[dry-run]   {p.strategy} {self.path}:{p.key}")
             return [
                 AppliedPatch(
                     file_path=self.path,
@@ -636,19 +575,14 @@ class EditFileResource:
         try:
             format_ = self.format
         except EditFileError:
-            # Stale lockfile pointing at an unknown extension — drop the
-            # old records. Nothing new to apply or we'd have raised
-            # at parse time.
+            # Stale lockfile pointing at an unknown extension — drop the old records. Nothing new to apply or we'd
+            # have raised at parse time.
             return []
 
         data = _read_existing(config_path, format_)
 
-        old_by_match: dict[tuple[Any, ...], AppliedPatch] = {
-            _match_key(p): p for p in applied_old
-        }
-        new_by_match: dict[tuple[Any, ...], Patch] = {
-            _match_key(p): p for p in resolved_new
-        }
+        old_by_match: dict[tuple[Any, ...], AppliedPatch] = {_match_key(p): p for p in applied_old}
+        new_by_match: dict[tuple[Any, ...], Patch] = {_match_key(p): p for p in resolved_new}
 
         result: list[AppliedPatch] = []
         verbose_lines: list[str] = []
@@ -660,9 +594,8 @@ class EditFileResource:
                 # Unchanged — carry forward without touching the file.
                 result.append(old_p)
                 continue
-            # Same key+strategy, different value → update in-place but
-            # keep the original previous_value so a future removal of
-            # the patch still restores the user's pre-agpack content.
+            # Same key+strategy, different value → update in-place but keep the original previous_value so a future
+            # removal of the patch still restores the user's pre-agpack content.
             _apply_patch(data, new_p)
             result.append(
                 AppliedPatch(
@@ -704,9 +637,8 @@ class EditFileResource:
         try:
             wrote = write_if_changed(config_path, new_text)
         except (OSError, TypeError, ValueError) as exc:
-            raise EditFileError(
-                f"Failed to write {config_path}: {exc}"
-            ) from exc
+            msg = f"Failed to write {config_path}: {exc}"
+            raise EditFileError(msg) from exc
 
         if verbose and wrote:
             for line in verbose_lines:

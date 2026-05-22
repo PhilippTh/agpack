@@ -107,43 +107,40 @@ def _make_config(**deps: list[DependencyEntry]) -> AgpackConfig:
     return AgpackConfig(targets=["claude"], dependencies=dict(deps))
 
 
-def test_resolve_dependency_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_validates_but_does_not_mutate_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Templates with resolvable ${VAR}s stay verbatim on DependencySource.
+
+    The lockfile, progress output, and FetchError messages all read these fields, so substituting in place would leak
+    ${GITHUB_TOKEN}. Actual substitution happens inside fetch_dependency.
+    """
     monkeypatch.setenv("GH_ORG", "my-org")
     dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
     config = _make_config(skills=[dep])
     resolve_config(config, tmp_path)
+    # Template preserved — substitution is deferred to clone time.
     assert config.dependencies["skills"][0].urls == [  # type: ignore[union-attr]
-        "https://github.com/my-org/repo"
+        "https://github.com/${GH_ORG}/repo"
     ]
 
 
-def test_resolve_dependency_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_validates_but_does_not_mutate_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SKILL_NAME", "my-skill")
-    dep = DependencySource(
-        urls=["https://github.com/org/repo"], path="skills/${SKILL_NAME}"
-    )
+    dep = DependencySource(urls=["https://github.com/org/repo"], path="skills/${SKILL_NAME}")
     config = _make_config(skills=[dep])
     resolve_config(config, tmp_path)
-    assert config.dependencies["skills"][0].path == "skills/my-skill"  # type: ignore[union-attr]
+    assert config.dependencies["skills"][0].path == "skills/${SKILL_NAME}"  # type: ignore[union-attr]
 
 
-def test_resolve_dependency_ref(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_validates_but_does_not_mutate_ref(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TAG", "v2.0")
     dep = DependencySource(urls=["https://github.com/org/repo"], ref="${TAG}")
     config = _make_config(commands=[dep])
     resolve_config(config, tmp_path)
-    assert config.dependencies["commands"][0].ref == "v2.0"  # type: ignore[union-attr]
+    assert config.dependencies["commands"][0].ref == "${TAG}"  # type: ignore[union-attr]
 
 
-def test_resolve_multiple_urls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_validates_every_url_in_fallback_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each URL in a fallback list is validated; none are mutated."""
     monkeypatch.setenv("GH_ORG", "my-org")
     dep = DependencySource(
         urls=[
@@ -154,9 +151,17 @@ def test_resolve_multiple_urls(
     config = _make_config(skills=[dep])
     resolve_config(config, tmp_path)
     assert config.dependencies["skills"][0].urls == [  # type: ignore[union-attr]
-        "https://github.com/my-org/repo",
-        "git@github.com:my-org/repo.git",
+        "https://github.com/${GH_ORG}/repo",
+        "git@github.com:${GH_ORG}/repo.git",
     ]
+
+
+def test_resolve_raises_for_missing_var(tmp_path: Path) -> None:
+    """An unresolvable ${VAR} fails at validate time, before any clones."""
+    dep = DependencySource(urls=["https://github.com/${MISSING_VAR_XYZ}/repo"])
+    config = _make_config(skills=[dep])
+    with pytest.raises(Exception, match="MISSING_VAR_XYZ"):
+        resolve_config(config, tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -164,13 +169,11 @@ def test_resolve_multiple_urls(
 # ---------------------------------------------------------------------------
 
 
-def test_patches_pass_through_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_patches_pass_through_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Patches keep their ${...} templates after resolve_config.
 
-    Substitution happens per-target at apply time so target ``vars``
-    can win over env vars on collision (see test_patches.py).
+    Substitution happens per-target at apply time so target ``vars`` can win over env vars on collision (see
+    test_patches.py).
     """
     monkeypatch.setenv("MCP_BIN", "/usr/local/bin/my-server")
     patch = Patch(key="${bucket}.s", value="${MCP_BIN}")
@@ -181,9 +184,7 @@ def test_patches_pass_through_unchanged(
     assert config.dependencies["mcp"][0].value == "${MCP_BIN}"
 
 
-def test_resolve_config_returns_env_table(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_config_returns_env_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """resolve_config returns the merged env table for downstream apply."""
     (tmp_path / ".env").write_text("API_KEY=secret\n")
     monkeypatch.setenv("OTHER", "from-shell")
@@ -198,9 +199,7 @@ def test_resolve_config_returns_env_table(
 # ---------------------------------------------------------------------------
 
 
-def test_three_tier_project_dotenv_wins(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_three_tier_project_dotenv_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MY_VAR", "from-shell")
     global_dir = tmp_path / "global"
     global_dir.mkdir()
@@ -213,15 +212,12 @@ def test_three_tier_project_dotenv_wins(
 
     dep = DependencySource(urls=["https://example.com/${MY_VAR}"])
     config = _make_config(skills=[dep])
-    resolve_config(config, project_dir, global_config=global_cfg)
-    assert config.dependencies["skills"][0].url == (  # type: ignore[union-attr]
-        "https://example.com/from-project"
-    )
+    env = resolve_config(config, project_dir, global_config=global_cfg)
+    # Precedence in the returned env table (consumed at clone time).
+    assert env["MY_VAR"] == "from-project"
 
 
-def test_three_tier_global_dotenv_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_three_tier_global_dotenv_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MY_VAR", "from-shell")
     global_dir = tmp_path / "global"
     global_dir.mkdir()
@@ -232,15 +228,11 @@ def test_three_tier_global_dotenv_fallback(
 
     dep = DependencySource(urls=["https://example.com/${MY_VAR}"])
     config = _make_config(skills=[dep])
-    resolve_config(config, project_dir, global_config=global_cfg)
-    assert config.dependencies["skills"][0].url == (  # type: ignore[union-attr]
-        "https://example.com/from-global"
-    )
+    env = resolve_config(config, project_dir, global_config=global_cfg)
+    assert env["MY_VAR"] == "from-global"
 
 
-def test_three_tier_shell_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_three_tier_shell_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MY_VAR", "from-shell")
     global_dir = tmp_path / "global"
     global_dir.mkdir()
@@ -250,10 +242,8 @@ def test_three_tier_shell_fallback(
 
     dep = DependencySource(urls=["https://example.com/${MY_VAR}"])
     config = _make_config(skills=[dep])
-    resolve_config(config, project_dir, global_config=global_cfg)
-    assert config.dependencies["skills"][0].url == (  # type: ignore[union-attr]
-        "https://example.com/from-shell"
-    )
+    env = resolve_config(config, project_dir, global_config=global_cfg)
+    assert env["MY_VAR"] == "from-shell"
 
 
 def test_three_tier_global_env_applies_to_deps(tmp_path: Path) -> None:
@@ -266,10 +256,8 @@ def test_three_tier_global_env_applies_to_deps(tmp_path: Path) -> None:
 
     dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
     config = _make_config(skills=[dep])
-    resolve_config(config, project_dir, global_config=global_cfg)
-    assert config.dependencies["skills"][0].url == (  # type: ignore[union-attr]
-        "https://github.com/my-global-org/repo"
-    )
+    env = resolve_config(config, project_dir, global_config=global_cfg)
+    assert env["GH_ORG"] == "my-global-org"
 
 
 def test_resolve_empty_config_no_op(tmp_path: Path) -> None:

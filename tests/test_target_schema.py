@@ -45,9 +45,7 @@ def test_non_mapping_raises() -> None:
 
 def test_arbitrary_resource_type_parses() -> None:
     """Resource type names are open — any name with a valid kind works."""
-    target = parse_target_def(
-        {"rules": {"kind": "copy-file", "path": ".mytool/rules"}}
-    )
+    target = parse_target_def({"rules": {"kind": "copy-file", "path": ".mytool/rules"}})
     assert target.resources["rules"] == CopyFileResource(path=".mytool/rules")
 
 
@@ -98,17 +96,13 @@ def test_missing_resource_path_raises() -> None:
 
 def test_resource_unknown_field_raises() -> None:
     with pytest.raises(TargetSchemaError, match="unknown keys"):
-        parse_target_def(
-            {"skills": {"kind": "copy-file", "path": ".x", "extra": 1}}
-        )
+        parse_target_def({"skills": {"kind": "copy-file", "path": ".x", "extra": 1}})
 
 
 def test_edit_file_unknown_path_extension_raises() -> None:
     """Path without .json/.toml suffix can't infer format."""
     with pytest.raises(TargetSchemaError, match="cannot infer"):
-        parse_target_def(
-            {"mcp": {"kind": "edit-file", "path": ".my-mcp-config"}}
-        )
+        parse_target_def({"mcp": {"kind": "edit-file", "path": ".my-mcp-config"}})
 
 
 def test_edit_file_with_vars_parses() -> None:

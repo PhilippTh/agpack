@@ -17,8 +17,8 @@ console = Console()
 class StatusColumn(ProgressColumn):
     """Spinner while a task is running, status icon when finished.
 
-    The icon is read from the task's ``icon`` field so each task can
-    show a different result (e.g. green checkmark vs red cross).
+    The icon is read from the task's ``icon`` field so each task can show a different result (e.g. green checkmark vs
+    red cross).
     """
 
     def __init__(self) -> None:

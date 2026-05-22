@@ -1,9 +1,8 @@
 """``kind: copy-file`` — items deploy as ``<path>/<name>`` (flat files).
 
-Used for resources whose consumer expects a *file per item* on disk
-(Claude commands, agents, Codex prompts). When the source is a
-directory, top-level files become items; if the top level has no
-files, agpack recurses into subdirectories to find them.
+Used for resources whose consumer expects a *file per item* on disk (Claude commands, agents, Codex prompts). When the
+source is a directory, top-level files become items; if the top level has no files, agpack recurses into
+subdirectories to find them.
 """
 
 from __future__ import annotations
@@ -30,9 +29,7 @@ class CopyFileResource:
     path: str
     kind: ClassVar[str] = "copy-file"
 
-    def detect(
-        self, fetch_result: FetchResult, label: str
-    ) -> list[tuple[str, Path]]:
+    def detect(self, fetch_result: FetchResult, label: str) -> list[tuple[str, Path]]:
         local_path = fetch_result.local_path
 
         if local_path.is_dir():
@@ -42,11 +39,12 @@ class CopyFileResource:
                     files.extend(find_top_level_files(sf))
             if not files:
                 article = "an" if label[0] in "aeiou" else "a"
-                raise DeployError(
+                msg = (
                     f"'{fetch_result.source.name}' is a directory but does not "
                     f"contain any {label} files. Provide a path to {article} "
                     f"{label} file or a directory containing {label} files."
                 )
+                raise DeployError(msg)
             return [(f.name, f) for f in files]
 
         return [(fetch_result.source.name, local_path)]

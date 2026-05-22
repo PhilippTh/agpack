@@ -59,18 +59,15 @@ _MAX_FETCH_WORKERS = 8
 def _source_file_count(item_path: Path) -> int:
     """Count source files in a deploy item.
 
-    A file item is 1; a directory item is the number of non-``.git``
-    files in its tree.  Counting on the source side avoids any
-    assumption about target path depth — user-defined targets can put
-    deployments at any nesting level.
+    A file item is 1; a directory item is the number of non-``.git`` files in its tree.  Counting on the source side
+    avoids any assumption about target path depth — user-defined targets can put deployments at any nesting level.
     """
     if item_path.is_file():
         return 1
     return sum(
         1
         for f in item_path.rglob("*")
-        if f.is_file()
-        and not any(p.startswith(".git") for p in f.relative_to(item_path).parts)
+        if f.is_file() and not any(p.startswith(".git") for p in f.relative_to(item_path).parts)
     )
 
 
@@ -82,35 +79,31 @@ class SyncResult:
     verbose_lines: list[str] = field(default_factory=list)
 
 
-def _sync_resource_type(
+def _sync_resource_type(  # noqa: C901  # orchestrator: fetch + deploy + lockfile + progress fan-out
     deps: list[DependencySource],
     resource_type: str,
     target_defs: list[TargetDef],
     project_root: Path,
     new_lockfile: Lockfile,
     progress: Progress,
+    env_vars: dict[str, str],
     *,
     dry_run: bool,
     verbose: bool,
 ) -> SyncResult:
     """Fetch and deploy a list of copy-kind dependencies.
 
-    The resource type's kind (``copy-directory`` / ``copy-file``) is
-    looked up from any target that declares it — all targets sharing
-    the resource type share the kind (validated by
-    :func:`_resource_kinds`). On error, writes a partial lockfile
-    (with what has been synced so far) before raising ClickException.
+    The resource type's kind (``copy-directory`` / ``copy-file``) is looked up from any target that declares it — all
+    targets sharing the resource type share the kind (validated by :func:`_resource_kinds`). On error, writes a partial
+    lockfile (with what has been synced so far) before raising ClickException.
     """
     if not deps:
         return SyncResult()
 
-    # Pick a representative resource for the detect phase — any target
-    # supporting this resource type works, since _resource_kinds
-    # validated they all use the same kind.
+    # Pick a representative resource for the detect phase — any target supporting this resource type works, since
+    # _resource_kinds validated they all use the same kind.
     detect_resource = next(
-        target.resources[resource_type]
-        for target in target_defs
-        if resource_type in target.resources
+        target.resources[resource_type] for target in target_defs if resource_type in target.resources
     )
 
     # Phase 1: parallel fetch — collect all results and errors
@@ -128,7 +121,7 @@ def _sync_resource_type(
         )
 
     with ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(deps))) as executor:
-        futures = {executor.submit(fetch_dependency, dep): dep for dep in deps}
+        futures = {executor.submit(fetch_dependency, dep, env_vars): dep for dep in deps}
         for future in as_completed(futures):
             dep = futures[future]
             tid = task_ids[dep.identity]
@@ -145,11 +138,7 @@ def _sync_resource_type(
             cleanup_fetch(result)
         if not dry_run:
             write_lockfile(project_root, new_lockfile)
-        raise click.ClickException(
-            "\n".join(
-                [f"Failed to fetch {len(errors)} {resource_type} dep(s):"] + errors
-            )
-        )
+        raise click.ClickException("\n".join([f"Failed to fetch {len(errors)} {resource_type} dep(s):"] + errors))
 
     # Phase 3: sequential deploy — update progress rows, collect verbose output
     sync = SyncResult()
@@ -163,9 +152,8 @@ def _sync_resource_type(
             cleanup_fetch(result)
             if not dry_run:
                 write_lockfile(project_root, new_lockfile)
-            raise click.ClickException(
-                f"Error deploying {resource_type} '{dep.name}': {exc}"
-            ) from exc
+            msg = f"Error deploying {resource_type} '{dep.name}': {exc}"
+            raise click.ClickException(msg) from exc
 
         is_expanded = len(items) > 1
 
@@ -193,8 +181,8 @@ def _sync_resource_type(
                     resource_type,
                     target_defs,
                     project_root,
-                    dry_run,
-                    False,
+                    dry_run=dry_run,
+                    verbose=False,
                 )
             except Exception as exc:
                 if is_expanded:
@@ -208,9 +196,8 @@ def _sync_resource_type(
                 cleanup_fetch(result)
                 if not dry_run:
                     write_lockfile(project_root, new_lockfile)
-                raise click.ClickException(
-                    f"Error deploying {resource_type} '{dep.name}': {exc}"
-                ) from exc
+                msg = f"Error deploying {resource_type} '{dep.name}': {exc}"
+                raise click.ClickException(msg) from exc
 
             all_deployed.extend(files)
 
@@ -266,10 +253,8 @@ def _sync_edit_resource(
 ) -> int:
     """Reconcile edit-file patches and record the new applied set.
 
-    Diffs ``patches`` against ``applied_old`` per file and only
-    touches each file once. Returns the count for the summary line
-    (number of currently-desired patches, regardless of whether the
-    file was rewritten).
+    Diffs ``patches`` against ``applied_old`` per file and only touches each file once. Returns the count for the
+    summary line (number of currently-desired patches, regardless of whether the file was rewritten).
     """
     if not patches and not applied_old:
         return 0
@@ -289,9 +274,7 @@ def _sync_edit_resource(
             write_lockfile(project_root, new_lockfile)
         raise click.ClickException(str(exc)) from exc
     if applied_new:
-        new_lockfile.edits.append(
-            EditLockEntry(resource_type=resource_type, applied=applied_new)
-        )
+        new_lockfile.edits.append(EditLockEntry(resource_type=resource_type, applied=applied_new))
     return len(patches)
 
 
@@ -315,24 +298,34 @@ def _resource_kinds(targets: list[TargetDef]) -> dict[str, str]:
                 kinds[rt] = resource.kind
                 sources[rt] = target_label
             elif seen != resource.kind:
-                raise click.ClickException(
+                msg = (
                     f"Resource '{rt}' has conflicting kinds across "
                     f"configured targets: '{seen}' (from {sources[rt]}) vs "
                     f"'{resource.kind}' (from {target_label}). All targets "
                     f"declaring the same resource type must agree on its kind."
                 )
+                raise click.ClickException(msg)
     return kinds
 
 
 def _resolve_targets(config: AgpackConfig) -> list[TargetDef]:
     """Resolve ``config.targets`` to TargetDef objects.
 
-    Precedence: ``config.target_definitions`` (already merged from
-    project + global) → bundled built-in manifests.  Unknown names
-    raise a ``ClickException`` listing both pools.
+    Precedence: ``config.target_definitions`` (already merged from project + global) → bundled built-in manifests.
+    Unknown names raise a ``ClickException`` listing both pools.
+
+    Duplicate names in ``config.targets`` are deduplicated with a warning — listing the same target twice would
+    otherwise double-apply every ``append`` patch in :func:`sync_edit_resource`.
     """
     resolved: list[TargetDef] = []
+    seen: set[str] = set()
     for name in config.targets:
+        if name in seen:
+            console.print(
+                f"[yellow]warning[/yellow]: target '{name}' is listed multiple times in 'targets:'; using it once."
+            )
+            continue
+        seen.add(name)
         if name in config.target_definitions:
             resolved.append(config.target_definitions[name])
             continue
@@ -341,13 +334,14 @@ def _resolve_targets(config: AgpackConfig) -> list[TargetDef]:
         except TargetSchemaError as exc:
             builtins = ", ".join(list_builtins())
             user_defs = ", ".join(sorted(config.target_definitions)) or "(none)"
-            raise click.ClickException(
+            msg = (
                 f"Unknown target '{name}'.\n"
                 f"  Built-in targets: {builtins}\n"
                 f"  Your target_definitions: {user_defs}\n"
                 "Add an entry under 'target_definitions' in agpack.yml to "
                 "define a custom target."
-            ) from exc
+            )
+            raise click.ClickException(msg) from exc
     return resolved
 
 
@@ -358,15 +352,14 @@ def _load_and_merge_global(
 ) -> tuple[AgpackConfig, GlobalConfig | None]:
     """Load the global config and merge it into *config*.
 
-    Returns the (possibly merged) config and the raw global config
-    (needed later for ``.env`` resolution).  If the global config
-    doesn't exist or is disabled, the original config is returned
-    unchanged together with ``None``.
+    Returns the (possibly merged) config and the raw global config (needed later for ``.env`` resolution).  If the
+    global config doesn't exist or is disabled, the original config is returned unchanged together with ``None``.
     """
     try:
         global_cfg = load_global_config()
     except ConfigError as exc:
-        raise click.ClickException(f"Global config error: {exc}") from exc
+        msg = f"Global config error: {exc}"
+        raise click.ClickException(msg) from exc
 
     if global_cfg is not None:
         if verbose:
@@ -397,7 +390,7 @@ def main() -> None:
     is_flag=True,
     help="Ignore the global config file.",
 )
-def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> None:
+def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> None:  # noqa: C901
     """Fetch all dependencies and deploy to all target directories."""
     cfg_path = Path(config_path).resolve()
     project_root = cfg_path.parent
@@ -414,13 +407,10 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     if not no_global and config.use_global:
         config, global_cfg = _load_and_merge_global(config, verbose=verbose)
 
-    # 3. Resolve ${VAR} references in fetch dependencies; patches
-    # are resolved per-target at apply time using `env_vars` plus the
-    # target's own `vars`.
+    # 3. Resolve ${VAR} references in fetch dependencies; patches are resolved per-target at apply time using
+    # `env_vars` plus the target's own `vars`.
     try:
-        env_vars = resolve_config(
-            config, project_root, global_config=global_cfg, verbose=verbose
-        )
+        env_vars = resolve_config(config, project_root, global_config=global_cfg, verbose=verbose)
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -428,9 +418,8 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     target_defs = _resolve_targets(config)
     resource_kinds = _resource_kinds(target_defs)
 
-    # 5. Read existing lockfile and build the set of current
-    # fetch-dependency identities (copy kinds only — patches are
-    # tracked separately under lockfile.edits).
+    # 5. Read existing lockfile and build the set of current fetch-dependency identities (copy kinds only — patches
+    # are tracked separately under lockfile.edits).
     old_lockfile = read_lockfile(project_root)
     current_identities: set[str] = set()
     for deps_list in config.dependencies.values():
@@ -443,23 +432,18 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     for entry in removed_deps:
         if verbose or dry_run:
             console.print(f"Removing {entry.type} '{entry.identity}'...")
-        cleanup_deployed_files(
-            entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose
-        )
+        cleanup_deployed_files(entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose)
 
-    # 7. Index old applied edits by resource type. We don't unapply
-    # them here — sync_edit_resource diffs against this and touches
-    # each file at most once. Files only get written when their text
-    # actually changes (combined with tomlkit for TOML, comments and
-    # key ordering on untouched sections survive across syncs).
+    # 7. Index old applied edits by resource type. We don't unapply them here — sync_edit_resource diffs against this
+    # and touches each file at most once. Files only get written when their text actually changes (combined with
+    # tomlkit for TOML, comments and key ordering on untouched sections survive across syncs).
     old_applied_by_rt: dict[str, list[AppliedPatch]] = {}
     if old_lockfile is not None:
         for edit in old_lockfile.edits:
             old_applied_by_rt[edit.resource_type] = list(edit.applied)
 
-    # 8. Fetch and deploy dependencies in YAML order. Copy kinds go
-    # through fetch+detect+deploy; edit-file kinds run the diff-based
-    # sync against the lockfile's prior applied state.
+    # 8. Fetch and deploy dependencies in YAML order. Copy kinds go through fetch+detect+deploy; edit-file kinds run
+    # the diff-based sync against the lockfile's prior applied state.
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
     all_verbose_lines: list[str] = []
@@ -468,7 +452,17 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
         for resource_type in config.dependencies:
             kind = resource_kinds.get(resource_type)
             if kind is None:
-                # Configured but no target supports it — silently skip.
+                # Configured but no target supports it. With open-ended resource type names this is almost always a
+                # typo (``mpc`` instead of ``mcp``), so warn loudly rather than silently dropping the entries.
+                if config.dependencies[resource_type]:
+                    known = ", ".join(sorted(resource_kinds)) or "(none)"
+                    console.print(
+                        f"[yellow]warning[/yellow]: dependency "
+                        f"'{resource_type}' is configured but no target "
+                        f"declares it — entries will be skipped. "
+                        f"Resource types declared by current targets: "
+                        f"{known}."
+                    )
                 continue
             entries = config.dependencies[resource_type]
             if kind == "edit-file":
@@ -493,25 +487,21 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                 project_root,
                 new_lockfile,
                 progress,
+                env_vars,
                 dry_run=dry_run,
                 verbose=verbose,
             )
             counts[resource_type] = sync.count
             all_verbose_lines.extend(sync.verbose_lines)
 
-    # 8b. Resource types that existed in the old lockfile but are gone
-    # from the current config — unapply every patch they recorded so
-    # the user's structured config files don't keep stale agpack content.
+    # 8b. Resource types that existed in the old lockfile but are gone from the current config — unapply every patch
+    # they recorded so the user's structured config files don't keep stale agpack content.
     for resource_type, leftovers in old_applied_by_rt.items():
         if not leftovers:
             continue
         if verbose or dry_run:
-            console.print(
-                f"Removing all '{resource_type}' patches (no longer in config)..."
-            )
-        cleanup_orphaned_edits(
-            leftovers, project_root, dry_run=dry_run, verbose=verbose
-        )
+            console.print(f"Removing all '{resource_type}' patches (no longer in config)...")
+        cleanup_orphaned_edits(leftovers, project_root, dry_run=dry_run, verbose=verbose)
 
     for line in all_verbose_lines:
         console.print(line)
@@ -523,10 +513,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     # 10. Summary — one chip per resource type that had configured deps.
     elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
-    parts = [
-        f"[bold]{counts.get(rt, 0)}[/bold] {rt}"
-        for rt in config.dependencies
-    ]
+    parts = [f"[bold]{counts.get(rt, 0)}[/bold] {rt}" for rt in config.dependencies]
     summary = ", ".join(parts) if parts else "[dim]nothing to deploy[/dim]"
     targets = f"[bold]{target_count}[/bold] targets"
     console.print()
@@ -546,7 +533,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     is_flag=True,
     help="Ignore the global config file.",
 )
-def status(config_path: str, no_global: bool) -> None:
+def status(config_path: str, no_global: bool) -> None:  # noqa: C901
     """Show the current state of installed resources vs the config."""
     cfg_path = Path(config_path).resolve()
     project_root = cfg_path.parent
@@ -602,8 +589,7 @@ def status(config_path: str, no_global: bool) -> None:
                     # Patch entry — synced if the lockfile recorded it.
                     recorded = edits_by_type.get(resource_type)
                     synced = recorded is not None and any(
-                        ap.key == dep.key and ap.strategy == dep.strategy
-                        and ap.value == dep.value
+                        ap.key == dep.key and ap.strategy == dep.strategy and ap.value == dep.value
                         for ap in recorded.applied
                     )
                     mark = "[green]✓[/green]" if synced else "[red]✗[/red]"
@@ -784,15 +770,12 @@ dependencies:
 # ---------------------------------------------------------------------------
 
 
-def _load_user_target_definitions(
-    config_path: str, no_global: bool
-) -> dict[str, TargetDef]:
+def _load_user_target_definitions(config_path: str, no_global: bool) -> dict[str, TargetDef]:
     """Load target_definitions from project + global config.
 
-    A missing project config is fine (the user may not have run ``init``
-    yet) but a broken one is not — config errors are propagated so the
-    user sees the parse failure instead of silently losing their
-    target_definitions.  Project entries win by name over global.
+    A missing project config is fine (the user may not have run ``init`` yet) but a broken one is not — config errors
+    are propagated so the user sees the parse failure instead of silently losing their target_definitions.  Project
+    entries win by name over global.
     """
     cfg_path = Path(config_path).resolve()
     project_defs: dict[str, TargetDef] = {}
@@ -812,7 +795,8 @@ def _load_user_target_definitions(
     try:
         global_cfg = load_global_config()
     except ConfigError as exc:
-        raise click.ClickException(f"Global config error: {exc}") from exc
+        msg = f"Global config error: {exc}"
+        raise click.ClickException(msg) from exc
 
     if global_cfg is None:
         return project_defs
@@ -823,13 +807,11 @@ def _load_user_target_definitions(
     return merged
 
 
-def _load_raw_target_definition(
-    name: str, config_path: str, no_global: bool
-) -> dict[str, Any] | None:
+def _load_raw_target_definition(name: str, config_path: str, no_global: bool) -> dict[str, Any] | None:
     """Re-read the raw YAML for a user-defined target, or None if absent.
 
-    Used by ``targets show`` so we can print exactly what the user wrote
-    rather than round-tripping through TargetDef and reconstructing.
+    Used by ``targets show`` so we can print exactly what the user wrote rather than round-tripping through TargetDef
+    and reconstructing.
     """
     cfg_path = Path(config_path).resolve()
     include_global = not no_global
@@ -853,11 +835,7 @@ def _load_raw_target_definition(
 
 def _read_builtin_yaml(name: str) -> str:
     """Return the on-disk YAML text for a built-in target."""
-    return (
-        importlib_files("agpack.builtin_targets")
-        .joinpath(f"{name}.yml")
-        .read_text(encoding="utf-8")
-    )
+    return importlib_files("agpack.builtin_targets").joinpath(f"{name}.yml").read_text(encoding="utf-8")
 
 
 def _resource_summary(target: TargetDef) -> str:
@@ -906,10 +884,7 @@ def targets_list(config_path: str, no_global: bool) -> None:
     for name in all_names:
         if name in user_defs:
             target = user_defs[name]
-            if name in builtin_names:
-                source = "[yellow]user (overrides built-in)[/yellow]"
-            else:
-                source = "[cyan]user[/cyan]"
+            source = "[yellow]user (overrides built-in)[/yellow]" if name in builtin_names else "[cyan]user[/cyan]"
         else:
             target = load_builtin(name)
             source = "[dim]built-in[/dim]"
@@ -935,14 +910,11 @@ def targets_list(config_path: str, no_global: bool) -> None:
 def targets_show(name: str, config_path: str, no_global: bool) -> None:
     """Print the resolved manifest for *name* as YAML.
 
-    Useful as a starting point for copying into ``target_definitions:``
-    to customise a built-in.
+    Useful as a starting point for copying into ``target_definitions:`` to customise a built-in.
     """
     raw = _load_raw_target_definition(name, config_path, no_global)
     if raw is not None:
-        click.echo(
-            yaml.safe_dump(raw, default_flow_style=False, sort_keys=False), nl=False
-        )
+        click.echo(yaml.safe_dump(raw, default_flow_style=False, sort_keys=False), nl=False)
         return
 
     if name in list_builtins():
@@ -952,8 +924,5 @@ def targets_show(name: str, config_path: str, no_global: bool) -> None:
     user_defs = _load_user_target_definitions(config_path, no_global)
     builtins = ", ".join(list_builtins())
     user_names = ", ".join(sorted(user_defs)) or "(none)"
-    raise click.ClickException(
-        f"Unknown target '{name}'.\n"
-        f"  Built-in targets: {builtins}\n"
-        f"  Your target_definitions: {user_names}"
-    )
+    msg = f"Unknown target '{name}'.\n  Built-in targets: {builtins}\n  Your target_definitions: {user_names}"
+    raise click.ClickException(msg)

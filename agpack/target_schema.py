@@ -1,14 +1,11 @@
 """Target manifest schema — parser and validator.
 
-A *target* describes the filesystem location of each resource type a
-single AI tool consumes. Each top-level key is the resource type name
-(``skills``, ``commands``, ``mcp``, ``settings``, anything user-defined);
-each value declares a :data:`~agpack.kinds.ResourceDef` via the ``kind:``
-field.
+A *target* describes the filesystem location of each resource type a single AI tool consumes. Each top-level key is
+the resource type name (``skills``, ``commands``, ``mcp``, ``settings``, anything user-defined); each value declares a
+:data:`~agpack.kinds.ResourceDef` via the ``kind:`` field.
 
-The actual deploy/cleanup behavior lives on the kind classes in
-:mod:`agpack.kinds`; this module is only responsible for turning YAML
-into well-typed resource definitions.
+The actual deploy/cleanup behavior lives on the kind classes in :mod:`agpack.kinds`; this module is only responsible
+for turning YAML into well-typed resource definitions.
 """
 
 from __future__ import annotations
@@ -48,9 +45,8 @@ _VALID_KINDS = ("copy-directory", "copy-file", "edit-file")
 class TargetDef:
     """A fully-resolved target manifest.
 
-    The target's name is the YAML filename (built-ins) or the mapping
-    key under ``target_definitions:`` in ``agpack.yml``; it is not
-    stored on the dataclass.
+    The target's name is the YAML filename (built-ins) or the mapping key under ``target_definitions:`` in
+    ``agpack.yml``; it is not stored on the dataclass.
     """
 
     resources: dict[str, ResourceDef] = field(default_factory=dict)
@@ -63,24 +59,23 @@ class TargetDef:
 
 def _require_mapping(value: Any, context: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise TargetSchemaError(
-            f"{context}: expected a mapping, got {type(value).__name__}"
-        )
+        msg = f"{context}: expected a mapping, got {type(value).__name__}"
+        raise TargetSchemaError(msg)
     return value
 
 
 def _require_string(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value:
-        raise TargetSchemaError(f"{context}: expected a non-empty string")
+        msg = f"{context}: expected a non-empty string"
+        raise TargetSchemaError(msg)
     return value
 
 
 def _reject_extra(known: set[str], data: dict[str, Any], context: str) -> None:
     extra = set(data) - known
     if extra:
-        raise TargetSchemaError(
-            f"{context}: unknown keys {sorted(extra)}; valid: {sorted(known)}"
-        )
+        msg = f"{context}: unknown keys {sorted(extra)}; valid: {sorted(known)}"
+        raise TargetSchemaError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -107,24 +102,21 @@ def _parse_edit_file(data: dict[str, Any], context: str) -> EditFileResource:
     try:
         infer_config_format(path)
     except Exception as exc:
-        raise TargetSchemaError(f"{context}.path: {exc}") from exc
+        msg = f"{context}.path: {exc}"
+        raise TargetSchemaError(msg) from exc
 
     raw_vars = data.get("vars", {})
     if not isinstance(raw_vars, dict):
-        raise TargetSchemaError(
-            f"{context}.vars: must be a mapping, got {type(raw_vars).__name__}"
-        )
+        msg = f"{context}.vars: must be a mapping, got {type(raw_vars).__name__}"
+        raise TargetSchemaError(msg)
     target_vars: dict[str, str] = {}
     for key, value in raw_vars.items():
         if not isinstance(key, str) or not key:
-            raise TargetSchemaError(
-                f"{context}.vars: keys must be non-empty strings, got {key!r}"
-            )
+            msg = f"{context}.vars: keys must be non-empty strings, got {key!r}"
+            raise TargetSchemaError(msg)
         if not isinstance(value, str):
-            raise TargetSchemaError(
-                f"{context}.vars.{key}: value must be a string, "
-                f"got {type(value).__name__}"
-            )
+            msg = f"{context}.vars.{key}: value must be a string, got {type(value).__name__}"
+            raise TargetSchemaError(msg)
         target_vars[key] = value
 
     return EditFileResource(path=path, vars=target_vars)
@@ -139,21 +131,22 @@ def _parse_resource(raw: Any, context: str) -> ResourceDef:
     data = _require_mapping(raw, context)
 
     if "layout" in data:
-        raise TargetSchemaError(
+        msg = (
             f"{context}.layout: deprecated — use 'kind: copy-directory' or "
             f"'kind: copy-file' instead. (Was: layout: {data['layout']!r}.)"
         )
+        raise TargetSchemaError(msg)
     if "merge" in data:
-        raise TargetSchemaError(
+        msg = (
             f"{context}.merge: removed — edit-file resources now take only "
             f"'kind' and 'path'. Patches live under dependencies in agpack.yml."
         )
+        raise TargetSchemaError(msg)
 
     kind = data.get("kind")
     if kind not in _VALID_KINDS:
-        raise TargetSchemaError(
-            f"{context}.kind: must be one of {_VALID_KINDS}, got {kind!r}"
-        )
+        msg = f"{context}.kind: must be one of {_VALID_KINDS}, got {kind!r}"
+        raise TargetSchemaError(msg)
 
     if kind == "copy-directory":
         return _parse_copy_directory(data, context)
@@ -170,10 +163,8 @@ def _parse_resource(raw: Any, context: str) -> ResourceDef:
 def parse_target_def(raw: Any, context: str = "target") -> TargetDef:
     """Parse a target manifest from a raw dict (loaded YAML).
 
-    Each top-level key is a resource type name (``skills`` /
-    ``commands`` / ``mcp`` / any user-defined name). Each block must
-    declare a ``kind:`` (``copy-directory`` / ``copy-file`` /
-    ``edit-file``) and a ``path:``.
+    Each top-level key is a resource type name (``skills`` / ``commands`` / ``mcp`` / any user-defined name). Each
+    block must declare a ``kind:`` (``copy-directory`` / ``copy-file`` / ``edit-file``) and a ``path:``.
 
     Raises:
         TargetSchemaError: If the manifest is malformed.
@@ -183,9 +174,8 @@ def parse_target_def(raw: Any, context: str = "target") -> TargetDef:
     resources: dict[str, ResourceDef] = {}
     for key, value in data.items():
         if not isinstance(key, str) or not key:
-            raise TargetSchemaError(
-                f"{context}: keys must be non-empty strings, got {key!r}"
-            )
+            msg = f"{context}: keys must be non-empty strings, got {key!r}"
+            raise TargetSchemaError(msg)
         resources[key] = _parse_resource(value, f"{context}.{key}")
 
     return TargetDef(resources=resources)

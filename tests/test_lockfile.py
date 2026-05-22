@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from agpack import __version__
@@ -77,17 +78,29 @@ class TestReadLockfile:
         assert edit.applied[0].strategy == "replace"
         assert edit.applied[0].value == {"command": "npx"}
 
-    def test_returns_none_for_corrupt_yaml(self, tmp_path: Path) -> None:
+    def test_returns_none_for_corrupt_yaml(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _write_raw(tmp_path, "{{{{not: valid: yaml::::")
         assert read_lockfile(tmp_path) is None
+        # Must warn loudly — a silent reset would re-snapshot previous_value from agpack-written content and break
+        # surgical cleanup.
+        out = capsys.readouterr().out
+        assert "warning" in out.lower()
+        assert "corrupt" in out.lower()
 
-    def test_returns_none_for_non_dict_yaml(self, tmp_path: Path) -> None:
+    def test_returns_none_for_non_dict_yaml(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _write_raw(tmp_path, "- just\n- a\n- list\n")
         assert read_lockfile(tmp_path) is None
+        out = capsys.readouterr().out
+        assert "warning" in out.lower()
+        assert "unexpected shape" in out.lower()
 
-    def test_handles_empty_file(self, tmp_path: Path) -> None:
+    def test_handles_empty_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _write_raw(tmp_path, "")
         assert read_lockfile(tmp_path) is None
+        # Empty file is also a shape problem — warn so the user knows we won't restore previous_value snapshots from
+        # it.
+        out = capsys.readouterr().out
+        assert "warning" in out.lower()
 
     def test_skips_non_dict_entries_in_installed(self, tmp_path: Path) -> None:
         data = {
@@ -264,9 +277,7 @@ class TestFindRemovedDependencies:
 
 class TestInstalledEntryIdentity:
     def test_identity_without_path(self) -> None:
-        e = InstalledEntry(
-            url="https://github.com/o/r", path=None, resolved_ref="x", type="skills"
-        )
+        e = InstalledEntry(url="https://github.com/o/r", path=None, resolved_ref="x", type="skills")
         assert e.identity == "https://github.com/o/r"
 
     def test_identity_with_path(self) -> None:

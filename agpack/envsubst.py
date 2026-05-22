@@ -11,17 +11,16 @@ from agpack.config import ConfigError
 from agpack.config import DependencySource
 from agpack.config import GlobalConfig
 
-# See agpack.kinds._VAR_PATTERN — same semantics: ``$$`` is an escape
-# that produces a literal ``$``; ``${name}`` substitutes from env.
+# See agpack.kinds._VAR_PATTERN — same semantics: ``$$`` is an escape that produces a literal ``$``; ``${name}``
+# substitutes from env.
 _VAR_PATTERN = re.compile(r"\$\$|\$\{([^}]+)}")
 
 
 def load_dotenv(project_root: Path) -> dict[str, str]:
     """Load variables from a ``.env`` file in *project_root*.
 
-    Returns an empty dict when the file does not exist.
-    Supports ``KEY=VALUE``, optional quoting, ``# comments``,
-    blank lines, and an optional ``export`` prefix.
+    Returns an empty dict when the file does not exist. Supports ``KEY=VALUE``, optional quoting, ``# comments``, blank
+    lines, and an optional ``export`` prefix.
     """
     env_path = project_root / ".env"
     if not env_path.exists():
@@ -68,11 +67,12 @@ def resolve_env_vars(value: str, env: dict[str, str], *, context: str = "") -> s
             return env[var_name]
         except KeyError:
             hint = context + ": " if context else ""
-            raise ConfigError(
+            msg = (
                 f"{hint}environment variable '{var_name}' is not set. "
                 f"Define it in .env or your shell environment, or use "
                 f"$${{{var_name}}} to write a literal ${{{var_name}}}."
-            ) from None
+            )
+            raise ConfigError(msg) from None
 
     return _VAR_PATTERN.sub(_replace, value)
 
@@ -103,9 +103,7 @@ def build_env(
         if global_dotenv:
             console.print(f"  Loaded {len(global_dotenv)} variable(s) from global .env")
         if project_dotenv:
-            console.print(
-                f"  Loaded {len(project_dotenv)} variable(s) from project .env"
-            )
+            console.print(f"  Loaded {len(project_dotenv)} variable(s) from project .env")
 
     return merged
 
@@ -117,17 +115,20 @@ def resolve_config(
     global_config: GlobalConfig | None = None,
     verbose: bool = False,
 ) -> dict[str, str]:
-    """Resolve ``${VAR}`` references in fetch dependencies in-place.
+    """Validate that every ``${VAR}`` in fetch dependencies is resolvable.
 
-    Only fetch (copy-kind) dependency fields — URLs, paths, refs — are
-    substituted here, because they have no per-target context. Patch
-    entries (edit-file kind) are *not* substituted at load time: their
-    ``${name}`` references are resolved per-target at apply time so
-    that target ``vars`` can win over environment variables (see
+    Walks every URL / path / ref template in copy-kind dependencies and resolves it eagerly so missing variables fail
+    fast (before any slow git clones), but **does not mutate** the entries — the template strings stay verbatim on
+    :class:`DependencySource` so they can be written to the lockfile, progress lines, and error messages without
+    leaking secrets like ``${GITHUB_TOKEN}``. Substitution actually happens inside
+    :func:`agpack.fetcher.fetch_dependency`, where the resolved URL is used for the one ``git clone`` call and then
+    discarded.
+
+    Patch entries (edit-file kind) are *not* substituted at load time: their ``${name}`` references are resolved
+    per-target at apply time so that target ``vars`` can win over environment variables (see
     :meth:`agpack.kinds.EditFileResource.apply_patches`).
 
-    Returns the merged environment table for downstream apply-time
-    substitution.
+    Returns the merged environment table for downstream apply-time substitution.
 
     Resolution order (highest priority first):
 
@@ -141,12 +142,11 @@ def resolve_config(
         for entry in entries:
             if isinstance(entry, DependencySource):
                 ctx = f"dependency '{entry.name}'"
-                entry.urls = [
-                    resolve_env_vars(u, merged, context=ctx) for u in entry.urls
-                ]
+                for u in entry.urls:
+                    resolve_env_vars(u, merged, context=ctx)
                 if entry.path is not None:
-                    entry.path = resolve_env_vars(entry.path, merged, context=ctx)
+                    resolve_env_vars(entry.path, merged, context=ctx)
                 if entry.ref is not None:
-                    entry.ref = resolve_env_vars(entry.ref, merged, context=ctx)
+                    resolve_env_vars(entry.ref, merged, context=ctx)
 
     return merged

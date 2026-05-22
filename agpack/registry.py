@@ -1,13 +1,10 @@
 """Target manifest discovery and loading.
 
-Built-in target manifests ship as YAML files inside the package
-(``agpack/builtin_targets/``).  This module loads them via
-``importlib.resources`` so they continue to work when agpack is installed
-from a wheel.
+Built-in target manifests ship as YAML files inside the package (``agpack/builtin_targets/``).  This module loads them
+via ``importlib.resources`` so they continue to work when agpack is installed from a wheel.
 
-The full resolution chain (project ``target_definitions`` →
-global ``target_definitions`` → built-in) lives in a later commit; this
-module currently exposes only the built-in surface.
+The full resolution chain (project ``target_definitions`` → global ``target_definitions`` → built-in) lives in a later
+commit; this module currently exposes only the built-in surface.
 """
 
 from __future__ import annotations
@@ -46,16 +43,14 @@ def load_builtin(name: str) -> TargetDef:
     resource = files(_BUILTIN_PACKAGE).joinpath(f"{name}{_BUILTIN_SUFFIX}")
     if not resource.is_file():
         available = ", ".join(list_builtins())
-        raise TargetSchemaError(
-            f"No built-in target named '{name}'. Available: {available}"
-        )
+        msg = f"No built-in target named '{name}'. Available: {available}"
+        raise TargetSchemaError(msg)
 
     try:
         data = yaml.safe_load(resource.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise TargetSchemaError(
-            f"Failed to parse built-in target '{name}': {exc}"
-        ) from exc
+        msg = f"Failed to parse built-in target '{name}': {exc}"
+        raise TargetSchemaError(msg) from exc
 
     return parse_target_def(data, context=f"builtin_targets/{name}{_BUILTIN_SUFFIX}")
 
