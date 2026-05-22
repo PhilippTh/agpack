@@ -141,7 +141,14 @@ def _walk_readonly(root: dict[str, Any], segments: list[str]) -> tuple[dict[str,
 
 
 def _apply_patch(root: dict[str, Any], patch: Patch) -> None:
-    """Apply ``patch`` to ``root`` in-place."""
+    """Apply ``patch`` to ``root`` in-place — idempotent for both strategies.
+
+    ``replace`` assigns to the leaf (the same assignment is a no-op on re-apply). ``append`` only adds the value when
+    no existing list element already hashes to the same value, so re-applying a patch that's already present is a
+    no-op. This idempotence is what makes committing the lockfile + cloning fresh work: when ``sync_patches`` re-walks
+    its diff and finds an "unchanged" entry, calling ``_apply_patch`` ensures the destination file actually has the
+    entry without churning files that already do.
+    """
     segments = _split_key(patch.key)
     parent, leaf = _walk_to_parent(root, segments)
 
@@ -154,14 +161,18 @@ def _apply_patch(root: dict[str, Any], patch: Patch) -> None:
     if not isinstance(bucket, list):
         msg = f"patch with strategy='append' targets non-list at '{patch.key}': got {type(bucket).__name__}"
         raise EditFileError(msg)
+    new_hash = value_hash(patch.value)
+    for item in bucket:
+        if value_hash(item) == new_hash:
+            return  # already present — keep idempotent
     bucket.append(patch.value)
 
 
-def _undo_resolved(root: dict[str, Any], strategy: str, resolved_key: str, value_hash: str) -> bool:
+def _undo_resolved(root: dict[str, Any], strategy: str, resolved_key: str, expected_hash: str) -> bool:
     """Reverse one applied patch on ``root`` in-place.
 
-    The caller pre-resolves ``${var}`` substitutions in the key; the lockfile stores keys unresolved (so secret
-    interpolations never land on disk) and a SHA256 hash of the resolved value.
+    The caller pre-resolves ``${var}`` substitutions in the key; the lockfile stores resolved keys and a SHA256 hash
+    of the resolved value (:func:`value_hash`).
 
     ``replace`` deletes the leaf. ``append`` walks the list at the path, hashes each element, and removes the first
     hash-match. Silent no-op if the target is missing or already gone.
@@ -178,7 +189,7 @@ def _undo_resolved(root: dict[str, Any], strategy: str, resolved_key: str, value
     if not isinstance(bucket, list):
         return False
     for i, item in enumerate(bucket):
-        if value_hash(item) == value_hash:
+        if value_hash(item) == expected_hash:
             del bucket[i]
             return True
     return False
@@ -426,7 +437,12 @@ class EditFileResource:
             rp = new_by_match[mk]
             new_hash = value_hash(rp.value)
             if ap.value_hash == new_hash:
-                # Unchanged — carry forward without touching the file.
+                # Lockfile and config agree this patch is current. We still call ``_apply_patch`` so the destination
+                # file actually contains the entry — covers the committed-lockfile + fresh-clone case where the
+                # lockfile records a patch but the destination file was never created on this machine.
+                # ``_apply_patch`` is idempotent (replace = assign; append checks for an existing hash-match), so this
+                # is a no-op when the file already has the entry — ``write_if_changed`` will skip the disk write.
+                _apply_patch(data, rp)
                 result.append(ap)
                 continue
             # ``replace`` with same key, different value: apply the new value.

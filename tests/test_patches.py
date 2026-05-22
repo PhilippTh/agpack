@@ -506,6 +506,63 @@ class TestIdempotency:
         )
         assert not (tmp_path / ".mcp.json").exists()
 
+    def test_fresh_clone_with_committed_lockfile_reapplies_replace(self, tmp_path: Path) -> None:
+        """Lockfile says applied, destination file is missing (e.g. fresh clone of a repo that committed the lock):
+        sync must reconstruct the file. The "unchanged" diff branch calls ``_apply_patch`` so the entry actually
+        lands on disk."""
+        resource = EditFileResource(path=".mcp.json")
+        patch = Patch(key="mcpServers.fs", value={"command": "npx"})
+        applied_old = [
+            AppliedPatch(
+                file_path=".mcp.json",
+                key="mcpServers.fs",
+                strategy="replace",
+                value_hash=value_hash({"command": "npx"}),
+            )
+        ]
+        assert not (tmp_path / ".mcp.json").exists()  # fresh clone — file absent
+        result = resource.sync_patches(
+            applied_old=applied_old,
+            desired_new=[patch],
+            project_root=tmp_path,
+        )
+        # The diff sees "unchanged" (same hash on both sides) and carries forward the AppliedPatch.
+        assert len(result) == 1
+        assert result[0].value_hash == applied_old[0].value_hash
+        # But the file is now actually written with the patch applied.
+        assert json.loads((tmp_path / ".mcp.json").read_text()) == {"mcpServers": {"fs": {"command": "npx"}}}
+
+    def test_fresh_clone_with_committed_lockfile_reapplies_append(self, tmp_path: Path) -> None:
+        """Same scenario for append patches: stored entry, file missing, sync recreates the list."""
+        resource = EditFileResource(path=".claude/settings.json")
+        patch = Patch(
+            key="hooks.PreToolUse",
+            value={"matcher": "Write", "hooks": [{"type": "command"}]},
+            strategy="append",
+        )
+        applied_old = [
+            AppliedPatch(
+                file_path=".claude/settings.json",
+                key="hooks.PreToolUse",
+                strategy="append",
+                value_hash=value_hash(patch.value),
+            )
+        ]
+        resource.sync_patches(
+            applied_old=applied_old,
+            desired_new=[patch],
+            project_root=tmp_path,
+        )
+        cfg = json.loads((tmp_path / ".claude/settings.json").read_text())
+        assert cfg == {"hooks": {"PreToolUse": [{"matcher": "Write", "hooks": [{"type": "command"}]}]}}
+
+    def test_apply_patch_append_idempotent(self) -> None:
+        """Direct ``_apply_patch`` call with an append whose value already exists in the list is a no-op."""
+        root: dict = {"hooks": ["a", "b"]}
+        _apply_patch(root, Patch(key="hooks", value="b", strategy="append"))
+        # Hash-match — no duplicate added.
+        assert root == {"hooks": ["a", "b"]}
+
 
 # ---------------------------------------------------------------------------
 # Error paths
