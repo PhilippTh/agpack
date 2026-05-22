@@ -1,0 +1,12 @@
+# Windsurf (Codeium)
+
+skills:
+  kind: copy-directory
+  path: .windsurf/skills
+
+commands:
+  kind: copy-file
+  path: .windsurf/workflows
+
+# MCP omitted: Windsurf MCP is global only
+# (~/.codeium/windsurf/mcp_config.json).

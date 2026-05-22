@@ -1,0 +1,15 @@
+# Gemini CLI (Google)
+
+skills:
+  kind: copy-directory
+  path: .gemini/skills
+
+commands:
+  kind: copy-file
+  path: .gemini/commands
+
+mcp:
+  kind: edit-file
+  path: .gemini/settings.json
+  vars:
+    bucket: mcpServers

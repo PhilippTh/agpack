@@ -1,0 +1,19 @@
+# OpenCode (opencode.ai)
+
+skills:
+  kind: copy-directory
+  path: .opencode/skills
+
+commands:
+  kind: copy-file
+  path: .opencode/commands
+
+agents:
+  kind: copy-file
+  path: .opencode/agents
+
+mcp:
+  kind: edit-file
+  path: opencode.json
+  vars:
+    bucket: mcp

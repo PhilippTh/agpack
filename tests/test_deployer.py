@@ -2,36 +2,86 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from agpack.config import DependencySource
-from agpack.deployer import DeployError
-from agpack.deployer import DeployResult
-from agpack.deployer import _atomic_copy_file
 from agpack.deployer import cleanup_deployed_files
-from agpack.deployer import deploy_agent
-from agpack.deployer import deploy_command
-from agpack.deployer import deploy_single_skill
-from agpack.deployer import deploy_skill
+from agpack.deployer import deploy_item
+from agpack.deployer import detect_items
+from agpack.deployer import sync_edit_resource
+from agpack.errors import DeployError
 from agpack.fetcher import FetchResult
+from agpack.kinds._shared import atomic_copy_file
+from agpack.patch import Patch
+from agpack.registry import load_all_builtins
+from agpack.target_schema import TargetDef
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-ALL_TARGETS = [
-    "claude",
-    "opencode",
-    "codex",
-    "cursor",
-    "copilot",
-    "gemini",
-    "windsurf",
-    "antigravity",
-]
+_BUILTINS = load_all_builtins()
+
+ALL_TARGETS = sorted(_BUILTINS)
+
+SKILL_DIRS = {name: t.resources["skills"].path for name, t in _BUILTINS.items() if "skills" in t.resources}
+COMMAND_DIRS = {name: t.resources["commands"].path for name, t in _BUILTINS.items() if "commands" in t.resources}
+AGENT_DIRS = {name: t.resources["agents"].path for name, t in _BUILTINS.items() if "agents" in t.resources}
+
+
+@dataclass
+class _Deployed:
+    """Aggregate result of a detect → deploy run, matching the old API shape."""
+
+    files: list[str] = field(default_factory=list)
+    expanded_items: list[str] = field(default_factory=list)
+
+
+def _resolve(names: list[str]) -> list[TargetDef]:
+    return [_BUILTINS[n] for n in names if n in _BUILTINS]
+
+
+def _run(resource_type, fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
+    """Mirror what the CLI does: detect items, then deploy each one.
+
+    If no resolved target declares the resource type, return an empty result — there's nothing to detect or deploy.
+    The production CLI short-circuits the same way via the kind map.
+    """
+    target_defs = _resolve(targets)
+    detect_resource = next(
+        (t.resources[resource_type] for t in target_defs if resource_type in t.resources),
+        None,
+    )
+    if detect_resource is None:
+        return _Deployed()
+    items = detect_items(fr, detect_resource, resource_type)
+    files: list[str] = []
+    for name, path in items:
+        files.extend(deploy_item(name, path, resource_type, target_defs, project, **kwargs))
+    expanded = [name for name, _ in items] if len(items) > 1 else []
+    return _Deployed(files=files, expanded_items=expanded)
+
+
+def deploy_skill(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
+    return _run("skills", fr, targets, project, **kwargs)
+
+
+def deploy_command(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
+    return _run("commands", fr, targets, project, **kwargs)
+
+
+def deploy_agent(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def]
+    return _run("agents", fr, targets, project, **kwargs)
+
+
+def deploy_single_skill(name, path, targets, project, dry_run, verbose):  # type: ignore[no-untyped-def]
+    return deploy_item(name, path, "skills", _resolve(targets), project, dry_run, verbose)
 
 
 def _make_source(name: str = "my-skill") -> DependencySource:
@@ -49,9 +99,7 @@ def _make_file_fetch(
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text(content)
     return FetchResult(
-        source=DependencySource(
-            urls=[f"https://github.com/org/{source_name}"], path=source_name
-        ),
+        source=DependencySource(urls=[f"https://github.com/org/{source_name}"], path=source_name),
         local_path=src,
         resolved_ref="abc1234",
     )
@@ -93,11 +141,10 @@ class TestDeploySkill:
 
         result = deploy_skill(fr, ALL_TARGETS, project)
 
-        assert isinstance(result, DeployResult)
+        assert isinstance(result, _Deployed)
         assert result.expanded_items == []
 
         # Should produce files under every target's skill dir
-        from agpack.targets import SKILL_DIRS
 
         for target, base in SKILL_DIRS.items():
             skill_md = project / base / "my-skill" / "SKILL.md"
@@ -157,9 +204,7 @@ class TestDeploySkill:
     def test_skill_name_derived_from_source_path(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
-        source = DependencySource(
-            urls=["https://github.com/org/repo"], path="skills/custom-name"
-        )
+        source = DependencySource(urls=["https://github.com/org/repo"], path="skills/custom-name")
         src_dir = tmp_path / "src" / "custom-name"
         src_dir.mkdir(parents=True)
         (src_dir / "README.md").write_text("hi")
@@ -184,10 +229,8 @@ class TestDeployCommand:
 
         result = deploy_command(fr, ALL_TARGETS, project)
 
-        assert isinstance(result, DeployResult)
+        assert isinstance(result, _Deployed)
         assert result.expanded_items == []
-
-        from agpack.targets import COMMAND_DIRS
 
         # Only targets with entries in COMMAND_DIRS should have files
         assert len(result.files) == len(COMMAND_DIRS)
@@ -201,8 +244,8 @@ class TestDeployCommand:
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="lint.md")
 
-        # codex and cursor don't support commands
-        result = deploy_command(fr, ["codex", "cursor"], project)
+        # codex doesn't support project-level commands
+        result = deploy_command(fr, ["codex"], project)
 
         assert result.files == []
 
@@ -230,10 +273,8 @@ class TestDeployAgent:
 
         result = deploy_agent(fr, ALL_TARGETS, project)
 
-        assert isinstance(result, DeployResult)
+        assert isinstance(result, _Deployed)
         assert result.expanded_items == []
-
-        from agpack.targets import AGENT_DIRS
 
         assert len(result.files) == len(AGENT_DIRS)
         for target, base in AGENT_DIRS.items():
@@ -246,8 +287,8 @@ class TestDeployAgent:
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="reviewer.md")
 
-        # codex doesn't support agents
-        result = deploy_agent(fr, ["codex"], project)
+        # cursor / gemini / windsurf / antigravity don't expose project-level agents
+        result = deploy_agent(fr, ["cursor", "gemini", "windsurf"], project)
 
         assert result.files == []
 
@@ -256,7 +297,7 @@ class TestDeployAgent:
         project.mkdir()
         fr = _make_file_fetch(tmp_path, source_name="reviewer.md")
 
-        result = deploy_agent(fr, ["claude", "cursor"], project, dry_run=True)
+        result = deploy_agent(fr, ["claude", "opencode"], project, dry_run=True)
 
         assert len(result.files) == 2
         for rel in result.files:
@@ -344,7 +385,7 @@ class TestAtomicCopyFile:
         src.write_text("payload")
         dst = tmp_path / "out" / "dst.txt"
 
-        _atomic_copy_file(src, dst)
+        atomic_copy_file(src, dst)
 
         assert dst.exists()
         assert dst.read_text() == "payload"
@@ -354,7 +395,7 @@ class TestAtomicCopyFile:
         src.write_text("data")
         dst = tmp_path / "a" / "b" / "c" / "file.txt"
 
-        _atomic_copy_file(src, dst)
+        atomic_copy_file(src, dst)
 
         assert dst.exists()
         assert dst.read_text() == "data"
@@ -365,7 +406,7 @@ class TestAtomicCopyFile:
         dst = tmp_path / "dst.txt"
         dst.write_text("old")
 
-        _atomic_copy_file(src, dst)
+        atomic_copy_file(src, dst)
 
         assert dst.read_text() == "new"
 
@@ -445,8 +486,6 @@ class TestDeploySkillFolderDetection:
 
         result = deploy_skill(fr, ALL_TARGETS, project)
 
-        from agpack.targets import SKILL_DIRS
-
         # 3 files × 5 targets = 15
         assert len(result.files) == 3 * len(SKILL_DIRS)
         assert result.expanded_items == ["skill-a", "skill-b"]
@@ -472,14 +511,12 @@ class TestDeploySkillFolderDetection:
         src = tmp_path / "src" / "empty"
         src.mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/empty"], path="empty"
-            ),
+            source=DependencySource(urls=["https://github.com/org/empty"], path="empty"),
             local_path=src,
             resolved_ref="abc1234",
         )
 
-        with pytest.raises(DeployError, match="does not contain any skill folders"):
+        with pytest.raises(DeployError, match="does not contain any skills folders"):
             deploy_skill(fr, ["claude"], project)
 
     def test_errors_on_dir_with_only_empty_subdirs(self, tmp_path: Path) -> None:
@@ -489,14 +526,12 @@ class TestDeploySkillFolderDetection:
         (src / "empty-a").mkdir(parents=True)
         (src / "empty-b").mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/parent"], path="parent"
-            ),
+            source=DependencySource(urls=["https://github.com/org/parent"], path="parent"),
             local_path=src,
             resolved_ref="abc1234",
         )
 
-        with pytest.raises(DeployError, match="does not contain any skill folders"):
+        with pytest.raises(DeployError, match="does not contain any skills folders"):
             deploy_skill(fr, ["claude"], project)
 
     def test_single_skill_folder_still_works(self, tmp_path: Path) -> None:
@@ -557,14 +592,12 @@ class TestDeployCommandFolderDetection:
         src = tmp_path / "src" / "empty"
         src.mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/empty"], path="empty"
-            ),
+            source=DependencySource(urls=["https://github.com/org/empty"], path="empty"),
             local_path=src,
             resolved_ref="abc1234",
         )
 
-        with pytest.raises(DeployError, match="does not contain any command files"):
+        with pytest.raises(DeployError, match="does not contain any commands files"):
             deploy_command(fr, ["claude"], project)
 
     def test_dry_run_with_directory(self, tmp_path: Path) -> None:
@@ -593,9 +626,7 @@ class TestDeployAgentFolderDetection:
         (src / "reviewer.md").write_text("# Reviewer")
         (src / "planner.md").write_text("# Planner")
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/agents"], path="agents"
-            ),
+            source=DependencySource(urls=["https://github.com/org/agents"], path="agents"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -613,9 +644,7 @@ class TestDeployAgentFolderDetection:
         (src / "group").mkdir(parents=True)
         (src / "group" / "reviewer.md").write_text("# Reviewer")
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/agents"], path="agents"
-            ),
+            source=DependencySource(urls=["https://github.com/org/agents"], path="agents"),
             local_path=src,
             resolved_ref="abc1234",
         )
@@ -632,14 +661,12 @@ class TestDeployAgentFolderDetection:
         src = tmp_path / "src" / "empty"
         src.mkdir(parents=True)
         fr = FetchResult(
-            source=DependencySource(
-                urls=["https://github.com/org/empty"], path="empty"
-            ),
+            source=DependencySource(urls=["https://github.com/org/empty"], path="empty"),
             local_path=src,
             resolved_ref="abc1234",
         )
 
-        with pytest.raises(DeployError, match="does not contain any agent files"):
+        with pytest.raises(DeployError, match="does not contain any agents files"):
             deploy_agent(fr, ["claude"], project)
 
 
@@ -656,10 +683,10 @@ class TestAtomicCopyFailure:
         dst = tmp_path / "out" / "dst.txt"
 
         with (
-            patch("agpack.deployer.shutil.copy2", side_effect=OSError("no space")),
+            patch("agpack.kinds._shared.shutil.copy2", side_effect=OSError("no space")),
             pytest.raises(OSError, match="no space"),
         ):
-            _atomic_copy_file(src, dst)
+            atomic_copy_file(src, dst)
 
         # No temp files should be left behind
         leftover = list((tmp_path / "out").glob(".agpack-tmp-*"))
@@ -681,9 +708,7 @@ class TestDeploySingleFileSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill(
-            "my-skill", skill_file, ["claude"], project, dry_run=False, verbose=False
-        )
+        result = deploy_single_skill("my-skill", skill_file, ["claude"], project, dry_run=False, verbose=False)
 
         assert len(result) == 1
         deployed = project / result[0]
@@ -691,9 +716,7 @@ class TestDeploySingleFileSkill:
         assert deployed.read_text() == "# My Skill"
         assert "my-skill" in str(deployed)
 
-    def test_deploys_single_file_skill_to_multiple_targets(
-        self, tmp_path: Path
-    ) -> None:
+    def test_deploys_single_file_skill_to_multiple_targets(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
 
@@ -701,11 +724,7 @@ class TestDeploySingleFileSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill(
-            "my-skill", skill_file, ALL_TARGETS, project, dry_run=False, verbose=False
-        )
-
-        from agpack.targets import SKILL_DIRS
+        result = deploy_single_skill("my-skill", skill_file, ALL_TARGETS, project, dry_run=False, verbose=False)
 
         assert len(result) == len(SKILL_DIRS)
         for rel in result:
@@ -719,9 +738,68 @@ class TestDeploySingleFileSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill(
-            "my-skill", skill_file, ["claude"], project, dry_run=True, verbose=False
-        )
+        result = deploy_single_skill("my-skill", skill_file, ["claude"], project, dry_run=True, verbose=False)
 
         assert len(result) == 1
         assert not (project / result[0]).exists()
+
+
+# ---------------------------------------------------------------------------
+# sync_edit_resource — dedup of identical edit-file paths across targets
+# ---------------------------------------------------------------------------
+
+
+class TestSyncEditResourceDedup:
+    """Regression: two targets resolving to the same edit-file path used to apply every patch once per target,
+    double-appending list elements on every sync and leaving lockfile-orphaned entries.
+    """
+
+    def test_duplicate_target_does_not_double_append(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        # Two identical targets — simulates ``targets: [claude, claude]``.
+        targets = [_BUILTINS["claude"], _BUILTINS["claude"]]
+
+        patch_append = Patch(
+            key="${bucket}.PreToolUse",
+            value={"matcher": "Write", "hooks": [{"type": "command", "command": "x"}]},
+            strategy="append",
+        )
+
+        applied = sync_edit_resource(
+            resource_type="hooks",
+            desired=[patch_append],
+            applied_old=[],
+            targets=targets,
+            project_root=project,
+        )
+
+        # Exactly one applied record, exactly one item appended in the file.
+        assert len(applied) == 1
+        settings = json.loads((project / ".claude/settings.json").read_text())
+        assert len(settings["hooks"]["PreToolUse"]) == 1
+
+    def test_two_targets_same_path_apply_once(self, tmp_path: Path) -> None:
+        # Distinct target objects with the same `path:` for an edit-file resource — same dedup contract as the
+        # duplicate case.
+        project = tmp_path / "project"
+        project.mkdir()
+        targets = [_BUILTINS["claude"], _BUILTINS["claude"]]
+
+        patch_replace = Patch(
+            key="${bucket}.filesystem",
+            value={"command": "npx"},
+            strategy="replace",
+        )
+
+        applied = sync_edit_resource(
+            resource_type="mcp",
+            desired=[patch_replace],
+            applied_old=[],
+            targets=targets,
+            project_root=project,
+        )
+
+        assert len(applied) == 1
+        mcp = json.loads((project / ".mcp.json").read_text())
+        assert mcp == {"mcpServers": {"filesystem": {"command": "npx"}}}

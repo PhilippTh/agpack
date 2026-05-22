@@ -1,0 +1,15 @@
+# Cursor (cursor.com)
+
+skills:
+  kind: copy-directory
+  path: .cursor/skills
+
+commands:
+  kind: copy-file
+  path: .cursor/commands
+
+mcp:
+  kind: edit-file
+  path: .cursor/mcp.json
+  vars:
+    bucket: mcpServers

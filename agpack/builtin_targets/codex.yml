@@ -1,0 +1,15 @@
+# OpenAI Codex CLI
+
+skills:
+  kind: copy-directory
+  path: .codex/skills
+
+agents:
+  kind: copy-file
+  path: .codex/agents
+
+mcp:
+  kind: edit-file
+  path: .codex/config.toml
+  vars:
+    bucket: mcp_servers

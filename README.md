@@ -9,20 +9,18 @@
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa)](https://github.com/sponsors/PhilippTh)
 
-Declare your AI agent resources in a YAML file, run `agpack sync`, and they get deployed to every coding tool you use.
-
-agpack fetches skills, commands, agents, and MCP server configs from git repos and copies them to the right places for Claude Code, OpenCode, Codex, Cursor, GitHub Copilot, Gemini CLI, Windsurf, and Google Antigravity.
+A package manager for AI coding tools. Declare skills, commands, agents, MCP servers, hooks, and any other resource your editor or CLI consumes in one `agpack.yml`. Run `agpack sync` and agpack fetches them from git and deploys them where each tool expects — Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode, Windsurf, Google Antigravity, and any custom tool you describe in a YAML manifest.
 
 ## Why
 
-Every AI coding tool has its own directory structure for skills, its own config format for MCP servers, its own spot for custom commands. If you use more than one tool -- or share resources across projects -- you end up manually copying files and keeping multiple configs in sync.
+Every AI coding tool has its own conventions: `.claude/skills/`, `.cursor/commands/`, `.codex/agents/`, `.github/prompts/`. MCP server configs live in subtly different shapes across tools (`mcpServers` vs `mcp_servers` vs `mcp` vs `servers`). Sharing the same resources across tools — and updating them across projects — turns into manual copy-paste with quiet drift.
 
-agpack replaces that with a single `agpack.yml` that describes what you want and where it comes from.
+agpack replaces that with a single declarative file. It owns the keys it writes, leaves everything else alone, and remembers exactly what it did so removing a dependency cleanly rolls back.
 
 ## Install
 
 ```bash
-pipx install agpack   # or: uv tool install agpack
+pipx install agpack    # or: uv tool install agpack
 ```
 
 Requires Python 3.11+ and `git` on PATH.
@@ -30,10 +28,10 @@ Requires Python 3.11+ and `git` on PATH.
 ## Quick start
 
 ```bash
-agpack init          # creates agpack.yml with commented-out examples
+agpack init            # creates agpack.yml with commented examples
 ```
 
-Edit `agpack.yml`:
+A minimal `agpack.yml`:
 
 ```yaml
 targets:
@@ -45,90 +43,136 @@ dependencies:
     - url: https://github.com/owner/repo
       path: skills/my-skill
 
-  commands:
-    - url: https://github.com/owner/repo
-      path: commands/review.md
-
-  agents:
-    - url: https://github.com/owner/repo
-      path: agents/backend-expert.md
-
+  # MCP server entries deploy as patches into each target's config file.
+  # ${bucket} is supplied by the target manifest, so the same patch
+  # writes mcpServers.filesystem on Claude and mcp.filesystem on OpenCode.
   mcp:
-    - name: filesystem
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    - key: ${bucket}.filesystem
+      value:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
 ```
 
 ```bash
 agpack sync
 ```
 
-Skills get copied to `.claude/skills/`, `.opencode/skills/`, etc. Commands and agents go to their respective directories. MCP server definitions get merged into each tool's config file. Run `agpack sync` again after editing the config -- removed dependencies get cleaned up automatically.
+Skills land in `.claude/skills/my-skill/` and `.opencode/skills/my-skill/`. The MCP server is added to `.mcp.json` and `opencode.json`. Run `agpack sync` again after editing — removed entries are cleaned up automatically and the lockfile remembers what to restore.
+
+## The model
+
+Every resource agpack deploys falls into one of three **kinds**. Once you know the kinds, the rest of the tool is just "declare resources of these kinds; declare which tools (targets) get them."
+
+| Kind             | What it does                                                                                                          | What you write in `agpack.yml`         |
+|------------------|-----------------------------------------------------------------------------------------------------------------------|----------------------------------------|
+| `copy-directory` | Copy a directory tree from a fetched git repo into `<path>/<name>/`. A folder-of-folders expands to one bundle each.  | `{ url, path?, ref? }`                 |
+| `copy-file`      | Copy individual files from a fetched git repo into `<path>/<name>`. A folder-of-files expands to one item per file.  | `{ url, path?, ref? }`                 |
+| `edit-file`      | Read a JSON or TOML config, apply patches, write it back. Only touches keys agpack owns; everything else is preserved. | `{ key, value, strategy? }`            |
+
+A **target** is a YAML manifest that maps resource type names (`skills`, `commands`, `mcp`, anything you like) to a kind + destination path. agpack ships built-in manifests for the eight common tools and lets you override them or add your own.
 
 ## Dependencies
 
-### URLs and pinning
+`dependencies:` is keyed by resource type name. The value is a list of entries. The shape of each entry depends on the kind the target uses for that resource type:
 
-The `url` field takes any valid `git clone` URL -- HTTPS, SSH, local paths, whatever git understands. Authentication is handled by your system git config (SSH keys, credential helpers, etc.).
-
-Use `ref` to pin a dependency to a specific tag or commit:
+- **copy-directory / copy-file** entries are fetched from git: `{ url, path?, ref? }`.
+- **edit-file** entries are inline patches: `{ key, value, strategy? }`.
 
 ```yaml
-- url: https://github.com/owner/repo
-  path: skills/my-skill
-  ref: v1.2.0
+dependencies:
 
-- url: git@gitlab.com:myorg/myrepo.git
-  path: skills/my-skill
-  ref: abc1234
+  skills:                             # copy-directory on every built-in
+    - url: https://github.com/owner/skills-repo
+      path: skills/code-review
+      ref: v1.2.0                     # tag, branch, or commit SHA
+
+  commands:                           # copy-file
+    - url: https://github.com/owner/cmds
+      path: commands/review.md
+
+  agents:                             # copy-file
+    - url: https://github.com/owner/agents
+      path: agents/backend-expert.md
+
+  mcp:                                # edit-file
+    - key: ${bucket}.filesystem
+      value:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
 ```
 
-### Fallback URLs
+### URLs, pinning, and fallbacks
 
-`url` can be a list. When it is, agpack tries each URL in order until one succeeds. This is useful when team members use different auth methods (SSH vs HTTPS), or when you want to fall back to a mirror:
+`url` takes any string `git clone` accepts — HTTPS, SSH, local paths. Auth goes through your system git config (SSH keys, credential helpers, etc.).
+
+`url` can also be a list of fallback URLs, tried in order:
 
 ```yaml
-# Tried in order -- works for both SSH and HTTPS users
 - url:
-    - https://github.com/owner/repo
-    - git@github.com:owner/repo.git
+    - git@github.com:owner/repo.git    # SSH for team members with keys
+    - https://github.com/owner/repo    # HTTPS fallback
   path: skills/my-skill
-
-# Internal mirror with public fallback
-- url:
-    - https://git.internal.company.com/team/repo
-    - https://github.com/company/repo
-  path: skills/my-skill
+  ref: v1.2.0
 ```
 
 ### Directory expansion
 
-The `path` field can point to a single file, a single folder, or a parent directory containing multiple items. When it points at a directory, agpack figures out what's inside:
+`path` can point at a single file, a single folder, or a parent directory containing multiple items. agpack figures out what's inside:
 
-- **Skills** -- a directory with top-level files is deployed as one skill. A directory containing only subdirectories deploys each subfolder as a separate skill.
-- **Commands & Agents** -- every non-hidden file is deployed individually. If the directory only contains subdirectories, files inside those are collected instead.
+| `path:` points at…                | What deploys                                |
+|-----------------------------------|---------------------------------------------|
+| One skill folder (with files)     | One skill bundle named after the folder    |
+| A folder of skill subfolders      | One bundle per subfolder                   |
+| One command/agent file            | One file                                   |
+| A folder of command/agent files   | Every non-hidden file                      |
+| A folder of subfolders            | Files collected from each subfolder        |
+
+Sync fails with an explicit error if a folder contains nothing deployable.
+
+## Patches (`edit-file`)
+
+A patch is a `{ key, value, strategy }` triple. `key` is a dotted path into the destination config file. `value` is whatever Python value the consuming tool expects to find there (a dict for an MCP server entry, a string for a permission, a dict for a hook entry — agpack is schema-agnostic). `strategy` is `replace` (the default — overwrites whatever's at the path) or `append` (treats the path as a list and adds one element).
 
 ```yaml
-skills:
-  - url: https://github.com/owner/repo
-    path: skills/my-skill       # deploys one skill
+dependencies:
 
-  - url: https://github.com/owner/repo
-    path: skills                 # deploys each subfolder as a separate skill
+  mcp:                                # strategy defaults to replace
+    - key: ${bucket}.filesystem
+      value:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+        env:
+          API_KEY: ${API_KEY}
 
-commands:
-  - url: https://github.com/owner/repo
-    path: commands/review.md     # deploys one file
+  hooks:                              # an append patch — hooks live in a list
+    - key: ${bucket}.PreToolUse
+      strategy: append
+      value:
+        matcher: "Write|Edit"
+        hooks:
+          - type: command
+            command: "$${CLAUDE_PROJECT_DIR}/lint.sh"
 
-  - url: https://github.com/owner/repo
-    path: commands               # deploys every file inside
+  permissions:
+    - key: ${bucket}.allow
+      strategy: append
+      value: "Read(/etc/**)"
 ```
 
-If the directory contains no deployable files, sync fails with an error.
+A few things to know:
 
-### Environment variables
+- **`${bucket}`** is a per-target variable supplied by each target manifest. Claude's `mcp` resource ships `bucket: mcpServers`, Codex's ships `bucket: mcp_servers`, OpenCode's ships `bucket: mcp`. One patch deploys correctly to all three.
+- **`$${X}`** writes a literal `${X}` to the destination file. Useful when the consuming tool resolves variables at runtime — Claude Code itself expands `${CLAUDE_PROJECT_DIR}` when a hook fires.
+- **Dotted keys with literal dots**: use `\.` inside a segment to embed a literal dot. `mcpServers.example\.com` writes to `mcpServers["example.com"]`.
+- **Intermediate dicts auto-create** for replace patches. `append` requires the path to resolve to a list (created empty if absent).
+- **Cleanup is surgical**: `replace` restores the value that was there *before* agpack overwrote it (or deletes the key if agpack created it); `append` removes the exact item agpack added by deep-equality. agpack never deletes content it didn't write.
 
-Use `${VAR_NAME}` in any string value to reference environment variables. This works in URLs, paths, refs, MCP commands, args, env values, and server URLs.
+## Variables and substitution
+
+Use `${name}` in any string. The lookup table merges two sources, target wins on collision:
+
+1. **Target vars** — declared by an `edit-file` resource's `vars:` block. Per-target, only visible inside patches targeting that resource.
+2. **Environment vars** — project `.env`, then global `.env`, then shell environment. Available in dependency URLs/paths/refs and recursively in patch keys and values.
 
 ```yaml
 dependencies:
@@ -137,86 +181,260 @@ dependencies:
       path: skills/my-skill
 
   mcp:
-    - name: context7
-      command: npx
-      args: ["-y", "@context7/mcp-server"]
-      env:
-        CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+    - key: ${bucket}.context7         # ${bucket} from the target manifest
+      value:
+        command: npx
+        args: ["-y", "@context7/mcp-server"]
+        env:
+          CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}   # from env
 ```
 
-Variables are resolved from up to three sources (highest priority first):
+`$$` writes a literal `$` (so `$${X}` becomes `${X}` in the file — pass runtime variables through to the consuming tool). Missing `${name}` references error at apply time, naming the variable and the patch context.
 
-1. `.env` in the project root (same directory as `agpack.yml`)
-2. `.env` in the global config directory (`~/.config/agpack/`)
-3. Shell environment
+## Targets
 
-If a referenced variable is not found in any source, sync fails with an error. The `.env` parser supports `KEY=VALUE`, quoted values, `# comments`, blank lines, and `export` prefixes.
+```bash
+agpack targets list                  # show every available target
+agpack targets show claude           # print Claude's manifest as YAML
+```
+
+### Bundled targets
+
+agpack ships manifests for eight tools: `claude`, `codex`, `copilot`, `cursor`, `gemini`, `opencode`, `windsurf`, `antigravity`. The manifests themselves are the source of truth — browse them at [`agpack/builtin_targets/`](agpack/builtin_targets/) or introspect locally:
+
+```bash
+agpack targets list                   # every target + its resource types
+agpack targets show claude            # the full manifest as YAML
+```
+
+One thing worth knowing that isn't obvious from the file names:
+
+- **Windsurf and Antigravity have no per-project MCP config.** Their MCP configs live in user-global locations (`~/.codeium/windsurf/mcp_config.json` and `~/.gemini/antigravity/mcp_config.json`), which agpack does not manage.
+
+### Custom and overridden targets
+
+Add a `target_definitions:` block to override a built-in or add a new tool:
+
+```yaml
+targets:
+  - claude
+  - my-internal-tool                   # custom target, defined below
+
+target_definitions:
+
+  # Override the built-in claude target — full replacement, no deep merge.
+  claude:
+    skills:
+      kind: copy-directory
+      path: .my-claude/skills
+    commands:
+      kind: copy-file
+      path: .my-claude/commands
+
+  # Brand-new target. Declare any resource type names you want; the same
+  # names must appear under `dependencies:` to be deployed.
+  my-internal-tool:
+    skills:
+      kind: copy-directory
+      path: .myaitool/skills
+    rules:
+      kind: copy-file
+      path: .myaitool/rules
+    settings:
+      kind: edit-file
+      path: .myaitool/settings.json    # format inferred from .json/.toml
+      vars:
+        bucket: mcpServers
+```
+
+Precedence (highest first): project `target_definitions:` → global `target_definitions:` → bundled built-in. When a name appears in `target_definitions:`, that entry **fully replaces** the built-in; agpack does not deep-merge.
+
+Tip: `agpack targets show <name>` prints the resolved manifest as YAML — copy-paste it into `target_definitions:` as a starting point.
+
+### Resource type names are open
+
+`skills`, `commands`, `agents`, `mcp`, `hooks` are not reserved — they're just the names the built-in target manifests use. Your custom targets can declare any name (`rules`, `prompts`, `personas`, `lints`, `examples`). agpack only matches names between `dependencies:` and target resource blocks; if the same name appears in multiple targets they must agree on `kind:`.
 
 ## Global config
 
-A global config defines dependencies shared across all your projects -- skills, agents, or MCP servers you want everywhere without repeating them in each `agpack.yml`.
+A global config shares dependencies across every project on your machine — skills, agents, or MCP servers you want everywhere.
 
 ```bash
-agpack init --global   # creates ~/.config/agpack/agpack.yml
+agpack init --global                  # creates ~/.config/agpack/agpack.yml
 ```
 
-The global config uses the same `dependencies` block but has no `targets` (those are always per-project):
-
 ```yaml
-# ~/.config/agpack/agpack.yml
+# ~/.config/agpack/agpack.yml — same shape, no `targets:` (those stay per-project)
 dependencies:
   skills:
     - url: https://github.com/owner/shared-skills
-      path: skills/my-standard-skill
+      path: skills/code-review
 
   mcp:
-    - name: context7
-      command: npx
-      args: ["-y", "@upstash/context7-mcp@latest"]
-      env:
-        CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+    - key: ${bucket}.context7
+      value:
+        command: npx
+        args: ["-y", "@upstash/context7-mcp@latest"]
+        env:
+          CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
 ```
 
-Global dependencies are merged with the project config during sync. If the same dependency or MCP server appears in both, the project version wins.
+Global entries are merged into each project sync. Fetch entries are deduplicated by URL+path; patch entries by key (for `replace`) or full content (for `append`). Project entries win on conflict.
 
-To skip the global config, either pass `--no-global` on the command line or add `global: false` to your project's `agpack.yml`. The default path (`~/.config/agpack/agpack.yml`) can be overridden with the `AGPACK_GLOBAL_CONFIG` environment variable.
+Skip the global config with `--no-global` on the command line or `global: false` in `agpack.yml`. Override the default path with `AGPACK_GLOBAL_CONFIG`.
 
-## Target mapping
+## Safety
 
-| Target | Skills | Commands | Agents | MCP Config |
-|--------|--------|----------|--------|------------|
-| Claude | `.claude/skills/<name>/` | `.claude/commands/<file>` | `.claude/agents/<file>` | `.mcp.json` |
-| OpenCode | `.opencode/skills/<name>/` | `.opencode/commands/<file>` | `.opencode/agents/<file>` | `opencode.json` |
-| Codex | `.agents/skills/<name>/` | -- | -- | `.codex/config.toml` |
-| Cursor | `.cursor/skills/<name>/` | -- | `.cursor/agents/<file>` | `.cursor/mcp.json` |
-| Copilot | `.github/skills/<name>/` | `.github/prompts/<file>` | `.github/agents/<file>` | `.vscode/mcp.json` |
-| Gemini CLI | `.gemini/skills/<name>/` | `.gemini/commands/<file>` | -- | `.gemini/settings.json` |
-| Windsurf | `.windsurf/skills/<name>/` | -- | -- | -- *(global only)* |
-| Antigravity | `.gemini/skills/<name>/` | `.gemini/commands/<file>` | -- | `.gemini/settings.json` |
+agpack writes files the user often hand-edits. Three guarantees keep that safe:
 
-Unsupported resource types are skipped silently. MCP definitions are merged into each tool's config file without touching servers agpack didn't create. Windsurf's MCP config is global (`~/.codeium/windsurf/mcp_config.json`) rather than per-project, so agpack does not manage it.
+- **TOML format preservation.** TOML files (e.g. `.codex/config.toml`) round-trip through `tomlkit`. Comments, key ordering, and whitespace on sections agpack didn't touch survive every sync.
+- **Idempotent writes.** Files are only written when the serialised text actually differs from disk. Running `agpack sync` twice in a row never modifies a file the second time. No mtime churn, no spurious git diffs.
+- **Surgical cleanup.** Every `replace` patch snapshots the value that was at its key *before* agpack first ran. If you remove that patch from `agpack.yml`, the next sync restores the snapshot — your hand-written `mcpServers.foo` survives even if agpack temporarily owned it. Patches agpack created from nothing get deleted; patches that overwrote existing data get reverted. `append` patches are removed by deep-equality from their target list.
+
+The lockfile (`.agpack.lock.yml`) is the source of truth — commit it alongside `agpack.yml` so the whole team's syncs converge. Every file write is atomic (write-to-temp-then-rename); agpack never partially writes a file.
+
+## Recipes
+
+### One MCP server across multiple tools
+
+```yaml
+targets: [claude, codex, opencode]
+dependencies:
+  mcp:
+    - key: ${bucket}.context7         # bucket differs per target
+      value:
+        command: npx
+        args: ["-y", "@upstash/context7-mcp@latest"]
+```
+
+### Private skills with a token from `.env`
+
+```yaml
+# .env
+GITHUB_TOKEN=ghp_xxx
+```
+
+```yaml
+dependencies:
+  skills:
+    - url: https://x-access-token:${GITHUB_TOKEN}@github.com/company/private-skills
+      path: skills/internal
+```
+
+(SSH keys via `git@github.com:...` are usually simpler — `${GITHUB_TOKEN}` in URLs is for CI where SSH isn't available.)
+
+### Pin to a tag / commit
+
+```yaml
+- url: https://github.com/owner/skills-repo
+  path: skills/my-skill
+  ref: v1.2.0                         # tag, branch, or commit SHA
+```
+
+### Add a Claude Code hook
+
+```yaml
+dependencies:
+  hooks:
+    - key: ${bucket}.PreToolUse
+      strategy: append
+      value:
+        matcher: "Write|Edit"
+        hooks:
+          - type: command
+            command: "$${CLAUDE_PROJECT_DIR}/.claude/hooks/lint.sh"
+```
+
+`$${CLAUDE_PROJECT_DIR}` is written verbatim — Claude Code expands it when the hook fires.
+
+### Support a tool agpack doesn't ship a target for
+
+```yaml
+targets: [my-cli]
+dependencies:
+  rules:
+    - url: https://github.com/owner/rules-repo
+      path: rules
+
+target_definitions:
+  my-cli:
+    rules:
+      kind: copy-file
+      path: .mycli/rules
+    settings:
+      kind: edit-file
+      path: .mycli/settings.json
+```
+
+### Address a config key that contains a dot
+
+```yaml
+dependencies:
+  mcp:
+    - key: ${bucket}.example\.com     # writes mcpServers["example.com"]
+      value: { command: ... }
+```
+
+### Roll back
+
+Delete the entry from `agpack.yml`, run `agpack sync`. The lockfile diff drives cleanup: copy-kind files get removed, edit-file `replace` patches restore the prior value, `append` patches get the exact item removed.
 
 ## Commands
 
 ```
-agpack init    [--config PATH] [--global]       Scaffold a new config file
-agpack sync    [--config PATH] [--no-global]    Fetch and deploy all dependencies
+agpack init    [--config PATH] [--global]                Scaffold a new config file
+agpack sync    [--config PATH] [--no-global]             Fetch and deploy all dependencies
                [--dry-run] [--verbose]
-agpack status  [--config PATH] [--no-global]    Show installed vs configured state
+agpack status  [--config PATH] [--no-global]             Show installed vs configured state
+agpack targets list  [--config PATH] [--no-global]       Show all available targets and source
+agpack targets show <name> [--config PATH] [--no-global] Print the resolved manifest for one
 ```
+
+## Limitations
+
+- **JSON formatting is not preserved.** Python's stdlib `json` has no format-preserving parser. agpack canonicalises (`indent=2`) on the *first* write to a JSON file; subsequent syncs are idempotent and won't rewrite it. Hand-edit JSON files in the same shape agpack emits to avoid churn.
+- **Edit-file currently supports only JSON and TOML.** Format is inferred from the path extension; other config formats (YAML, INI, custom DSLs) are not patchable.
+- **`target_definitions:` is full replacement, not extension.** Naming a built-in under `target_definitions:` replaces it wholesale — there is no deep-merge. To add one resource type to Claude (e.g. `personas:`) you have to restate every resource type Claude already declares. Tip: `agpack targets show claude` prints the resolved manifest, copy it under `target_definitions.claude:` as a starting point. The trade-off is intentional — deep-merge across built-in upgrades was judged too magical to ship behind a single config knob.
+- **Cross-target resource types must share a kind.** If two targets both declare a `commands` resource, they have to agree on whether `commands` is `copy-file` or `copy-directory`. When you genuinely need different shapes, declare them under different names and list each entry under the corresponding name. The repetition is the price of clarity:
+
+  ```yaml
+  targets: [tool-a, tool-b]
+
+  dependencies:
+    commands-files:                   # for targets that want flat files
+      - url: https://github.com/owner/cmds
+        path: commands/review.md
+    commands-patches:                 # for targets that want config patches
+      - key: ${bucket}.review
+        value: { command: "..." }
+
+  target_definitions:
+    tool-a:
+      commands-files:
+        kind: copy-file
+        path: .tool-a/commands
+    tool-b:
+      commands-patches:
+        kind: edit-file
+        path: .tool-b/config.json
+        vars: { bucket: commands }
+  ```
+- **Windsurf and Antigravity MCP configs are global**, not per-project. agpack doesn't write user-global config files.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md). On first `agpack sync` after a major version upgrade, files in the old (pre-upgrade) locations are cleaned up automatically — the lockfile remembers exactly where the previous sync wrote them.
 
 ## How it works
 
-1. Loads `agpack.yml` and the global config (if present), merges them
-2. Resolves `${VAR}` references from `.env` files and the shell
-3. Reads `.agpack.lock.yml` to diff against the previous state
-4. Cleans up files from removed dependencies
-5. Shallow-clones each repo (sparse checkout when `path` is set), copies files to all target directories
-6. Merges MCP configs into each tool's config file
-7. Writes an updated lockfile
-
-Every file write is atomic (write-to-temp-then-rename). agpack never partially writes a file and never deletes anything it didn't create.
+1. Loads `agpack.yml` and (optionally) the global config; merges them.
+2. Resolves `${VAR}` references from `.env` files and the shell env (for fetch entries). Patches resolve `${name}` per-target at apply time.
+3. Reads `.agpack.lock.yml` to diff against the previous state.
+4. Cleans up files from removed copy-kind dependencies.
+5. Shallow-clones each repo (sparse checkout when `path` is set) and copies files to every target that declares the matching resource type.
+6. Reconciles edit-file resources: per file, diff old applied patches against the desired set, undo what's gone, apply what's new, leave matched patches alone. Files are only written when their text actually changed.
+7. Writes the updated lockfile.
 
 ## License
 
-GPL-3.0 -- see [LICENSE](LICENSE).
+GPL-3.0 — see [LICENSE](LICENSE).

@@ -1,0 +1,19 @@
+# GitHub Copilot in VS Code
+
+skills:
+  kind: copy-directory
+  path: .github/skills
+
+commands:
+  kind: copy-file
+  path: .github/prompts
+
+agents:
+  kind: copy-file
+  path: .github/agents
+
+mcp:
+  kind: edit-file
+  path: .vscode/mcp.json
+  vars:
+    bucket: servers

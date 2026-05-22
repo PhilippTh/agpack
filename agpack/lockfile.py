@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from dataclasses import dataclass
@@ -14,18 +15,21 @@ from typing import Any
 import yaml
 
 from agpack import __version__
+from agpack.display import console
 
 LOCKFILE_NAME = ".agpack.lock.yml"
 
 
 @dataclass
 class InstalledEntry:
-    """A single installed dependency in the lockfile."""
+    """A single installed copy-kind dependency in the lockfile."""
 
     url: str
     path: str | None
     resolved_ref: str
-    type: str  # "skill", "command", "agent"
+    type: str
+    """Resource type name as it appears in agpack.yml (``skills`` / ``commands`` / ``agents`` / any user-defined
+    name)."""
     deployed_files: list[str] = field(default_factory=list)
 
     @property
@@ -38,11 +42,35 @@ class InstalledEntry:
 
 
 @dataclass
-class McpLockEntry:
-    """A single MCP server entry in the lockfile."""
+class AppliedPatch:
+    """An edit-file patch recorded for future cleanup.
 
-    name: str
-    targets: list[str] = field(default_factory=list)
+    :attr:`key` is the **resolved** dotted path as it lives on disk (e.g. ``mcpServers.filesystem``) — what cleanup
+    needs to navigate to the leaf. :attr:`value_hash` is a SHA256 fingerprint of the resolved value (not the value
+    itself), so a value interpolated from ``${API_KEY}`` never ends up in the lockfile.
+
+    **Assumption: patch keys are structural, not secret.** Keys describe where in the JSON/TOML a value lives —
+    ``mcpServers.filesystem``, ``hooks.PreToolUse``. If a user ever wrote ``${SECRET}.foo`` as a key, the resolved
+    value would land here in plaintext. Don't put secrets in patch keys.
+
+    * ``replace`` cleanup deletes the leaf — symmetric with how copy kinds clean up the files they wrote. If the
+      user had a value at that key before agpack first ran, ``replace`` overwrote it; cleanup does not try to
+      magically restore it.
+    * ``append`` cleanup walks the list at the path, hashes each element, and removes the first hash-match.
+    """
+
+    file_path: str
+    key: str
+    strategy: str
+    value_hash: str
+
+
+@dataclass
+class EditLockEntry:
+    """All patches applied for one resource type across all targets."""
+
+    resource_type: str
+    applied: list[AppliedPatch] = field(default_factory=list)
 
 
 @dataclass
@@ -52,24 +80,56 @@ class Lockfile:
     generated_at: str = ""
     agpack_version: str = __version__
     installed: list[InstalledEntry] = field(default_factory=list)
-    mcp: list[McpLockEntry] = field(default_factory=list)
+    edits: list[EditLockEntry] = field(default_factory=list)
 
 
-def read_lockfile(project_root: Path) -> Lockfile | None:
+# ---------------------------------------------------------------------------
+# Read / write
+# ---------------------------------------------------------------------------
+
+
+_CORRUPT_LOCKFILE_WARNING = (
+    "Treating lockfile as missing — agpack has no record of which patches "
+    "it previously applied, so cleanup of patches you have since removed "
+    "from agpack.yml will not happen automatically. Restore the lockfile "
+    "from version control if you have it, or remove leftover agpack-written "
+    "entries from your config files by hand."
+)
+
+
+def read_lockfile(project_root: Path) -> Lockfile | None:  # noqa: C901
     """Read the lockfile from disk.
 
-    Returns None if the lockfile doesn't exist.
+    Returns ``None`` if the file is absent. If the file exists but is unreadable, malformed, or has the wrong top-level
+    shape, emits a loud warning explaining what guarantee is now broken (without the lockfile, agpack cannot clean up
+    patches the user has since removed from ``agpack.yml``) and returns ``None``.
     """
     path = project_root / LOCKFILE_NAME
     if not path.exists():
         return None
 
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError):
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        console.print(
+            f"[bold yellow]warning[/bold yellow]: cannot read lockfile {path}: {exc}.\n  {_CORRUPT_LOCKFILE_WARNING}"
+        )
+        return None
+
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        console.print(
+            f"[bold yellow]warning[/bold yellow]: lockfile {path} is corrupt: {exc}.\n  {_CORRUPT_LOCKFILE_WARNING}"
+        )
         return None
 
     if not isinstance(data, dict):
+        console.print(
+            f"[bold yellow]warning[/bold yellow]: lockfile {path} has "
+            f"unexpected shape (expected a YAML mapping, got "
+            f"{type(data).__name__}).\n  {_CORRUPT_LOCKFILE_WARNING}"
+        )
         return None
 
     lockfile = Lockfile(
@@ -90,13 +150,25 @@ def read_lockfile(project_root: Path) -> Lockfile | None:
             )
         )
 
-    for mcp_data in data.get("mcp", []):
-        if not isinstance(mcp_data, dict):
+    for edit_data in data.get("edits", []):
+        if not isinstance(edit_data, dict):
             continue
-        lockfile.mcp.append(
-            McpLockEntry(
-                name=mcp_data.get("name", ""),
-                targets=mcp_data.get("targets", []),
+        applied: list[AppliedPatch] = []
+        for raw in edit_data.get("applied", []):
+            if not isinstance(raw, dict):
+                continue
+            applied.append(
+                AppliedPatch(
+                    file_path=raw.get("file_path", ""),
+                    key=raw.get("key", ""),
+                    strategy=raw.get("strategy", "replace"),
+                    value_hash=raw.get("value_hash", ""),
+                )
+            )
+        lockfile.edits.append(
+            EditLockEntry(
+                resource_type=edit_data.get("resource_type", ""),
+                applied=applied,
             )
         )
 
@@ -112,7 +184,7 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
         "generated_at": lockfile.generated_at,
         "agpack_version": lockfile.agpack_version,
         "installed": [],
-        "mcp": [],
+        "edits": [],
     }
 
     for entry in lockfile.installed:
@@ -126,52 +198,47 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
             entry_data["path"] = entry.path
         data["installed"].append(entry_data)
 
-    for mcp_entry in lockfile.mcp:
-        data["mcp"].append(
+    for edit in lockfile.edits:
+        data["edits"].append(
             {
-                "name": mcp_entry.name,
-                "targets": mcp_entry.targets,
+                "resource_type": edit.resource_type,
+                "applied": [
+                    {
+                        "file_path": p.file_path,
+                        "key": p.key,
+                        "strategy": p.strategy,
+                        "value_hash": p.value_hash,
+                    }
+                    for p in edit.applied
+                ],
             }
         )
 
     path = project_root / LOCKFILE_NAME
     content = yaml.dump(data, default_flow_style=False, sort_keys=False)
 
-    # Atomic write
     fd, tmp_path = tempfile.mkstemp(dir=project_root, prefix=".agpack-lock-tmp-")
+    tmp = Path(tmp_path)
     try:
         os.close(fd)
-        Path(tmp_path).write_text(content, encoding="utf-8")
-        os.replace(tmp_path, str(path))
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
     except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            tmp.unlink()
         raise
+
+
+# ---------------------------------------------------------------------------
+# Diff helpers
+# ---------------------------------------------------------------------------
 
 
 def find_removed_dependencies(
     old_lockfile: Lockfile | None,
     current_identities: set[str],
 ) -> list[InstalledEntry]:
-    """Find dependencies that were in the old lockfile but are no longer configured."""
+    """Find copy-kind dependencies present in the old lockfile but absent now."""
     if old_lockfile is None:
         return []
-
-    return [
-        entry
-        for entry in old_lockfile.installed
-        if entry.identity not in current_identities
-    ]
-
-
-def find_removed_mcp_servers(
-    old_lockfile: Lockfile | None,
-    current_mcp_names: set[str],
-) -> list[McpLockEntry]:
-    """Find MCP servers that were in the old lockfile but are no longer configured."""
-    if old_lockfile is None:
-        return []
-
-    return [entry for entry in old_lockfile.mcp if entry.name not in current_mcp_names]
+    return [entry for entry in old_lockfile.installed if entry.identity not in current_identities]

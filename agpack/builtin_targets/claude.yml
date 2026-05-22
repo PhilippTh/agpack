@@ -1,0 +1,40 @@
+# Claude Code (Anthropic CLI)
+
+skills:
+  kind: copy-directory
+  path: .claude/skills
+
+commands:
+  kind: copy-file
+  path: .claude/commands
+
+agents:
+  kind: copy-file
+  path: .claude/agents
+
+mcp:
+  kind: edit-file
+  path: .mcp.json
+  vars:
+    bucket: mcpServers
+
+# Catch-all for anything in .claude/settings.json — apiKeyHelper,
+# cleanupPeriodDays, statusline, etc. Patches write full keys.
+settings:
+  kind: edit-file
+  path: .claude/settings.json
+
+# Semantic shortcuts for the two most common settings.json sections.
+# Same file as `settings:` above — patches just have a friendlier
+# bucket name. https://code.claude.com/docs/en/hooks
+hooks:
+  kind: edit-file
+  path: .claude/settings.json
+  vars:
+    bucket: hooks
+
+permissions:
+  kind: edit-file
+  path: .claude/settings.json
+  vars:
+    bucket: permissions

@@ -11,18 +11,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agpack.config import DependencySource
+from agpack.envsubst import resolve_env_vars
+from agpack.errors import FetchError
 
-# Timeout (in seconds) for any single git subprocess call.  Prevents
-# indefinite hangs when the remote is unreachable or git is waiting for
-# credentials that will never arrive.
+# Timeout (in seconds) for any single git subprocess call.  Prevents indefinite hangs when the remote is unreachable
+# or git is waiting for credentials that will never arrive.
 _GIT_TIMEOUT_SECONDS = 120
 
 # Match 7-40 hex chars (commit SHA)
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
 
 
-class FetchError(Exception):
-    """Raised when a git fetch operation fails."""
+def _redact(text: str) -> str:
+    """Strip ``user:pass@`` userinfo from any ``scheme://...`` URL embedded in *text*.
+
+    Git echoes the resolved URL it was asked to clone, which is the one place a resolved ``${GITHUB_TOKEN}`` still
+    reaches user-visible output. :func:`_run_git` applies this unconditionally to every returned CompletedProcess
+    (args, stdout, stderr); call sites use it directly on URL inputs they construct error messages from.
+
+    SSH-style ``git@github.com:owner/repo`` URLs have no ``://`` and are left untouched — their ``user@host`` form is
+    the scheme, not a secret.
+    """
+    return re.compile(r"([a-z][a-z0-9+\-.]*://)[^@/\s]+@").sub(r"\1", text)
 
 
 @dataclass
@@ -40,20 +50,19 @@ def _is_sha(ref: str) -> bool:
     return bool(_SHA_RE.match(ref))
 
 
-def _run_git(
-    args: list[str], cwd: str | Path | None = None
-) -> subprocess.CompletedProcess[str]:
-    """Run a git command and return the result.
+def _run_git(args: list[str], cwd: str | Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a git command and return the result with userinfo scrubbed from stdout/stderr/args.
 
-    The subprocess inherits the current environment with
-    ``GIT_TERMINAL_PROMPT=0`` injected so that git never blocks waiting
-    for interactive credentials input (e.g. when an HTTPS URL is used but
-    only SSH authentication is configured).  A timeout is also enforced to
-    guard against network hangs.
+    The subprocess inherits the current environment with ``GIT_TERMINAL_PROMPT=0`` injected so that git never blocks
+    waiting for interactive credentials input (e.g. when an HTTPS URL is used but only SSH authentication is
+    configured). A timeout is also enforced to guard against network hangs.
+
+    Every returned :class:`CompletedProcess` has its ``args``, ``stdout``, and ``stderr`` passed through
+    :func:`_redact` so a resolved ``${GITHUB_TOKEN}`` in the URL never reaches a caller that might log the result.
     """
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
-        return subprocess.run(
+        result = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
@@ -63,11 +72,17 @@ def _run_git(
         )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(
-            args=["git", *args],
+            args=["git", *(_redact(a) for a in args)],
             returncode=1,
             stdout="",
             stderr=f"Git operation timed out after {_GIT_TIMEOUT_SECONDS} seconds",
         )
+    return subprocess.CompletedProcess(
+        args=["git", *(_redact(a) for a in args)],
+        returncode=result.returncode,
+        stdout=_redact(result.stdout),
+        stderr=_redact(result.stderr),
+    )
 
 
 def _clone(
@@ -98,7 +113,10 @@ def _clone(
     result = _run_git(cmd)
 
     if result.returncode != 0:
-        raise FetchError(f"Failed to clone {url}:\n{result.stderr}")
+        # ``url`` is the caller-supplied value (may carry a resolved ``${GITHUB_TOKEN}``) so it still needs scrubbing
+        # here; ``result.stderr`` was already redacted inside _run_git.
+        msg = f"Failed to clone {_redact(url)}:\n{result.stderr}"
+        raise FetchError(msg)
 
     # If ref is a SHA, we need to fetch and checkout that specific commit
     if is_sha and ref is not None:
@@ -122,11 +140,13 @@ def _checkout_sha(clone_dir: Path, sha: str) -> None:
         # If unshallow fails (e.g. already full), try a regular fetch
         result = _run_git(["fetch", "origin"], cwd=clone_dir)
         if result.returncode != 0:
-            raise FetchError(f"Failed to fetch commit {sha}:\n{result.stderr}")
+            msg = f"Failed to fetch commit {sha}:\n{result.stderr}"
+            raise FetchError(msg)
 
     checkout = _run_git(["checkout", sha], cwd=clone_dir)
     if checkout.returncode != 0:
-        raise FetchError(f"Failed to checkout commit {sha}:\n{checkout.stderr}")
+        msg = f"Failed to checkout commit {sha}:\n{checkout.stderr}"
+        raise FetchError(msg)
 
 
 def _setup_sparse_checkout(clone_dir: Path, path: str) -> bool:
@@ -179,21 +199,27 @@ def _try_clone(
     return clone_dir
 
 
-def fetch_dependency(source: DependencySource) -> FetchResult:
+def fetch_dependency(source: DependencySource, env: dict[str, str] | None = None) -> FetchResult:
     """Fetch a dependency from a remote git repo.
 
-    Clones the repo (with sparse checkout when possible), extracts the
-    relevant path, and returns a FetchResult with the local path to
-    the extracted content.
+    Clones the repo (with sparse checkout when possible), extracts the relevant path, and returns a FetchResult with
+    the local path to the extracted content.
 
-    When the primary URL fails and additional URLs are configured,
-    each is tried in order until one succeeds.
+    When the primary URL fails and additional URLs are configured, each is tried in order until one succeeds.
 
-    The caller is responsible for cleaning up the returned local_path's
-    parent temp directory when done.
+    ``${VAR}`` references in :attr:`DependencySource.urls`, :attr:`~DependencySource.path`, and
+    :attr:`~DependencySource.ref` are resolved here against *env* and used only for the ``git`` invocation — the
+    resolved strings are never written back to ``source`` and never returned. Pre-cloning eager validation in
+    :func:`agpack.config.resolve_config` guarantees missing variables fail before we get here, so a ``ConfigError``
+    from this resolve path is a programmer error.
+
+    The caller is responsible for cleaning up the returned local_path's parent temp directory when done.
 
     Args:
-        source: The dependency to fetch.
+        source: The dependency to fetch (URL/path/ref are templates).
+        env: Variable table for ``${VAR}`` substitution at clone time.
+            Defaults to an empty dict (templates with no ``${VAR}``
+            will work without one).
 
     Returns:
         A FetchResult with the local path and resolved ref.
@@ -201,13 +227,22 @@ def fetch_dependency(source: DependencySource) -> FetchResult:
     Raises:
         FetchError: If all URLs fail.
     """
-    urls = source.urls
+    env = env or {}
+    ctx = f"dependency '{source.name}'"
+
+    # Resolve path/ref once (URL is resolved per-attempt below so each fallback URL gets its own context label in any
+    # error message).
+    resolved_path = resolve_env_vars(source.path, env, context=ctx) if source.path else None
+    resolved_ref_template = resolve_env_vars(source.ref, env, context=ctx) if source.ref else None
+
     tmpdir = Path(tempfile.mkdtemp(prefix="agpack-"))
 
     try:
         last_error: FetchError | None = None
 
-        for url in urls:
+        for url_template in source.urls:
+            resolved_url = resolve_env_vars(url_template, env, context=ctx)
+
             # Each attempt needs a clean clone directory
             clone_target = tmpdir / "repo"
             if clone_target.exists():
@@ -215,29 +250,32 @@ def fetch_dependency(source: DependencySource) -> FetchResult:
 
             try:
                 clone_dir = _try_clone(
-                    url=url,
-                    ref=source.ref,
-                    path=source.path,
+                    url=resolved_url,
+                    ref=resolved_ref_template,
+                    path=resolved_path,
                     tmpdir=tmpdir,
                 )
             except FetchError as exc:
                 last_error = exc
                 continue
 
-            resolved_ref = _get_resolved_ref(clone_dir)
+            head_sha = _get_resolved_ref(clone_dir)
 
             # Determine the local path to the content
-            if source.path:
-                content_path = clone_dir / source.path
+            if resolved_path:
+                content_path = clone_dir / resolved_path
                 if not content_path.exists():
-                    raise FetchError(f"Path '{source.path}' not found in {url}")
+                    # ``url_template`` (not ``resolved_url``) so we never leak a substituted token even if the template
+                    # itself appears in the surfaced error.
+                    msg = f"Path '{resolved_path}' not found in {url_template}"
+                    raise FetchError(msg)
             else:
                 content_path = clone_dir
 
             return FetchResult(
                 source=source,
                 local_path=content_path,
-                resolved_ref=resolved_ref,
+                resolved_ref=head_sha,
                 _tmpdir=tmpdir,
             )
 

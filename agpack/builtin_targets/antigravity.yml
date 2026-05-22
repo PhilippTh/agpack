@@ -1,0 +1,12 @@
+# Google Antigravity
+
+skills:
+  kind: copy-directory
+  path: .agent/skills
+
+commands:
+  kind: copy-file
+  path: .agent/workflows
+
+# MCP omitted: Antigravity MCP is global only
+# (~/.gemini/antigravity/mcp_config.json).
