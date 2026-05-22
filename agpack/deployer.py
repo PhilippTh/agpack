@@ -9,29 +9,27 @@ fundamentally different deployment shapes:
   fetched from a git repo, detected, and copied to each target that
   declares the matching resource type. :func:`detect_items` and
   :func:`deploy_item` cover this path.
-* Edit kind (``edit-file``): a list of structured entries
-  (currently only MCP servers) declared inline in ``agpack.yml`` is
-  merged into each target's config file. :func:`deploy_mcp_servers`
-  covers this path.
-
-Cleanup is split the same way: :func:`cleanup_deployed_files` removes
-files written by copy kinds, :func:`cleanup_mcp_server` removes entries
-written by edit-file resources.
+* Edit kind (``edit-file``): a list of :class:`~agpack.kinds.Patch`
+  operations declared inline in ``agpack.yml`` is applied to each
+  matching target's config file. :func:`apply_patches_to_targets` and
+  :func:`cleanup_applied_patches` cover this path.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
+from typing import cast
 
-from agpack.config import McpServer
 from agpack.display import console
 from agpack.fetcher import FetchResult
 from agpack.kinds import CopyResource
 from agpack.kinds import DeployError
 from agpack.kinds import EditFileResource
-from agpack.kinds import MergeMcpServers
+from agpack.kinds import Patch
 from agpack.kinds import ResourceDef
-from agpack.lockfile import McpTargetRef
+from agpack.kinds import Strategy
+from agpack.lockfile import AppliedPatch
 from agpack.target_schema import TargetDef
 
 # ===========================================================================
@@ -42,13 +40,7 @@ from agpack.target_schema import TargetDef
 def detect_items(
     fetch_result: FetchResult, resource: ResourceDef, label: str
 ) -> list[tuple[str, Path]]:
-    """Return ``(name, source-path)`` pairs for the items in a fetch result.
-
-    Only copy kinds (``copy-directory`` / ``copy-file``) have a detect
-    phase — edit-file resources get their entries inline from
-    ``config.mcp:``. Passing an edit-file resource is a programmer
-    error.
-    """
+    """Return ``(name, source-path)`` pairs for the items in a fetch result."""
     if isinstance(resource, CopyResource):
         return resource.detect(fetch_result, label)
     raise DeployError(
@@ -66,11 +58,7 @@ def deploy_item(
     dry_run: bool = False,
     verbose: bool = False,
 ) -> list[str]:
-    """Deploy one item to every target that supports ``resource_type``.
-
-    Targets that don't declare the resource type, or that declare it
-    with a non-copy kind, are silently skipped.
-    """
+    """Deploy one item to every target that supports ``resource_type``."""
     deployed: list[str] = []
     for target in targets:
         resource = target.resources.get(resource_type)
@@ -90,56 +78,91 @@ def deploy_item(
 
 
 # ===========================================================================
-# Edit-file kind (MCP servers) — encode + merge
+# Edit-file kind — patches
 # ===========================================================================
 
 
-def deploy_mcp_servers(
-    mcp_servers: list[McpServer],
+def apply_patches_to_targets(
+    resource_type: str,
+    patches: list[Patch],
     targets: list[TargetDef],
     project_root: Path,
+    *,
     dry_run: bool = False,
     verbose: bool = False,
-) -> dict[str, list[McpTargetRef]]:
-    """Deploy MCP server definitions to every edit-file resource.
+) -> list[AppliedPatch]:
+    """Apply ``patches`` to every target's edit-file resource of ``resource_type``.
 
-    Every :class:`EditFileResource` in every configured target receives
-    every MCP server (filtered by transport support inside the
-    resource's encoder). Targets without an edit-file resource, or
-    whose transports don't include the server's type, are skipped
-    silently; a server matched by *no* edit-file resource produces a
-    stderr warning.
+    Targets that don't declare this resource type, or that declare it
+    with a non-edit-file kind, are silently skipped. The returned
+    :class:`AppliedPatch` records are what gets written to the lockfile
+    so cleanup can later reverse each operation.
     """
-    result: dict[str, list[McpTargetRef]] = {}
+    if not patches:
+        return []
 
-    for server in mcp_servers:
-        written_to: list[McpTargetRef] = []
+    applied: list[AppliedPatch] = []
+    matched_any = False
 
-        for target in targets:
-            for resource in target.resources.values():
-                if not isinstance(resource, EditFileResource):
-                    continue
-                ref = resource.deploy_server(
-                    server, project_root, dry_run=dry_run, verbose=verbose
+    for target in targets:
+        resource = target.resources.get(resource_type)
+        if not isinstance(resource, EditFileResource):
+            continue
+        matched_any = True
+        resource.apply_patches(
+            patches, project_root, dry_run=dry_run, verbose=verbose
+        )
+        for patch in patches:
+            applied.append(
+                AppliedPatch(
+                    file_path=resource.path,
+                    key=patch.key,
+                    strategy=patch.strategy,
+                    value=patch.value,
                 )
-                if ref is not None:
-                    written_to.append(ref)
-
-        if not written_to:
-            console.print(
-                f"[yellow]warning[/yellow]: MCP server '{server.name}' "
-                f"({server.type} transport) was not written to any target — "
-                "no configured target has a matching edit-file resource or "
-                "supports this transport."
             )
 
-        result[server.name] = written_to
+    if not matched_any:
+        console.print(
+            f"[yellow]warning[/yellow]: {len(patches)} '{resource_type}' "
+            f"patch(es) configured but no target declares an edit-file "
+            f"resource for '{resource_type}'."
+        )
 
-    return result
+    return applied
+
+
+def cleanup_applied_patches(
+    applied: list[AppliedPatch],
+    project_root: Path,
+    *,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> None:
+    """Reverse every recorded patch, grouped by target file for efficiency.
+
+    Patches with no recoverable file (missing, bad extension) are
+    silently skipped — they'll naturally disappear on the next sync.
+    """
+    by_file: dict[str, list[Patch]] = defaultdict(list)
+    for entry in applied:
+        by_file[entry.file_path].append(
+            Patch(
+                key=entry.key,
+                value=entry.value,
+                strategy=cast(Strategy, entry.strategy),
+            )
+        )
+
+    for file_path, patches in by_file.items():
+        resource = EditFileResource(path=file_path)
+        resource.cleanup_patches(
+            patches, project_root, dry_run=dry_run, verbose=verbose
+        )
 
 
 # ===========================================================================
-# Cleanup (file resources + MCP)
+# Cleanup (copy-kind files)
 # ===========================================================================
 
 
@@ -178,36 +201,3 @@ def _cleanup_empty_dirs(deployed_files: list[str], project_root: Path) -> None:
     for d in sorted(dirs_to_check, key=lambda p: len(p.parts), reverse=True):
         if d.exists() and d.is_dir() and not any(d.iterdir()):
             d.rmdir()
-
-
-def cleanup_mcp_server(
-    server_name: str,
-    target_refs: list[McpTargetRef],
-    project_root: Path,
-    dry_run: bool = False,
-    verbose: bool = False,
-) -> None:
-    """Remove an MCP server from each config file recorded in the lockfile.
-
-    For each ref we rebuild a minimal :class:`EditFileResource` and
-    delegate. Refs missing ``servers_key`` (pre-0.4.0 lockfiles) are
-    skipped — they'll be re-recorded with full metadata on the next
-    sync. Format-inference failures are absorbed inside the kind's
-    own cleanup.
-    """
-    for ref in target_refs:
-        if not ref.servers_key:
-            if verbose:
-                console.print(
-                    f"  skipping cleanup of MCP '{server_name}' from {ref.path}: "
-                    "lockfile missing servers_key (pre-0.4.0 entry)"
-                )
-            continue
-
-        resource = EditFileResource(
-            path=ref.path,
-            merge=MergeMcpServers(servers_key=ref.servers_key),
-        )
-        resource.cleanup_entry(
-            server_name, project_root, dry_run=dry_run, verbose=verbose
-        )

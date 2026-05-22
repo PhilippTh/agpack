@@ -1,10 +1,10 @@
 """Target manifest schema — parser and validator.
 
-A *target* describes where a single AI coding tool expects resources and
-how its structured config files are merged. Each resource block is
-identified by an arbitrary name (``skills``, ``commands``, ``mcp``, or
-anything user-defined) and declares a :data:`~agpack.kinds.ResourceDef`
-via the ``kind:`` field.
+A *target* describes the filesystem location of each resource type a
+single AI tool consumes. Each top-level key is the resource type name
+(``skills``, ``commands``, ``mcp``, ``settings``, anything user-defined);
+each value declares a :data:`~agpack.kinds.ResourceDef` via the ``kind:``
+field.
 
 The actual deploy/cleanup behavior lives on the kind classes in
 :mod:`agpack.kinds`; this module is only responsible for turning YAML
@@ -20,10 +20,8 @@ from typing import Any
 from agpack.kinds import CopyDirectoryResource
 from agpack.kinds import CopyFileResource
 from agpack.kinds import EditFileResource
-from agpack.kinds import MergeMcpServers
 from agpack.kinds import ResourceDef
-from agpack.kinds import TransportSpec
-from agpack.kinds import infer_mcp_format
+from agpack.kinds import infer_config_format
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -39,8 +37,6 @@ class TargetSchemaError(Exception):
 # ---------------------------------------------------------------------------
 
 _VALID_KINDS = ("copy-directory", "copy-file", "edit-file")
-_VALID_COMMAND_FORMATS = ("string", "array")
-_VALID_TRANSPORTS = ("stdio", "http", "sse")
 
 
 # ---------------------------------------------------------------------------
@@ -55,12 +51,6 @@ class TargetDef:
     The target's name is the YAML filename (built-ins) or the mapping
     key under ``target_definitions:`` in ``agpack.yml``; it is not
     stored on the dataclass.
-
-    Attributes:
-        resources: All resource definitions declared by this target,
-            keyed by resource type name. ``mcp`` is no longer a
-            reserved name — it's a regular entry whose kind happens to
-            be ``edit-file``.
     """
 
     resources: dict[str, ResourceDef] = field(default_factory=dict)
@@ -89,8 +79,7 @@ def _reject_extra(known: set[str], data: dict[str, Any], context: str) -> None:
     extra = set(data) - known
     if extra:
         raise TargetSchemaError(
-            f"{context}: unknown keys {sorted(extra)}; "
-            f"valid: {sorted(known)}"
+            f"{context}: unknown keys {sorted(extra)}; valid: {sorted(known)}"
         )
 
 
@@ -111,102 +100,15 @@ def _parse_copy_file(data: dict[str, Any], context: str) -> CopyFileResource:
     return CopyFileResource(path=path)
 
 
-def _parse_transport(raw: Any, context: str) -> TransportSpec:
-    data = _require_mapping(raw, context)
-
-    known = {
-        "type_value",
-        "type_field",
-        "command_key",
-        "command_format",
-        "args_key",
-        "env_key",
-        "url_key",
-        "headers_key",
-    }
-    _reject_extra(known, data, context)
-
-    type_value = data.get("type_value")
-    if type_value is not None and not isinstance(type_value, str):
-        raise TargetSchemaError(
-            f"{context}.type_value: must be a string or null, "
-            f"got {type(type_value).__name__}"
-        )
-
-    command_format = data.get("command_format", "string")
-    if command_format not in _VALID_COMMAND_FORMATS:
-        raise TargetSchemaError(
-            f"{context}.command_format: must be one of {_VALID_COMMAND_FORMATS}, "
-            f"got {command_format!r}"
-        )
-
-    kwargs: dict[str, Any] = {
-        "type_value": type_value,
-        "command_format": command_format,
-    }
-    for key in (
-        "type_field",
-        "command_key",
-        "args_key",
-        "env_key",
-        "url_key",
-        "headers_key",
-    ):
-        if key in data:
-            kwargs[key] = _require_string(data[key], f"{context}.{key}")
-
-    return TransportSpec(**kwargs)
-
-
-def _parse_merge_mcp_servers(raw: Any, context: str) -> MergeMcpServers:
-    data = _require_mapping(raw, context)
-    _reject_extra({"servers_key", "defaults", "transports"}, data, context)
-
-    servers_key = _require_string(data.get("servers_key"), f"{context}.servers_key")
-
-    defaults_raw = data.get("defaults", {})
-    if not isinstance(defaults_raw, dict):
-        raise TargetSchemaError(f"{context}.defaults: must be a mapping")
-
-    transports_raw = data.get("transports", {})
-    transports_map = _require_mapping(transports_raw, f"{context}.transports")
-    transports: dict[str, TransportSpec] = {}
-    for transport_name, transport_raw in transports_map.items():
-        if transport_name not in _VALID_TRANSPORTS:
-            raise TargetSchemaError(
-                f"{context}.transports: unknown transport {transport_name!r}; "
-                f"valid: {_VALID_TRANSPORTS}"
-            )
-        transports[transport_name] = _parse_transport(
-            transport_raw, f"{context}.transports.{transport_name}"
-        )
-
-    return MergeMcpServers(
-        servers_key=servers_key,
-        defaults=dict(defaults_raw),
-        transports=transports,
-    )
-
-
 def _parse_edit_file(data: dict[str, Any], context: str) -> EditFileResource:
-    _reject_extra({"kind", "path", "merge"}, data, context)
-
+    _reject_extra({"kind", "path"}, data, context)
     path = _require_string(data.get("path"), f"{context}.path")
-    # Validate the path has a recognised extension at parse time so
-    # bad manifests fail loudly (not at deploy time).
+    # Validate extension at parse time so malformed manifests fail loudly.
     try:
-        infer_mcp_format(path)
+        infer_config_format(path)
     except Exception as exc:
         raise TargetSchemaError(f"{context}.path: {exc}") from exc
-
-    if "merge" not in data:
-        raise TargetSchemaError(
-            f"{context}.merge: required for kind: edit-file (use the "
-            f"mcp-servers encoder shape)"
-        )
-    merge = _parse_merge_mcp_servers(data["merge"], f"{context}.merge")
-
-    return EditFileResource(path=path, merge=merge)
+    return EditFileResource(path=path)
 
 
 # ---------------------------------------------------------------------------
@@ -222,10 +124,10 @@ def _parse_resource(raw: Any, context: str) -> ResourceDef:
             f"{context}.layout: deprecated — use 'kind: copy-directory' or "
             f"'kind: copy-file' instead. (Was: layout: {data['layout']!r}.)"
         )
-    if "format" in data:
+    if "merge" in data:
         raise TargetSchemaError(
-            f"{context}.format: drop this field — the MCP config format "
-            f"is inferred from the file extension of 'path'."
+            f"{context}.merge: removed — edit-file resources now take only "
+            f"'kind' and 'path'. Patches live under dependencies in agpack.yml."
         )
 
     kind = data.get("kind")
@@ -252,7 +154,7 @@ def parse_target_def(raw: Any, context: str = "target") -> TargetDef:
     Each top-level key is a resource type name (``skills`` /
     ``commands`` / ``mcp`` / any user-defined name). Each block must
     declare a ``kind:`` (``copy-directory`` / ``copy-file`` /
-    ``edit-file``) plus the kind-specific fields.
+    ``edit-file``) and a ``path:``.
 
     Raises:
         TargetSchemaError: If the manifest is malformed.

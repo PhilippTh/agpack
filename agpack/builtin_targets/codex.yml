@@ -11,9 +11,3 @@ agents:
 mcp:
   kind: edit-file
   path: .codex/config.toml
-  merge:
-    servers_key: mcp_servers
-    transports:
-      stdio: {}
-      http:
-        headers_key: http_headers

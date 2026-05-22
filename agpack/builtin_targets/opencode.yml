@@ -15,16 +15,3 @@ agents:
 mcp:
   kind: edit-file
   path: opencode.json
-  merge:
-    servers_key: mcp
-    defaults:
-      $schema: https://opencode.ai/config.json
-    transports:
-      stdio:
-        type_value: local
-        command_format: array
-        env_key: environment
-      http:
-        type_value: remote
-      sse:
-        type_value: remote

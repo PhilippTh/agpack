@@ -11,9 +11,3 @@ commands:
 mcp:
   kind: edit-file
   path: .cursor/mcp.json
-  merge:
-    servers_key: mcpServers
-    transports:
-      stdio: {}
-      http: {}
-      sse: {}

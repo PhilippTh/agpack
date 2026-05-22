@@ -27,10 +27,10 @@ from agpack.config import load_config
 from agpack.config import load_global_config
 from agpack.config import merge_configs
 from agpack.config import resolve_global_config_path
+from agpack.deployer import apply_patches_to_targets
+from agpack.deployer import cleanup_applied_patches
 from agpack.deployer import cleanup_deployed_files
-from agpack.deployer import cleanup_mcp_server
 from agpack.deployer import deploy_item
-from agpack.deployer import deploy_mcp_servers
 from agpack.deployer import detect_items
 from agpack.display import console
 from agpack.display import create_sync_progress
@@ -40,11 +40,11 @@ from agpack.fetcher import FetchResult
 from agpack.fetcher import cleanup_fetch
 from agpack.fetcher import fetch_dependency
 from agpack.kinds import EditFileError
+from agpack.kinds import Patch
+from agpack.lockfile import EditLockEntry
 from agpack.lockfile import InstalledEntry
 from agpack.lockfile import Lockfile
-from agpack.lockfile import McpLockEntry
 from agpack.lockfile import find_removed_dependencies
-from agpack.lockfile import find_removed_mcp_servers
 from agpack.lockfile import read_lockfile
 from agpack.lockfile import write_lockfile
 from agpack.registry import list_builtins
@@ -251,6 +251,37 @@ def _sync_resource_type(
     return sync
 
 
+def _apply_edit_resource(
+    resource_type: str,
+    patches: list[Patch],
+    target_defs: list[TargetDef],
+    project_root: Path,
+    new_lockfile: Lockfile,
+    *,
+    dry_run: bool,
+    verbose: bool,
+) -> int:
+    """Apply edit-file patches and record them in the lockfile.
+
+    Returns the number of patches applied (count for the summary line).
+    """
+    if not patches:
+        return 0
+    try:
+        applied = apply_patches_to_targets(
+            resource_type, patches, target_defs, project_root,
+            dry_run=dry_run, verbose=verbose,
+        )
+    except EditFileError as exc:
+        if not dry_run:
+            write_lockfile(project_root, new_lockfile)
+        raise click.ClickException(str(exc)) from exc
+    new_lockfile.edits.append(
+        EditLockEntry(resource_type=resource_type, applied=applied)
+    )
+    return len(patches)
+
+
 def _resource_kinds(targets: list[TargetDef]) -> dict[str, str]:
     """Build the resource-type → kind map across all configured targets.
 
@@ -380,18 +411,17 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     target_defs = _resolve_targets(config)
     resource_kinds = _resource_kinds(target_defs)
 
-    # 5. Read existing lockfile
+    # 5. Read existing lockfile and build the set of current
+    # fetch-dependency identities (copy kinds only — patches are
+    # tracked separately under lockfile.edits).
     old_lockfile = read_lockfile(project_root)
-
-    # 5. Build set of current dependency identities
     current_identities: set[str] = set()
     for deps_list in config.dependencies.values():
         for dep in deps_list:
-            current_identities.add(dep.identity)
+            if isinstance(dep, DependencySource):
+                current_identities.add(dep.identity)
 
-    current_mcp_names = {m.name for m in config.mcp}
-
-    # 6. Clean up removed dependencies
+    # 6. Clean up removed copy-kind dependencies.
     removed_deps = find_removed_dependencies(old_lockfile, current_identities)
     for entry in removed_deps:
         if verbose or dry_run:
@@ -400,39 +430,50 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose
         )
 
-    # 7. Clean up removed MCP servers
-    removed_mcp = find_removed_mcp_servers(old_lockfile, current_mcp_names)
-    for mcp_entry in removed_mcp:
-        if verbose or dry_run:
-            console.print(f"Removing MCP server '{mcp_entry.name}'...")
-        cleanup_mcp_server(
-            mcp_entry.name,
-            mcp_entry.targets,
-            project_root,
-            dry_run=dry_run,
-            verbose=verbose,
-        )
+    # 7. Clean up edit-file patches that are gone or changed.
+    # Today we just reverse every previously-applied patch wholesale;
+    # the deploy step below re-applies whatever is currently in the
+    # config. This is simple and correct for the current scope.
+    if old_lockfile is not None:
+        for edit in old_lockfile.edits:
+            if edit.applied:
+                if verbose or dry_run:
+                    console.print(
+                        f"Removing previous '{edit.resource_type}' patches..."
+                    )
+                cleanup_applied_patches(
+                    edit.applied, project_root,
+                    dry_run=dry_run, verbose=verbose,
+                )
 
-    # 8. Fetch and deploy dependencies — iterate over every resource type
-    # that has either a config entry or a layout from some target.
-    # Resource types with deps but no matching target are silently
-    # skipped (matches the "codex has no commands" precedent).
+    # 8. Fetch and deploy dependencies in YAML order. Copy kinds go
+    # through fetch+detect+deploy; edit-file kinds apply patches.
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
-
     all_verbose_lines: list[str] = []
 
     with create_sync_progress() as progress:
-        # Iterate in the order the user spelled them in agpack.yml so
-        # the progress display and summary match the YAML layout.
-        # Only copy kinds (copy-directory / copy-file) go through this
-        # loop — edit-file resources are handled separately below.
         for resource_type in config.dependencies:
             kind = resource_kinds.get(resource_type)
-            if kind is None or kind == "edit-file":
+            if kind is None:
+                # Configured but no target supports it — silently skip.
                 continue
+            entries = config.dependencies[resource_type]
+            if kind == "edit-file":
+                counts[resource_type] = _apply_edit_resource(
+                    resource_type,
+                    [e for e in entries if isinstance(e, Patch)],
+                    target_defs,
+                    project_root,
+                    new_lockfile,
+                    dry_run=dry_run,
+                    verbose=verbose,
+                )
+                continue
+            # Copy kind.
+            fetch_entries = [e for e in entries if isinstance(e, DependencySource)]
             sync = _sync_resource_type(
-                config.dependencies[resource_type],
+                fetch_entries,
                 resource_type,
                 target_defs,
                 project_root,
@@ -447,43 +488,18 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     for line in all_verbose_lines:
         console.print(line)
 
-    # MCP servers
-    mcp_count = 0
-    if config.mcp:
-        with console.status("Deploying MCP servers..."):
-            try:
-                mcp_result = deploy_mcp_servers(
-                    config.mcp,
-                    target_defs,
-                    project_root,
-                    dry_run=dry_run,
-                    verbose=verbose,
-                )
-            except EditFileError as exc:
-                if not dry_run:
-                    write_lockfile(project_root, new_lockfile)
-                raise click.ClickException(str(exc)) from exc
-
-        for server_name, target_refs in mcp_result.items():
-            new_lockfile.mcp.append(
-                McpLockEntry(name=server_name, targets=target_refs)
-            )
-            mcp_count += 1
-
-    # 9. Write lockfile
+    # 9. Write lockfile.
     if not dry_run:
         write_lockfile(project_root, new_lockfile)
 
-    # 10. Summary — one chip per resource type that had configured deps,
-    # plus MCP. Resource types with zero configured deps are omitted.
+    # 10. Summary — one chip per resource type that had configured deps.
     elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
     parts = [
         f"[bold]{counts.get(rt, 0)}[/bold] {rt}"
         for rt in config.dependencies
     ]
-    parts.append(f"[bold]{mcp_count}[/bold] MCP servers")
-    summary = ", ".join(parts)
+    summary = ", ".join(parts) if parts else "[dim]nothing to deploy[/dim]"
     targets = f"[bold]{target_count}[/bold] targets"
     console.print()
     console.print(Rule(f"{summary} → {targets} [dim]({elapsed:.2f}s)[/dim]"))
@@ -518,21 +534,17 @@ def status(config_path: str, no_global: bool) -> None:
 
     lockfile = read_lockfile(project_root)
 
-    # Build lookup from lockfile
     installed_map: dict[str, InstalledEntry] = {}
+    edits_by_type: dict[str, EditLockEntry] = {}
     if lockfile:
         for entry in lockfile.installed:
             installed_map[entry.identity] = entry
-
-    mcp_map: dict[str, McpLockEntry] = {}
-    if lockfile:
-        for mcp_entry in lockfile.mcp:
-            mcp_map[mcp_entry.name] = mcp_entry
+        for edit in lockfile.edits:
+            edits_by_type[edit.resource_type] = edit
 
     for resource_type, deps in config.dependencies.items():
-        label = resource_type.capitalize()
         table = Table(
-            title=label,
+            title=resource_type.capitalize(),
             title_style="bold",
             show_header=False,
             box=None,
@@ -545,49 +557,32 @@ def status(config_path: str, no_global: bool) -> None:
             table.add_row("[dim]no dependencies configured[/dim]")
         else:
             for dep in deps:
-                installed = installed_map.get(dep.identity)
-                if installed:
-                    short_ref = installed.resolved_ref[:7]
-                    table.add_row(
-                        f"[green]✓[/green] {dep.name}",
-                        f"{dep.url} @ {short_ref}",
-                    )
+                if isinstance(dep, DependencySource):
+                    installed = installed_map.get(dep.identity)
+                    if installed:
+                        short_ref = installed.resolved_ref[:7]
+                        table.add_row(
+                            f"[green]✓[/green] {dep.name}",
+                            f"{dep.url} @ {short_ref}",
+                        )
+                    else:
+                        table.add_row(
+                            f"[red]✗[/red] {dep.name}",
+                            "not yet synced",
+                        )
                 else:
-                    table.add_row(
-                        f"[red]✗[/red] {dep.name}",
-                        "not yet synced",
+                    # Patch entry — synced if the lockfile recorded it.
+                    recorded = edits_by_type.get(resource_type)
+                    synced = recorded is not None and any(
+                        ap.key == dep.key and ap.strategy == dep.strategy
+                        and ap.value == dep.value
+                        for ap in recorded.applied
                     )
+                    mark = "[green]✓[/green]" if synced else "[red]✗[/red]"
+                    detail = dep.strategy if synced else "not yet synced"
+                    table.add_row(f"{mark} {dep.key}", detail)
         console.print(table)
         console.print()
-
-    # MCP
-    table = Table(
-        title="MCP Servers",
-        title_style="bold",
-        show_header=False,
-        box=None,
-        padding=(0, 1),
-        title_justify="left",
-    )
-    table.add_column(style="bold", no_wrap=True)
-    table.add_column(style="dim")
-    if not config.mcp:
-        table.add_row("[dim]no servers configured[/dim]")
-    else:
-        for server in config.mcp:
-            mcp_installed = mcp_map.get(server.name)
-            if mcp_installed and mcp_installed.targets:
-                targets_str = ", ".join(t.path for t in mcp_installed.targets)
-                table.add_row(
-                    f"[green]✓[/green] {server.name}",
-                    f"→ {targets_str}",
-                )
-            else:
-                table.add_row(
-                    f"[red]✗[/red] {server.name}",
-                    "not yet synced",
-                )
-    console.print(table)
 
 
 @main.command()
@@ -637,12 +632,13 @@ dependencies:
     #   path: agents/my-agent.md
 
   mcp:
-    # Shared MCP servers available in all projects:
-    # - name: my-server
-    #   command: npx
-    #   args: ["-y", "@example/mcp-server"]
-    #   env:
-    #     API_KEY: ${API_KEY}   # resolved from .env or shell environment
+    # Shared MCP servers as patches into the per-target MCP config file:
+    # - key: mcpServers.my-server          # bucket-key for Claude/Cursor/Gemini
+    #   value:
+    #     command: npx
+    #     args: ["-y", "@example/mcp-server"]
+    #     env:
+    #       API_KEY: ${API_KEY}            # resolved from .env or shell env
 """
         path.write_text(template, encoding="utf-8")
         console.print(f"[green]✓[/green] Created [bold]{path}[/bold]")
@@ -689,12 +685,28 @@ dependencies:
     # - url: https://github.com/owner/repo
     #   path: agents/my-agent.md
 
+  # edit-file resources take patches instead of git URLs:
   mcp:
-    # - name: my-server
-    #   command: npx
-    #   args: ["-y", "@example/mcp-server"]
-    #   env:
-    #     API_KEY: ${API_KEY}   # resolved from .env or shell environment
+    # Patch into the target's MCP config file at the given key.
+    # - key: mcpServers.my-server
+    #   value:
+    #     command: npx
+    #     args: ["-y", "@example/mcp-server"]
+    #     env:
+    #       API_KEY: ${API_KEY}            # resolved from .env or shell env
+
+  # Claude Code hooks live in .claude/settings.json under hooks.<event>:
+  # settings:
+  #   - key: hooks.PreToolUse
+  #     strategy: append                   # default is 'replace'
+  #     value:
+  #       matcher: "Write|Edit"
+  #       hooks:
+  #         - type: command
+  #           command: "echo ${TOOL_INPUT}"
+  #   - key: permissions.allow
+  #     strategy: append
+  #     value: "Read(/etc/**)"
 
 # Override a built-in target or define a brand-new one.
 # Use 'agpack targets list' to see all available targets and
@@ -709,12 +721,8 @@ dependencies:
 #       kind: copy-file
 #       path: .my-claude/commands
 #     mcp:
-#       kind: edit-file            # merges entries into a structured config
+#       kind: edit-file            # patches written from dependencies.mcp
 #       path: .mcp.json            # format (json|toml) inferred from extension
-#       merge:
-#         servers_key: mcpServers
-#         transports:
-#           stdio: {}
 #
 #   my-internal-tool:
 #     # Brand-new target — also listed under 'targets:' above to be used.
@@ -726,13 +734,9 @@ dependencies:
 #     rules:
 #       kind: copy-file
 #       path: .myaitool/rules
-#     mcp:
+#     settings:
 #       kind: edit-file
-#       path: .myaitool/config.json
-#       merge:
-#         servers_key: mcpServers
-#         transports:
-#           stdio: {}
+#       path: .myaitool/settings.json
 """
     path.write_text(template, encoding="utf-8")
     console.print(f"[green]✓[/green] Created [bold]{path.name}[/bold]")

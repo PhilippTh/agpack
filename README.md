@@ -53,17 +53,20 @@ dependencies:
     - url: https://github.com/owner/repo
       path: agents/backend-expert.md
 
+  # edit-file resources take patches: a key path into the target file
+  # and a value to put there.
   mcp:
-    - name: filesystem
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    - key: mcpServers.filesystem
+      value:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
 ```
 
 ```bash
 agpack sync
 ```
 
-Skills get copied to `.claude/skills/`, `.opencode/skills/`, etc. Commands and agents go to their respective directories. MCP server definitions get merged into each tool's config file. Run `agpack sync` again after editing the config -- removed dependencies get cleaned up automatically.
+Skills get copied to `.claude/skills/`, `.opencode/skills/`, etc. Commands and agents go to their respective directories. Patches are applied to each target's structured config file (e.g. `.mcp.json`, `.claude/settings.json`). Run `agpack sync` again after editing the config — removed dependencies and patches get cleaned up automatically.
 
 ## Dependencies
 
@@ -128,7 +131,7 @@ If the directory contains no deployable files, sync fails with an error.
 
 ### Environment variables
 
-Use `${VAR_NAME}` in any string value to reference environment variables. This works in URLs, paths, refs, MCP commands, args, env values, and server URLs.
+Use `${VAR_NAME}` in any string value to reference environment variables. Substitution recurses through dependency URLs/paths/refs and through every string inside a patch's `key` or `value` (including nested dicts and lists).
 
 ```yaml
 dependencies:
@@ -137,11 +140,12 @@ dependencies:
       path: skills/my-skill
 
   mcp:
-    - name: context7
-      command: npx
-      args: ["-y", "@context7/mcp-server"]
-      env:
-        CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+    - key: mcpServers.context7
+      value:
+        command: npx
+        args: ["-y", "@context7/mcp-server"]
+        env:
+          CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
 ```
 
 Variables are resolved from up to three sources (highest priority first):
@@ -170,14 +174,15 @@ dependencies:
       path: skills/my-standard-skill
 
   mcp:
-    - name: context7
-      command: npx
-      args: ["-y", "@upstash/context7-mcp@latest"]
-      env:
-        CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+    - key: mcpServers.context7
+      value:
+        command: npx
+        args: ["-y", "@upstash/context7-mcp@latest"]
+        env:
+          CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
 ```
 
-Global dependencies are merged with the project config during sync. If the same dependency or MCP server appears in both, the project version wins.
+Global dependencies are merged with the project config during sync. Fetch entries are deduped by URL+path; patch entries are deduped by key (for `replace`) or by full content (for `append`). When both define the same patch key, the project version wins.
 
 To skip the global config, either pass `--no-global` on the command line or add `global: false` to your project's `agpack.yml`. The default path (`~/.config/agpack/agpack.yml`) can be overridden with the `AGPACK_GLOBAL_CONFIG` environment variable.
 
@@ -228,10 +233,6 @@ target_definitions:
     mcp:
       kind: edit-file
       path: .myaitool/config.json    # format inferred from .json/.toml suffix
-      merge:
-        servers_key: mcpServers
-        transports:
-          stdio: {}
 ```
 
 Resolution precedence (highest first): project `target_definitions` → global `target_definitions` (in `~/.config/agpack/agpack.yml`) → bundled built-in. When a name appears in `target_definitions`, that entry **fully replaces** the built-in; agpack does not deep-merge.
@@ -240,11 +241,40 @@ Resolution precedence (highest first): project `target_definitions` → global `
 
 Every resource block declares a `kind:` that tells agpack how to deploy it. There are exactly three:
 
-| Kind | What it does | Used by |
-|------|--------------|---------|
-| `copy-directory` | Copies a directory tree from a fetched git repo into `<path>/<name>/`. A dependency that points at a folder of subfolders expands to one bundle per subfolder. | Skills |
-| `copy-file` | Copies individual files from a fetched git repo into `<path>/<name>`. A dependency that points at a folder of files expands to one item per file. | Commands, agents |
-| `edit-file` | Reads a structured config file (JSON or TOML, inferred from the path), merges entries into a configured top-level key, writes it back. Only touches keys agpack put there. | MCP servers |
+| Kind | What it does | Dependency shape |
+|------|--------------|------------------|
+| `copy-directory` | Copies a directory tree from a fetched git repo into `<path>/<name>/`. A dependency that points at a folder of subfolders expands to one bundle per subfolder. | `{ url, path?, ref? }` |
+| `copy-file` | Copies individual files from a fetched git repo into `<path>/<name>`. A dependency that points at a folder of files expands to one item per file. | `{ url, path?, ref? }` |
+| `edit-file` | Reads a structured config file (JSON or TOML, inferred from the path extension), applies patches, writes it back. Only touches keys agpack put there. | `{ key, value, strategy? }` |
+
+### Patches (edit-file)
+
+An edit-file dependency is a **patch**: a dotted `key` path into the file, a `value` to put there, and an optional `strategy` (`replace` — default — or `append`). The same engine handles every JSON/TOML config a tool might use: MCP servers, Claude Code hooks, permissions, VS Code extensions, anything.
+
+```yaml
+dependencies:
+  # Replace a single key (default strategy)
+  mcp:
+    - key: mcpServers.filesystem
+      value:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+  # Append to a list — for hooks, permissions, extensions, etc.
+  settings:
+    - key: hooks.PreToolUse
+      strategy: append
+      value:
+        matcher: "Write|Edit"
+        hooks: [{ type: command, command: "echo ${TOOL_INPUT}" }]
+    - key: permissions.allow
+      strategy: append
+      value: "Read(/etc/**)"
+```
+
+Intermediate dicts are auto-created. `append` requires the path to resolve to a list (created empty if absent). Cleanup of removed patches: `replace` deletes the key; `append` finds the entry by deep-equality against the lockfile-recorded value and removes it — agpack never deletes anything it didn't write.
+
+**Per-target bucket keys.** agpack does not translate between targets — the patch key you write is applied verbatim to every target that supports the resource type. For tools whose MCP bucket differs (Claude/Cursor/Gemini use `mcpServers`, Codex uses `mcp_servers`, OpenCode uses `mcp`), write one patch per bucket — or restrict your `targets:` list to tools that share the bucket name.
 
 ### Arbitrary resource types
 
@@ -296,19 +326,13 @@ agents:   { kind: copy-file, path: ... }
 mcp:                            # omit if the target has no per-project MCP
   kind: edit-file
   path: <relative path>         # extension (.json|.toml) drives the format
-  merge:                        # encoder-specific config (mcp-servers)
-    servers_key: <top-level key>
-    defaults: { ... }           # optional constant fields merged at root
-    transports:                 # only listed transports are emitted
-      stdio:
-        type_value: <str>       # omit to suppress the "type" key entirely
-        command_format: string|array
-        env_key: env            # rename to "environment" (opencode) etc.
-      http:
-        type_value: <str>
-        url_key: url            # rename to "httpUrl" (gemini), etc.
-        headers_key: headers    # rename to "http_headers" (codex), etc.
-      sse: { ... same shape ... }
+
+# Any name + edit-file works. agpack ships built-ins for `mcp` and (on
+# Claude only) `settings`, but you can declare your own for any
+# JSON/TOML config the tool reads.
+settings:
+  kind: edit-file
+  path: .my-tool/settings.json
 ```
 
 ## Commands

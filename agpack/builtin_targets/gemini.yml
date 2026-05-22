@@ -11,10 +11,3 @@ commands:
 mcp:
   kind: edit-file
   path: .gemini/settings.json
-  merge:
-    servers_key: mcpServers
-    transports:
-      stdio: {}
-      http:
-        url_key: httpUrl
-      sse: {}

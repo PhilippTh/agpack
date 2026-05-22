@@ -15,11 +15,7 @@ agents:
 mcp:
   kind: edit-file
   path: .mcp.json
-  merge:
-    servers_key: mcpServers
-    transports:
-      stdio: {}
-      http:
-        type_value: http
-      sse:
-        type_value: sse
+
+settings:
+  kind: edit-file
+  path: .claude/settings.json

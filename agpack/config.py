@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from agpack.kinds import Patch
 from agpack.target_schema import TargetDef
 from agpack.target_schema import TargetSchemaError
 from agpack.target_schema import parse_target_def
@@ -27,9 +28,9 @@ DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
 
 @dataclass
 class DependencySource:
-    """A parsed skill, command, or agent dependency.
+    """A parsed skill, command, or agent dependency (copy-kind input).
 
-    The ``urls`` list contains one or more git clone URLs.  The first
+    The ``urls`` list contains one or more git clone URLs. The first
     entry is the canonical (primary) URL used for identity and display.
     Remaining entries are fallback URLs tried in order when earlier ones
     fail.
@@ -49,7 +50,6 @@ class DependencySource:
         """Derive the resource name (last path segment, or url basename)."""
         if self.path:
             return self.path.rstrip("/").rsplit("/", 1)[-1]
-        # Strip trailing .git and take the last segment of the URL
         cleaned = self.url.rstrip("/")
         if cleaned.endswith(".git"):
             cleaned = cleaned[:-4]
@@ -64,31 +64,26 @@ class DependencySource:
         return key
 
 
-@dataclass
-class McpServer:
-    """An MCP server definition."""
-
-    name: str
-    type: str = "stdio"  # stdio | sse | http
-    command: str | None = None
-    args: list[str] = field(default_factory=list)
-    env: dict[str, str] = field(default_factory=dict)
-    url: str | None = None
+# A dependency entry under ``dependencies.<rt>`` is either a fetched
+# resource (``DependencySource``) for copy kinds, or a structured patch
+# (``Patch``) for edit-file kinds.
+DependencyEntry = DependencySource | Patch
 
 
 @dataclass
 class AgpackConfig:
     """Parsed and validated agpack.yml.
 
-    ``dependencies`` is an open dict keyed by resource type name
-    (``skills``, ``commands``, ``agents``, or any user-defined type
-    such as ``rules`` or ``personas``). agpack does not interpret the
-    name — it simply matches it against the target manifests.
+    ``dependencies`` is an open dict keyed by resource type name. Each
+    entry is either a :class:`DependencySource` (copy kinds — fetched
+    from git) or a :class:`Patch` (edit-file kinds — applied to a
+    structured config file). All entries under a given key must be of
+    the same type; the actual kind is enforced at sync time against
+    the target manifest.
     """
 
     targets: list[str]
-    dependencies: dict[str, list[DependencySource]] = field(default_factory=dict)
-    mcp: list[McpServer] = field(default_factory=list)
+    dependencies: dict[str, list[DependencyEntry]] = field(default_factory=dict)
     use_global: bool = True
     target_definitions: dict[str, TargetDef] = field(default_factory=dict)
 
@@ -100,8 +95,7 @@ class GlobalConfig:
     Contains only dependencies — no targets.
     """
 
-    dependencies: dict[str, list[DependencySource]] = field(default_factory=dict)
-    mcp: list[McpServer] = field(default_factory=list)
+    dependencies: dict[str, list[DependencyEntry]] = field(default_factory=dict)
     target_definitions: dict[str, TargetDef] = field(default_factory=dict)
     config_dir: Path = field(default_factory=lambda: DEFAULT_GLOBAL_CONFIG_DIR)
     """Directory containing the global config (used to locate .env)."""
@@ -121,22 +115,9 @@ class ConfigError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _parse_dependency(raw: dict[str, Any], context: str) -> DependencySource:
-    """Parse a single dependency entry (object form).
-
-    Args:
-        raw: The raw YAML dict for this dependency.
-        context: Human-readable location for error messages (e.g. "skills[0]").
-    """
-    if not isinstance(raw, dict):
-        raise ConfigError(
-            f"{context}: expected an object with 'url' key, got {type(raw).__name__}"
-        )
-
+def _parse_fetch_entry(raw: dict[str, Any], context: str) -> DependencySource:
+    """Parse a fetch (copy-kind) dependency entry: ``url`` (+ optional path/ref)."""
     raw_url = raw.get("url")
-    if raw_url is None:
-        raise ConfigError(f"{context}: missing required field 'url'")
-
     if isinstance(raw_url, str):
         if not raw_url:
             raise ConfigError(f"{context}: 'url' must not be empty")
@@ -156,58 +137,69 @@ def _parse_dependency(raw: dict[str, Any], context: str) -> DependencySource:
     if ref is not None:
         ref = str(ref)
 
+    known = {"url", "path", "ref"}
+    extra = set(raw) - known
+    if extra:
+        raise ConfigError(f"{context}: unknown fields {sorted(extra)}")
+
     return DependencySource(urls=urls, path=path, ref=ref)
 
 
-def _parse_mcp(raw: dict[str, Any], context: str) -> McpServer:
-    """Parse a single MCP server entry."""
-    if not isinstance(raw, dict):
-        raise ConfigError(f"{context}: expected an object, got {type(raw).__name__}")
+_VALID_STRATEGIES = ("replace", "append")
 
-    name = raw.get("name")
-    if not name:
-        raise ConfigError(f"{context}: missing required field 'name'")
 
-    server_type = str(raw.get("type", "stdio"))
-    if server_type not in ("stdio", "sse", "http"):
+def _parse_patch_entry(raw: dict[str, Any], context: str) -> Patch:
+    """Parse an edit-file entry: ``key``, ``value``, optional ``strategy``."""
+    key = raw.get("key")
+    if not isinstance(key, str) or not key:
+        raise ConfigError(f"{context}: 'key' must be a non-empty string")
+
+    if "value" not in raw:
+        raise ConfigError(f"{context}: missing required field 'value'")
+
+    strategy = raw.get("strategy", "replace")
+    if strategy not in _VALID_STRATEGIES:
         raise ConfigError(
-            f"{context}: 'type' must be 'stdio', 'sse', or 'http', got '{server_type}'"
+            f"{context}: 'strategy' must be one of {_VALID_STRATEGIES}, "
+            f"got {strategy!r}"
         )
 
-    if server_type == "stdio":
-        command = raw.get("command")
-        if not command:
-            raise ConfigError(
-                f"{context}: stdio MCP server '{name}'"
-                " is missing required field 'command'"
-            )
-        return McpServer(
-            name=name,
-            type=server_type,
-            command=str(command),
-            args=[str(a) for a in raw.get("args", [])],
-            env={str(k): str(v) for k, v in raw.get("env", {}).items()},
+    known = {"key", "value", "strategy"}
+    extra = set(raw) - known
+    if extra:
+        raise ConfigError(f"{context}: unknown fields {sorted(extra)}")
+
+    return Patch(key=key, value=raw["value"], strategy=strategy)
+
+
+def _parse_dependency_entry(raw: Any, context: str) -> DependencyEntry:
+    """Parse one entry; the shape decides fetch vs patch.
+
+    An entry with ``url`` is a fetch entry (copy kind). An entry with
+    ``key`` is a patch entry (edit-file kind). Anything else is an error.
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"{context}: expected an object, got {type(raw).__name__}"
         )
-    else:
-        url = raw.get("url")
-        if not url:
-            raise ConfigError(
-                f"{context}: {server_type} MCP server '{name}'"
-                " is missing required field 'url'"
-            )
-        return McpServer(
-            name=name,
-            type=server_type,
-            url=str(url),
+    has_url = "url" in raw
+    has_key = "key" in raw
+    if has_url and has_key:
+        raise ConfigError(
+            f"{context}: entry has both 'url' (fetch) and 'key' (patch) — "
+            f"these are mutually exclusive"
         )
+    if has_url:
+        return _parse_fetch_entry(raw, context)
+    if has_key:
+        return _parse_patch_entry(raw, context)
+    raise ConfigError(
+        f"{context}: entry must have either 'url' (fetch) or 'key' (patch)"
+    )
 
 
 def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef]:
-    """Parse a ``target_definitions`` mapping into TargetDef objects.
-
-    The mapping key is the target name; there is no separate ``name``
-    field on the manifest itself (the parser rejects one if present).
-    """
+    """Parse a ``target_definitions`` mapping into TargetDef objects."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -230,54 +222,40 @@ def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef
 
 def _parse_dependencies(
     deps: dict[str, Any], prefix: str = ""
-) -> tuple[dict[str, list[DependencySource]], list[McpServer]]:
-    """Parse all dependency lists from a ``dependencies`` mapping.
+) -> dict[str, list[DependencyEntry]]:
+    """Parse the ``dependencies`` mapping into a {resource_type: [entries]} dict.
 
-    Resource type names are open: every key under ``dependencies`` is
-    treated as a resource type name (with a list of dependency objects
-    as its value) except for the reserved ``mcp`` key, which is parsed
-    as a list of MCP server definitions.
-
-    Args:
-        deps: The raw ``dependencies`` dict from YAML.
-        prefix: Optional prefix for error context (e.g. ``"global "``).
-
-    Returns:
-        A tuple of (dependencies, mcp).
+    Each entry is either a :class:`DependencySource` (fetch) or a
+    :class:`Patch` (patch) depending on whether it has ``url:`` or
+    ``key:``. Mixed lists are rejected — a resource type is either
+    fetch-only or patch-only.
     """
-    dependencies: dict[str, list[DependencySource]] = {}
-    mcp: list[McpServer] = []
-    for key, raw_list in deps.items():
-        if not isinstance(key, str) or not key:
+    out: dict[str, list[DependencyEntry]] = {}
+    for rt, raw_list in deps.items():
+        if not isinstance(rt, str) or not rt:
             raise ConfigError(
-                f"{prefix}dependencies: keys must be non-empty strings, got {key!r}"
+                f"{prefix}dependencies: keys must be non-empty strings, got {rt!r}"
             )
         items = raw_list or []
-        if key == "mcp":
-            mcp = [
-                _parse_mcp(m, f"{prefix}dependencies.mcp[{i}]")
-                for i, m in enumerate(items)
-            ]
-        else:
-            dependencies[key] = [
-                _parse_dependency(d, f"{prefix}dependencies.{key}[{i}]")
-                for i, d in enumerate(items)
-            ]
-    return dependencies, mcp
+        entries: list[DependencyEntry] = [
+            _parse_dependency_entry(item, f"{prefix}dependencies.{rt}[{i}]")
+            for i, item in enumerate(items)
+        ]
+        # Reject mixed fetch + patch within one resource type.
+        if entries:
+            first_kind = type(entries[0])
+            for i, entry in enumerate(entries[1:], 1):
+                if type(entry) is not first_kind:
+                    raise ConfigError(
+                        f"{prefix}dependencies.{rt}[{i}]: cannot mix fetch and "
+                        f"patch entries under the same resource type"
+                    )
+        out[rt] = entries
+    return out
 
 
 def load_config(path: Path) -> AgpackConfig:
-    """Load and validate agpack.yml.
-
-    Args:
-        path: Path to the agpack.yml file.
-
-    Returns:
-        A validated AgpackConfig.
-
-    Raises:
-        ConfigError: If the config is invalid.
-    """
+    """Load and validate agpack.yml."""
     if not path.exists():
         raise ConfigError(f"Config file not found: {path}")
 
@@ -289,7 +267,6 @@ def load_config(path: Path) -> AgpackConfig:
     if not isinstance(data, dict):
         raise ConfigError("Config file must be a YAML mapping")
 
-    # Targets
     targets = data.get("targets")
     if not targets or not isinstance(targets, list):
         raise ConfigError("Missing or invalid 'targets' (must be a list)")
@@ -298,25 +275,20 @@ def load_config(path: Path) -> AgpackConfig:
         if not isinstance(t, str) or not t:
             raise ConfigError(f"'targets' entries must be non-empty strings, got {t!r}")
 
-    # Global config opt-out
     use_global = data.get("global", True)
     if not isinstance(use_global, bool):
         raise ConfigError("'global' must be true or false")
 
-    # Dependencies
     deps = data.get("dependencies", {})
     if not isinstance(deps, dict):
         raise ConfigError("'dependencies' must be a mapping")
 
-    dependencies, mcp = _parse_dependencies(deps)
-
-    # Custom target definitions (override built-ins or add new targets)
+    dependencies = _parse_dependencies(deps)
     target_definitions = _parse_target_definitions(data.get("target_definitions"))
 
     return AgpackConfig(
         targets=targets,
         dependencies=dependencies,
-        mcp=mcp,
         use_global=use_global,
         target_definitions=target_definitions,
     )
@@ -326,7 +298,6 @@ def resolve_global_config_path() -> Path:
     """Return the global config file path.
 
     Respects the ``AGPACK_GLOBAL_CONFIG`` environment variable.
-    Falls back to ``~/.config/agpack/agpack.yml``.
     """
     override = os.environ.get("AGPACK_GLOBAL_CONFIG")
     if override:
@@ -335,20 +306,7 @@ def resolve_global_config_path() -> Path:
 
 
 def load_global_config(path: Path | None = None) -> GlobalConfig | None:
-    """Load the global agpack config.
-
-    Args:
-        path: Explicit path to the global config file.
-              If *None*, the path is resolved via ``AGPACK_GLOBAL_CONFIG``
-              or the default ``~/.config/agpack/agpack.yml``.
-
-    Returns:
-        A :class:`GlobalConfig` if the file exists and is valid,
-        or *None* if the file does not exist.
-
-    Raises:
-        ConfigError: If the file exists but is malformed.
-    """
+    """Load the global agpack config (or None if missing)."""
     if path is None:
         path = resolve_global_config_path()
 
@@ -360,7 +318,6 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
     except yaml.YAMLError as exc:
         raise ConfigError(f"Failed to parse global config YAML: {exc}") from exc
 
-    # An empty file yields None from safe_load
     if data is None:
         return GlobalConfig(config_dir=path.parent)
 
@@ -371,15 +328,13 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
     if not isinstance(deps, dict):
         raise ConfigError("Global config 'dependencies' must be a mapping")
 
-    dependencies, mcp = _parse_dependencies(deps, prefix="global ")
-
+    dependencies = _parse_dependencies(deps, prefix="global ")
     target_definitions = _parse_target_definitions(
         data.get("target_definitions"), prefix="global "
     )
 
     return GlobalConfig(
         dependencies=dependencies,
-        mcp=mcp,
         target_definitions=target_definitions,
         config_dir=path.parent,
     )
@@ -388,36 +343,25 @@ def load_global_config(path: Path | None = None) -> GlobalConfig | None:
 def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConfig:
     """Merge a global config into a project config.
 
-    Global dependencies are appended after project dependencies.
-    Duplicates are resolved in favour of the project config:
-
-    - Dependencies are deduplicated by :attr:`DependencySource.identity`,
-      within each resource type.
-    - MCP servers are deduplicated by :attr:`McpServer.name`.
+    Global dependencies are appended after project dependencies. Fetch
+    entries are deduplicated by :attr:`DependencySource.identity`;
+    patch entries are deduplicated by ``(key, value, strategy)``
+    content. Project entries always win on conflict.
 
     Returns a **new** :class:`AgpackConfig`; the inputs are not mutated.
     """
-    project_mcp_names = {m.name for m in project.mcp}
-
-    dependencies: dict[str, list[DependencySource]] = {
+    dependencies: dict[str, list[DependencyEntry]] = {
         rt: list(deps) for rt, deps in project.dependencies.items()
     }
     for rt, global_deps in global_cfg.dependencies.items():
         bucket = dependencies.setdefault(rt, [])
-        seen = {d.identity for d in bucket}
+        seen: set[Any] = {_dedup_key(e) for e in bucket}
         for dep in global_deps:
-            if dep.identity not in seen:
+            k = _dedup_key(dep)
+            if k not in seen:
                 bucket.append(dep)
-                seen.add(dep.identity)
+                seen.add(k)
 
-    # Merge MCP — project names take precedence
-    mcp = list(project.mcp)
-    for server in global_cfg.mcp:
-        if server.name not in project_mcp_names:
-            mcp.append(server)
-
-    # Merge target_definitions — project entries win by name (replace, no
-    # deep merge); global additions only if name not already in project.
     target_definitions = dict(project.target_definitions)
     for name, target in global_cfg.target_definitions.items():
         if name not in target_definitions:
@@ -426,7 +370,25 @@ def merge_configs(project: AgpackConfig, global_cfg: GlobalConfig) -> AgpackConf
     return AgpackConfig(
         targets=project.targets,
         dependencies=dependencies,
-        mcp=mcp,
         use_global=project.use_global,
         target_definitions=target_definitions,
     )
+
+
+def _dedup_key(entry: DependencyEntry) -> Any:
+    """Return a hashable identity for an entry, for dedup during merge.
+
+    Fetch entries are deduped by url+path. Patch entries depend on
+    strategy:
+
+    - ``replace``: deduped by ``key`` — two patches that both set the
+      same key are duplicates (project wins).
+    - ``append``: deduped by ``(key, value)`` — two appends at the
+      same key with different values are *distinct* entries.
+    """
+    if isinstance(entry, DependencySource):
+        return ("fetch", entry.identity)
+    if entry.strategy == "replace":
+        return ("patch", "replace", entry.key)
+    value_repr = yaml.safe_dump(entry.value, sort_keys=True)
+    return ("patch", "append", entry.key, value_repr)

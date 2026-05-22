@@ -15,12 +15,3 @@ agents:
 mcp:
   kind: edit-file
   path: .vscode/mcp.json
-  merge:
-    servers_key: servers
-    transports:
-      stdio:
-        type_value: stdio
-      http:
-        type_value: http
-      sse:
-        type_value: sse

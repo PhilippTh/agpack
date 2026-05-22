@@ -7,57 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+> Breaking release. The manifest and `agpack.yml` schemas have both
+> been overhauled to make `edit-file` resources fully generic. There
+> is no migration path for the old `dependencies.mcp: [{name, ...}]`
+> syntax — see the migration block below.
 
-- **Three asset kinds are now first-class in the manifest schema.**
-  Every resource block declares ``kind:`` — one of ``copy-directory``,
-  ``copy-file``, or ``edit-file`` — instead of the implicit
-  ``layout: directory|file`` (for copy resources) + reserved ``mcp:``
-  branch (for the edit-file case). Behavior:
-  - `mcp:` is no longer a special top-level key; it's a regular
-    resource entry whose ``kind`` is ``edit-file``. ``servers_key`` /
-    ``defaults`` / ``transports`` move under a nested ``merge:`` block.
-  - The old ``layout: directory|file`` form is rejected with an error
-    pointing to the matching ``kind:`` value.
-  - Per-kind deploy and cleanup logic lives on the kind classes
-    themselves (in `agpack.kinds`); the deployer is now a thin
-    orchestration layer.
+### Added
 
-  Migration: in any custom `target_definitions:` you maintain, replace
-  ``layout: directory`` → ``kind: copy-directory``, ``layout: file`` →
-  ``kind: copy-file``, and wrap the `mcp:` block's encoder fields under
-  a ``merge:`` key (plus ``kind: edit-file`` on the block itself).
+- **`kind: edit-file` works for any structured config**, not just MCP.
+  Claude Code hooks, permissions, VS Code extensions, EditorConfig, or
+  any other JSON/TOML the user wants to merge into — all expressible
+  as `{key, value, strategy}` patches under `dependencies:`. The
+  built-in `claude` target ships an `edit-file` resource for
+  `.claude/settings.json` (hooks/permissions) alongside the existing
+  `mcp` resource.
+- **`agpack.kinds.Patch`** — `{key, value, strategy: "replace" |
+  "append"}` — is the universal edit-file input. The engine walks the
+  dotted `key`, auto-creates intermediate dicts, and either replaces
+  the leaf or appends to a list at the path. Cleanup undoes replaces
+  by deleting the leaf and undoes appends by matching the recorded
+  value via deep equality (no markers written to user files).
+- **The three kinds (copy-directory, copy-file, edit-file)** are
+  first-class in the manifest schema. Each resource block declares
+  `kind:` and `path:` and nothing more (edit-file resources). Per-kind
+  behavior lives in `agpack.kinds`; the deployer is a thin
+  orchestration layer over the kinds.
+- **Resource taxonomy is open.** `skills`, `commands`, `agents`, and
+  `mcp` are conventional names used by the built-in targets — any
+  string is a valid resource type name in both `dependencies:` and
+  `target_definitions.<target>.<rt>:`.
 
 ### Removed
 
-- **`format:` field on MCP manifests.** The config format (`json` /
-  `toml`) is now inferred from the file extension of `path`; the
-  manifest can no longer declare it. Built-in targets and user
-  `target_definitions:` should drop `format:`. A manifest that still
-  sets it errors out with a clear "drop this field" message. Lockfile
-  entries also drop the field (read silently ignores legacy `format`
-  keys for back-compat).
+- **The MCP-specific encoder.** `McpServer`, transport-aware encoding
+  (`env`→`environment`, `url`→`httpUrl`, command-as-array for
+  opencode, etc.), and the `merge: {servers_key, defaults, transports}`
+  manifest block are gone. Edit-file resources are now bare
+  `{kind, path}`; per-target quirks become explicit patches in
+  `agpack.yml` instead of implicit translation in the target manifest.
+- **`format:` on edit-file resources.** Inferred from the path's
+  extension (`.json`/`.toml`).
+- **`layout: directory|file`** on copy resources. Replaced by
+  `kind: copy-directory` / `kind: copy-file`.
 
-### Changed
+### Migration from older releases
 
-- **Resource taxonomy is now open.** `skills`, `commands`, and `agents`
-  are no longer hard-coded into the schema — any string can be used as
-  a resource type name in both `agpack.yml`'s `dependencies:` block
-  and a target manifest's resource entries. Users with tools that need
-  a different resource category (e.g. `rules`, `prompts`, `personas`)
-  can now declare it directly without forking agpack.
-- **`detect_items` is layout-driven.** Detection now branches on the
-  `layout: directory|file` declared in the manifest instead of
-  dispatching on the resource type name. As a consequence, a single
-  resource type must use the same layout across every target that
-  supports it; agpack rejects mismatched layouts at sync time with a
-  clear error.
-- **`AgpackConfig.dependencies` is now a dict.** The named fields
-  `skills` / `commands` / `agents` on `AgpackConfig` and `GlobalConfig`
-  are replaced by a single `dependencies: dict[str, list[…]]` keyed
-  by resource type name. External callers reading these fields must
-  update to `config.dependencies["skills"]` etc.
-- **Lockfile `type` field stores the resource type verbatim.**
+Old `agpack.yml`:
+
+```yaml
+dependencies:
+  mcp:
+    - name: filesystem
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      env:
+        API_KEY: ${API_KEY}
+```
+
+New `agpack.yml`:
+
+```yaml
+dependencies:
+  mcp:
+    - key: mcpServers.filesystem        # Claude/Cursor/Gemini bucket
+      value:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+        env:
+          API_KEY: ${API_KEY}
+```
+
+If you target multiple tools whose MCP bucket names differ (Codex uses
+`mcp_servers`, OpenCode uses `mcp`), write one patch per bucket name.
+
+For custom `target_definitions:`, drop the `merge:` block from
+`edit-file` resources, drop `format:`, and replace `layout:
+directory|file` with `kind: copy-directory|copy-file`. The lockfile
+format also changed; agpack does not read pre-release lockfiles —
+delete `.agpack.lock.yml` before the first sync.
   Previously stored as singular (`skill` / `command` / `agent`); now
   stored as it appears in `agpack.yml` (`skills` / `commands` /
   `agents` / or any user-defined name). Legacy singulars are remapped

@@ -5,10 +5,13 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
+from agpack.config import DependencySource
 from agpack.config import GlobalConfig
+from agpack.kinds import Patch
 
 _VAR_PATTERN = re.compile(r"\$\{([^}]+)}")
 
@@ -112,9 +115,12 @@ def resolve_config(
 ) -> None:
     """Resolve ``${VAR}`` references in config values in-place.
 
-    Substitutes ``${VAR}`` references in **all** string fields across
-    the config: dependency URLs, paths, refs, MCP commands, args, env
-    values, and MCP URLs.
+    Substitutes ``${VAR}`` references in every string field reachable
+    from the config:
+
+    - Fetch dependencies: ``urls``, ``path``, ``ref``.
+    - Patch entries: the ``key`` plus every string nested anywhere
+      inside ``value`` (recursing through dicts and lists).
 
     Resolution order for variables (highest priority first):
 
@@ -124,23 +130,35 @@ def resolve_config(
     """
     merged = _build_env(project_root, global_config, verbose=verbose)
 
-    # Dependency fields: urls, path, ref
-    all_deps = [dep for deps in config.dependencies.values() for dep in deps]
-    for dep in all_deps:
-        ctx = f"dependency '{dep.name}'"
-        dep.urls = [resolve_env_vars(u, merged, context=ctx) for u in dep.urls]
-        if dep.path is not None:
-            dep.path = resolve_env_vars(dep.path, merged, context=ctx)
-        if dep.ref is not None:
-            dep.ref = resolve_env_vars(dep.ref, merged, context=ctx)
+    for rt, entries in config.dependencies.items():
+        for i, entry in enumerate(entries):
+            if isinstance(entry, DependencySource):
+                ctx = f"dependency '{entry.name}'"
+                entry.urls = [
+                    resolve_env_vars(u, merged, context=ctx) for u in entry.urls
+                ]
+                if entry.path is not None:
+                    entry.path = resolve_env_vars(entry.path, merged, context=ctx)
+                if entry.ref is not None:
+                    entry.ref = resolve_env_vars(entry.ref, merged, context=ctx)
+            elif isinstance(entry, Patch):
+                ctx = f"patch {rt}[{i}] ({entry.key})"
+                resolved_key = resolve_env_vars(entry.key, merged, context=ctx)
+                resolved_value = _resolve_recursive(entry.value, merged, ctx)
+                # Patch is frozen; rewrite in place via list assignment.
+                entries[i] = Patch(
+                    key=resolved_key,
+                    value=resolved_value,
+                    strategy=entry.strategy,
+                )
 
-    # MCP server fields: command, args, env values, url
-    for server in config.mcp:
-        ctx = f"mcp server '{server.name}'"
-        if server.command is not None:
-            server.command = resolve_env_vars(server.command, merged, context=ctx)
-        server.args = [resolve_env_vars(a, merged, context=ctx) for a in server.args]
-        for key, value in server.env.items():
-            server.env[key] = resolve_env_vars(value, merged, context=ctx)
-        if server.url is not None:
-            server.url = resolve_env_vars(server.url, merged, context=ctx)
+
+def _resolve_recursive(value: Any, env: dict[str, str], context: str) -> Any:
+    """Walk a JSON-ish value, substituting ${VAR} in every string leaf."""
+    if isinstance(value, str):
+        return resolve_env_vars(value, env, context=context)
+    if isinstance(value, dict):
+        return {k: _resolve_recursive(v, env, context) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_recursive(v, env, context) for v in value]
+    return value

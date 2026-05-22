@@ -9,9 +9,11 @@ A *kind* is the fundamental way agpack interacts with the filesystem:
   files from a fetched git repo into ``<path>/<name>`` on the target.
   Used by commands and agents.
 * :class:`EditFileResource` (``kind: edit-file``) — read a structured
-  (JSON / TOML) config file, merge entries in, write it back. Used by
-  MCP servers. Encoder-specific config lives under :attr:`merge`; the
-  only encoder shipped today is ``mcp-servers``.
+  (JSON / TOML) config file, apply :class:`Patch` operations, write it
+  back. Patches are fully generic — a list of ``{key, value, strategy}``
+  triples that the engine applies without any per-domain knowledge.
+  Used for MCP server configs, Claude Code hooks, permissions, VS Code
+  extensions, or any other structured config the user can describe.
 
 Each kind owns its own ``detect`` (where applicable), ``deploy_*``, and
 ``cleanup_*`` logic; the deployer and CLI orchestrate but never branch
@@ -26,7 +28,6 @@ import shutil
 import tempfile
 import tomllib
 from dataclasses import dataclass
-from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -36,10 +37,8 @@ from typing import Literal
 import tomli_w
 
 from agpack.display import console
-from agpack.lockfile import McpTargetRef
 
 if TYPE_CHECKING:
-    from agpack.config import McpServer
     from agpack.fetcher import FetchResult
 
 # ---------------------------------------------------------------------------
@@ -56,15 +55,15 @@ class EditFileError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Format inference (used by edit-file)
+# Format inference
 # ---------------------------------------------------------------------------
 
 
 _FORMAT_BY_SUFFIX = {".json": "json", ".toml": "toml"}
 
 
-def infer_mcp_format(path: str) -> Literal["json", "toml"]:
-    """Return the format for an MCP/edit-file config path.
+def infer_config_format(path: str) -> Literal["json", "toml"]:
+    """Return the format for an edit-file config path.
 
     The extension is the single source of truth — there is no override.
     """
@@ -104,7 +103,7 @@ def _atomic_copy_file(src: Path, dst: Path) -> None:
 def _atomic_write(path: Path, content: str) -> None:
     """Write text content to a file atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".agpack-mcp-")
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".agpack-edit-")
     try:
         os.close(fd)
         Path(tmp_path).write_text(content, encoding="utf-8")
@@ -281,116 +280,198 @@ class CopyFileResource:
 
 
 # ---------------------------------------------------------------------------
+# kind: edit-file — Patch model
+# ---------------------------------------------------------------------------
+
+
+Strategy = Literal["replace", "append"]
+
+
+@dataclass(frozen=True)
+class Patch:
+    """A single change to apply to a structured config file.
+
+    Attributes:
+        key: Dotted path into the config file (``mcpServers.filesystem``
+            or ``hooks.PreToolUse``). Intermediate dicts are auto-created.
+        value: What to put at the path. For ``append``, this is a single
+            element appended to the list at ``key``.
+        strategy: ``"replace"`` overwrites whatever's at the path;
+            ``"append"`` requires the path to resolve to a list (created
+            empty if absent) and appends ``value``.
+    """
+
+    key: str
+    value: Any
+    strategy: Strategy = "replace"
+
+
+# ---------------------------------------------------------------------------
+# Dotted-path navigation
+# ---------------------------------------------------------------------------
+
+
+def _split_key(key: str) -> list[str]:
+    if not key:
+        raise EditFileError("patch key must be non-empty")
+    return key.split(".")
+
+
+def _walk_to_parent(
+    root: dict[str, Any], segments: list[str]
+) -> tuple[dict[str, Any], str]:
+    """Walk ``root`` along ``segments[:-1]``, returning (parent, last_segment).
+
+    Missing intermediate dicts are auto-created. If an existing
+    intermediate value is *not* a dict, raises :class:`EditFileError`
+    rather than silently overwriting user data.
+    """
+    parent: dict[str, Any] = root
+    for seg in segments[:-1]:
+        if seg in parent and not isinstance(parent[seg], dict):
+            raise EditFileError(
+                f"patch path traverses non-dict at '{seg}': "
+                f"existing value is {type(parent[seg]).__name__}"
+            )
+        parent = parent.setdefault(seg, {})
+    return parent, segments[-1]
+
+
+def _apply_patch(root: dict[str, Any], patch: Patch) -> None:
+    """Apply ``patch`` to ``root`` in-place."""
+    segments = _split_key(patch.key)
+    parent, leaf = _walk_to_parent(root, segments)
+
+    if patch.strategy == "replace":
+        parent[leaf] = patch.value
+        return
+
+    # append
+    bucket = parent.setdefault(leaf, [])
+    if not isinstance(bucket, list):
+        raise EditFileError(
+            f"patch with strategy='append' targets non-list at '{patch.key}': "
+            f"got {type(bucket).__name__}"
+        )
+    bucket.append(patch.value)
+
+
+def _cleanup_patch(root: dict[str, Any], patch: Patch) -> bool:
+    """Undo ``patch`` on ``root`` in-place. Returns True if anything changed.
+
+    ``replace`` deletes the leaf key. ``append`` scans the list at the
+    path and removes the first deep-equal match. Either way, silent
+    no-op if the target is missing or already gone.
+    """
+    segments = _split_key(patch.key)
+
+    # Walk read-only — don't auto-create on cleanup.
+    parent: Any = root
+    for seg in segments[:-1]:
+        if not isinstance(parent, dict) or seg not in parent:
+            return False
+        parent = parent[seg]
+    if not isinstance(parent, dict):
+        return False
+
+    leaf = segments[-1]
+    if leaf not in parent:
+        return False
+
+    if patch.strategy == "replace":
+        del parent[leaf]
+        return True
+
+    # append: remove the first deep-equal match from the list
+    bucket = parent[leaf]
+    if not isinstance(bucket, list):
+        return False
+    for i, item in enumerate(bucket):
+        if item == patch.value:
+            del bucket[i]
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # kind: edit-file
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class TransportSpec:
-    """Encoding rules for one MCP transport (stdio / http / sse).
-
-    Used by the ``mcp-servers`` encoder in :class:`MergeMcpServers`.
-    All fields have sensible defaults so the most common case needs no
-    configuration.
-    """
-
-    type_value: str | None = None
-    type_field: str = "type"
-    command_key: str = "command"
-    command_format: Literal["string", "array"] = "string"
-    args_key: str = "args"
-    env_key: str = "env"
-    url_key: str = "url"
-    headers_key: str = "headers"
-
-
-@dataclass(frozen=True)
-class MergeMcpServers:
-    """Encoder config for ``kind: edit-file`` with ``encoder: mcp-servers``.
-
-    This is currently the only edit-file encoder agpack ships. Future
-    encoders (e.g. for `.vscode/extensions.json` or `.editorconfig`)
-    would add their own dataclass and slot in alongside.
-    """
-
-    servers_key: str
-    defaults: dict[str, Any] = field(default_factory=dict)
-    transports: dict[str, TransportSpec] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class EditFileResource:
-    """Merges structured entries into a JSON or TOML config file.
+    """Applies :class:`Patch` operations to a JSON or TOML config file.
 
-    The file format is inferred from the path extension. The
-    :attr:`merge` field holds encoder-specific configuration — agpack
-    currently only ships the ``mcp-servers`` encoder.
+    The file format is inferred from :attr:`path`'s extension. The
+    patch shape is fully generic — agpack reads the file, applies each
+    patch (replace or append), and writes it back atomically. No
+    per-domain (MCP, hooks, etc.) knowledge lives here.
     """
 
     path: str
-    merge: MergeMcpServers
     kind: ClassVar[str] = "edit-file"
 
     @property
     def format(self) -> Literal["json", "toml"]:
-        return infer_mcp_format(self.path)
+        return infer_config_format(self.path)
 
-    def deploy_server(
+    def apply_patches(
         self,
-        server: McpServer,
-        project_root: Path,
-        *,
-        dry_run: bool = False,
-        verbose: bool = False,
-    ) -> McpTargetRef | None:
-        """Encode and merge one MCP server into this target's config.
-
-        Returns the :class:`McpTargetRef` recorded for cleanup, or
-        ``None`` if the server's transport isn't supported.
-        """
-        transport_spec = self.merge.transports.get(server.type)
-        if transport_spec is None:
-            return None
-
-        server_obj = _encode_server(server, transport_spec)
-        config_path = project_root / self.path
-        ref = McpTargetRef(path=self.path, servers_key=self.merge.servers_key)
-
-        if dry_run:
-            if verbose:
-                console.print(
-                    f"[dry-run]   merge MCP '{server.name}' → {ref.path}"
-                )
-            return ref
-
-        # _merge_into_config raises EditFileError on parse/structure issues;
-        # OSError covers disk-full / permission / atomic-rename failures.
-        try:
-            _merge_into_config(self, config_path, {server.name: server_obj})
-        except OSError as exc:
-            raise EditFileError(
-                f"Failed to write MCP config to {config_path}: {exc}"
-            ) from exc
-
-        if verbose:
-            console.print(f"  MCP '{server.name}' → {ref.path}")
-        return ref
-
-    def cleanup_entry(
-        self,
-        entry_name: str,
+        patches: list[Patch],
         project_root: Path,
         *,
         dry_run: bool = False,
         verbose: bool = False,
     ) -> None:
-        """Remove ``entry_name`` from this config file, if present.
+        """Apply each patch to the config file at :attr:`path`.
 
-        Silently skips if the configured path's extension can't be
-        mapped to a known format (a forgiving fallback for stale
-        lockfile entries written by some future agpack that supported
-        an extra format).
+        Reads the file once, applies all patches in order, writes once.
         """
+        if not patches:
+            return
+
+        config_path = project_root / self.path
+
+        if dry_run:
+            if verbose:
+                for p in patches:
+                    console.print(
+                        f"[dry-run]   {p.strategy} {self.path}:{p.key}"
+                    )
+            return
+
+        data = _read_existing(config_path, self.format)
+        for patch in patches:
+            _apply_patch(data, patch)
+
+        try:
+            _atomic_write(config_path, _dump(data, self.format))
+        except OSError as exc:
+            raise EditFileError(
+                f"Failed to write {config_path}: {exc}"
+            ) from exc
+
+        if verbose:
+            for p in patches:
+                console.print(f"  {p.strategy} {self.path}:{p.key}")
+
+    def cleanup_patches(
+        self,
+        patches: list[Patch],
+        project_root: Path,
+        *,
+        dry_run: bool = False,
+        verbose: bool = False,
+    ) -> None:
+        """Undo each patch on the config file at :attr:`path`.
+
+        Silent no-op if the file is missing or any individual patch
+        has nothing to remove. Format-inference failures (stale
+        lockfile entries pointing at unknown extensions) are absorbed.
+        """
+        if not patches:
+            return
+
         config_path = project_root / self.path
         if not config_path.exists():
             return
@@ -400,57 +481,35 @@ class EditFileResource:
         except EditFileError as exc:
             if verbose:
                 console.print(
-                    f"  skipping cleanup of '{entry_name}' from {self.path}: "
-                    f"{exc}"
+                    f"  skipping cleanup of {self.path}: {exc}"
                 )
             return
 
         if dry_run:
             if verbose:
-                console.print(
-                    f"[dry-run]   remove '{entry_name}' from {self.path}"
-                )
+                for p in patches:
+                    console.print(
+                        f"[dry-run]   remove {self.path}:{p.key}"
+                    )
             return
 
-        _remove_entry(config_path, format_, self.merge.servers_key, entry_name)
+        data = _read_existing(config_path, format_)
+        changed = False
+        for patch in patches:
+            if _cleanup_patch(data, patch):
+                changed = True
+
+        if changed:
+            _atomic_write(config_path, _dump(data, format_))
 
         if verbose:
-            console.print(f"  removed '{entry_name}' from {self.path}")
+            for p in patches:
+                console.print(f"  removed {self.path}:{p.key}")
 
 
 # ---------------------------------------------------------------------------
-# Encoder helpers (mcp-servers)
+# JSON / TOML I/O
 # ---------------------------------------------------------------------------
-
-
-def _encode_server(server: McpServer, spec: TransportSpec) -> dict[str, Any]:
-    """Render a single MCP server entry per the transport spec."""
-    obj: dict[str, Any] = {}
-
-    if spec.type_value is not None:
-        obj[spec.type_field] = spec.type_value
-
-    if server.type == "stdio":
-        if server.command is None:
-            raise EditFileError(
-                f"MCP server '{server.name}': stdio transport requires a command"
-            )
-        if spec.command_format == "array":
-            obj[spec.command_key] = [server.command, *list(server.args)]
-        else:
-            obj[spec.command_key] = server.command
-            if server.args:
-                obj[spec.args_key] = list(server.args)
-        if server.env:
-            obj[spec.env_key] = dict(server.env)
-    else:
-        if server.url is None:
-            raise EditFileError(
-                f"MCP server '{server.name}': {server.type} transport requires a url"
-            )
-        obj[spec.url_key] = server.url
-
-    return obj
 
 
 def _read_existing(config_path: Path, format_: str) -> dict[str, Any]:
@@ -477,53 +536,6 @@ def _dump(data: dict[str, Any], format_: str) -> str:
     if format_ == "json":
         return json.dumps(data, indent=2) + "\n"
     return tomli_w.dumps(data)
-
-
-def _merge_into_config(
-    resource: EditFileResource,
-    config_path: Path,
-    servers: dict[str, dict[str, Any]],
-) -> None:
-    """Merge server entries into a target's MCP config file."""
-    existing = _read_existing(config_path, resource.format)
-
-    for key, value in resource.merge.defaults.items():
-        existing.setdefault(key, value)
-
-    bucket = existing.setdefault(resource.merge.servers_key, {})
-    if not isinstance(bucket, dict):
-        raise EditFileError(
-            f"{config_path}: expected mapping at '{resource.merge.servers_key}', "
-            f"got {type(bucket).__name__}"
-        )
-    bucket.update(servers)
-
-    _atomic_write(config_path, _dump(existing, resource.format))
-
-
-def _remove_entry(
-    config_path: Path,
-    format_: str,
-    bucket_key: str,
-    entry_name: str,
-) -> None:
-    """Remove a single entry from a config file's ``bucket_key`` mapping."""
-    try:
-        data = (
-            json.loads(config_path.read_text(encoding="utf-8"))
-            if format_ == "json"
-            else tomllib.loads(config_path.read_text(encoding="utf-8"))
-        )
-    except (json.JSONDecodeError, tomllib.TOMLDecodeError, OSError):
-        return
-
-    if not isinstance(data, dict):
-        return
-
-    bucket = data.get(bucket_key)
-    if isinstance(bucket, dict) and entry_name in bucket:
-        del bucket[entry_name]
-        _atomic_write(config_path, _dump(data, format_))
 
 
 # ---------------------------------------------------------------------------

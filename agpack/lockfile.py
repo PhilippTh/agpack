@@ -17,27 +17,17 @@ from agpack import __version__
 
 LOCKFILE_NAME = ".agpack.lock.yml"
 
-# Lockfiles written by agpack ≤ 0.4.0 stored a singular resource type
-# label on each installed entry ("skill"/"command"/"agent").  From the
-# resource-taxonomy refactor onward, agpack stores the resource type
-# name verbatim from agpack.yml ("skills"/"commands"/"agents" — or any
-# user-defined name).  The legacy values are remapped on read so an
-# old lockfile still cleans up correctly.
-_LEGACY_TYPE_REMAP = {"skill": "skills", "command": "commands", "agent": "agents"}
-
 
 @dataclass
 class InstalledEntry:
-    """A single installed dependency in the lockfile."""
+    """A single installed copy-kind dependency in the lockfile."""
 
     url: str
     path: str | None
     resolved_ref: str
     type: str
     """Resource type name as it appears in agpack.yml (``skills`` /
-    ``commands`` / ``agents`` / any user-defined name). Legacy
-    singular values (``skill`` / ``command`` / ``agent``) are remapped
-    on read for back-compat — see :data:`_LEGACY_TYPE_REMAP`."""
+    ``commands`` / ``agents`` / any user-defined name)."""
     deployed_files: list[str] = field(default_factory=list)
 
     @property
@@ -50,25 +40,26 @@ class InstalledEntry:
 
 
 @dataclass
-class McpTargetRef:
-    """A single MCP config file an MCP server was written to.
+class AppliedPatch:
+    """An edit-file patch recorded for future cleanup.
 
-    Carries enough metadata to remove the server later without
-    consulting the target manifest — important because the target may
-    have been deleted from agpack.yml between syncs. The config format
-    is inferred from :attr:`path`'s extension at cleanup time.
+    Cleanup looks up the file by :attr:`file_path`, navigates to
+    :attr:`key`, and reverses the operation. For ``append`` strategy,
+    :attr:`value` is used to locate the entry via deep-equality.
     """
 
-    path: str
-    servers_key: str
+    file_path: str
+    key: str
+    strategy: str
+    value: Any
 
 
 @dataclass
-class McpLockEntry:
-    """A single MCP server entry in the lockfile."""
+class EditLockEntry:
+    """All patches applied for one resource type across all targets."""
 
-    name: str
-    targets: list[McpTargetRef] = field(default_factory=list)
+    resource_type: str
+    applied: list[AppliedPatch] = field(default_factory=list)
 
 
 @dataclass
@@ -78,14 +69,16 @@ class Lockfile:
     generated_at: str = ""
     agpack_version: str = __version__
     installed: list[InstalledEntry] = field(default_factory=list)
-    mcp: list[McpLockEntry] = field(default_factory=list)
+    edits: list[EditLockEntry] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Read / write
+# ---------------------------------------------------------------------------
 
 
 def read_lockfile(project_root: Path) -> Lockfile | None:
-    """Read the lockfile from disk.
-
-    Returns None if the lockfile doesn't exist.
-    """
+    """Read the lockfile from disk. Returns None if absent or unreadable."""
     path = project_root / LOCKFILE_NAME
     if not path.exists():
         return None
@@ -106,39 +99,36 @@ def read_lockfile(project_root: Path) -> Lockfile | None:
     for entry_data in data.get("installed", []):
         if not isinstance(entry_data, dict):
             continue
-        type_: str = entry_data.get("type") or ""
-        type_ = _LEGACY_TYPE_REMAP.get(type_, type_)
         lockfile.installed.append(
             InstalledEntry(
                 url=entry_data.get("url", ""),
                 path=entry_data.get("path"),
                 resolved_ref=entry_data.get("resolved_ref", "unknown"),
-                type=type_,
+                type=entry_data.get("type", ""),
                 deployed_files=entry_data.get("deployed_files", []),
             )
         )
 
-    for mcp_data in data.get("mcp", []):
-        if not isinstance(mcp_data, dict):
+    for edit_data in data.get("edits", []):
+        if not isinstance(edit_data, dict):
             continue
-        targets: list[McpTargetRef] = []
-        for raw_t in mcp_data.get("targets", []):
-            if isinstance(raw_t, dict):
-                # Legacy "format" field is silently dropped — the
-                # format is now inferred from the file extension.
-                targets.append(
-                    McpTargetRef(
-                        path=raw_t.get("path", ""),
-                        servers_key=raw_t.get("servers_key", ""),
-                    )
+        applied: list[AppliedPatch] = []
+        for raw in edit_data.get("applied", []):
+            if not isinstance(raw, dict):
+                continue
+            applied.append(
+                AppliedPatch(
+                    file_path=raw.get("file_path", ""),
+                    key=raw.get("key", ""),
+                    strategy=raw.get("strategy", "replace"),
+                    value=raw.get("value"),
                 )
-            elif isinstance(raw_t, str):
-                # Pre-0.4.0 lockfile: only the path was stored. Cleanup
-                # for such entries is best-effort; without servers_key
-                # we skip them, and the next sync writes the new format.
-                targets.append(McpTargetRef(path=raw_t, servers_key=""))
-        lockfile.mcp.append(
-            McpLockEntry(name=mcp_data.get("name", ""), targets=targets)
+            )
+        lockfile.edits.append(
+            EditLockEntry(
+                resource_type=edit_data.get("resource_type", ""),
+                applied=applied,
+            )
         )
 
     return lockfile
@@ -153,7 +143,7 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
         "generated_at": lockfile.generated_at,
         "agpack_version": lockfile.agpack_version,
         "installed": [],
-        "mcp": [],
+        "edits": [],
     }
 
     for entry in lockfile.installed:
@@ -167,13 +157,18 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
             entry_data["path"] = entry.path
         data["installed"].append(entry_data)
 
-    for mcp_entry in lockfile.mcp:
-        data["mcp"].append(
+    for edit in lockfile.edits:
+        data["edits"].append(
             {
-                "name": mcp_entry.name,
-                "targets": [
-                    {"path": t.path, "servers_key": t.servers_key}
-                    for t in mcp_entry.targets
+                "resource_type": edit.resource_type,
+                "applied": [
+                    {
+                        "file_path": p.file_path,
+                        "key": p.key,
+                        "strategy": p.strategy,
+                        "value": p.value,
+                    }
+                    for p in edit.applied
                 ],
             }
         )
@@ -181,7 +176,6 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
     path = project_root / LOCKFILE_NAME
     content = yaml.dump(data, default_flow_style=False, sort_keys=False)
 
-    # Atomic write
     fd, tmp_path = tempfile.mkstemp(dir=project_root, prefix=".agpack-lock-tmp-")
     try:
         os.close(fd)
@@ -195,27 +189,20 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
         raise
 
 
+# ---------------------------------------------------------------------------
+# Diff helpers
+# ---------------------------------------------------------------------------
+
+
 def find_removed_dependencies(
     old_lockfile: Lockfile | None,
     current_identities: set[str],
 ) -> list[InstalledEntry]:
-    """Find dependencies that were in the old lockfile but are no longer configured."""
+    """Find copy-kind dependencies present in the old lockfile but absent now."""
     if old_lockfile is None:
         return []
-
     return [
         entry
         for entry in old_lockfile.installed
         if entry.identity not in current_identities
     ]
-
-
-def find_removed_mcp_servers(
-    old_lockfile: Lockfile | None,
-    current_mcp_names: set[str],
-) -> list[McpLockEntry]:
-    """Find MCP servers that were in the old lockfile but are no longer configured."""
-    if old_lockfile is None:
-        return []
-
-    return [entry for entry in old_lockfile.mcp if entry.name not in current_mcp_names]

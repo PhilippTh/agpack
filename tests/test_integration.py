@@ -109,9 +109,15 @@ def test_full_sync_flow(tmp_path: Path) -> None:
             ],
             "mcp": [
                 {
-                    "name": "filesystem",
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+                    "key": "mcpServers.filesystem",
+                    "value": {
+                        "command": "npx",
+                        "args": [
+                            "-y",
+                            "@modelcontextprotocol/server-filesystem",
+                            ".",
+                        ],
+                    },
                 },
             ],
         },
@@ -122,7 +128,6 @@ def test_full_sync_flow(tmp_path: Path) -> None:
         yaml.dump(config, default_flow_style=False, sort_keys=False)
     )
 
-    # Run sync
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -131,40 +136,40 @@ def test_full_sync_flow(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0, f"sync failed:\n{result.output}"
-    assert "1 skills, 1 commands, 1 agents, 1 MCP servers" in result.output
+    assert "1 skills, 1 commands, 1 agents, 1 mcp" in result.output
 
-    # Verify skill files
     for target_dir in [".claude/skills/my-skill", ".opencode/skills/my-skill"]:
         skill_md = project_dir / target_dir / "SKILL.md"
         assert skill_md.exists(), f"Missing {skill_md}"
         assert "My Skill" in skill_md.read_text()
-
         util_py = project_dir / target_dir / "helpers" / "util.py"
         assert util_py.exists(), f"Missing {util_py}"
 
-    # Verify command files
     assert (project_dir / ".claude/commands/review.md").exists()
     assert (project_dir / ".opencode/commands/review.md").exists()
-
-    # Verify agent files
     assert (project_dir / ".claude/agents/backend-expert.md").exists()
     assert (project_dir / ".opencode/agents/backend-expert.md").exists()
 
-    # Verify MCP configs
+    # MCP config — the patch key targets `mcpServers.filesystem` and
+    # gets written verbatim into every target's edit-file path.
     claude_mcp = json.loads((project_dir / ".mcp.json").read_text())
-    assert "filesystem" in claude_mcp["mcpServers"]
     assert claude_mcp["mcpServers"]["filesystem"]["command"] == "npx"
-
     opencode_mcp = json.loads((project_dir / "opencode.json").read_text())
-    assert "filesystem" in opencode_mcp["mcp"]
+    # Note: opencode uses `mcp` as its bucket — under the patch model
+    # the user would write a second patch keyed `mcp.filesystem` for
+    # opencode. This test only verifies the Claude/Cursor-style bucket
+    # for the single patch written here.
+    assert opencode_mcp.get("mcpServers", {}).get("filesystem") is not None
 
     # Verify lockfile
     lockfile_path = project_dir / ".agpack.lock.yml"
     assert lockfile_path.exists()
     lockfile = yaml.safe_load(lockfile_path.read_text())
     assert len(lockfile["installed"]) == 3
-    assert len(lockfile["mcp"]) == 1
-    assert lockfile["mcp"][0]["name"] == "filesystem"
+    edits = {e["resource_type"]: e for e in lockfile["edits"]}
+    assert "mcp" in edits
+    # The single patch was applied to two targets (claude + opencode).
+    assert len(edits["mcp"]["applied"]) == 2
 
 
 def test_sync_cleanup_removed_dependency(tmp_path: Path) -> None:
@@ -370,14 +375,15 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
         "dependencies": {
             "mcp": [
                 {
-                    "name": "filesystem",
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                    "key": "mcpServers.filesystem",
+                    "value": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                    },
                 },
                 {
-                    "name": "other-server",
-                    "command": "node",
-                    "args": ["server.js"],
+                    "key": "mcpServers.other-server",
+                    "value": {"command": "node", "args": ["server.js"]},
                 },
             ],
         },
@@ -394,16 +400,17 @@ def test_sync_mcp_cleanup(tmp_path: Path) -> None:
         ["sync", "--config", str(config_path)],
         catch_exceptions=False,
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
 
-    # Verify both servers exist
     mcp_data = json.loads((project_dir / ".mcp.json").read_text())
     assert "filesystem" in mcp_data["mcpServers"]
     assert "other-server" in mcp_data["mcpServers"]
 
-    # Remove filesystem from config
     config["dependencies"]["mcp"] = [
-        {"name": "other-server", "command": "node", "args": ["server.js"]}
+        {
+            "key": "mcpServers.other-server",
+            "value": {"command": "node", "args": ["server.js"]},
+        }
     ]
     config_path.write_text(
         yaml.dump(config, default_flow_style=False, sort_keys=False)
@@ -609,9 +616,8 @@ def test_sync_global_mcp_merged(
         "dependencies": {
             "mcp": [
                 {
-                    "name": "global-server",
-                    "command": "node",
-                    "args": ["global.js"],
+                    "key": "mcpServers.global-server",
+                    "value": {"command": "node", "args": ["global.js"]},
                 },
             ],
         },
@@ -622,7 +628,6 @@ def test_sync_global_mcp_merged(
     )
     monkeypatch.setenv("AGPACK_GLOBAL_CONFIG", str(global_path))
 
-    # Project with its own MCP server
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     config = {
@@ -630,9 +635,8 @@ def test_sync_global_mcp_merged(
         "dependencies": {
             "mcp": [
                 {
-                    "name": "project-server",
-                    "command": "npx",
-                    "args": ["-y", "project-pkg"],
+                    "key": "mcpServers.project-server",
+                    "value": {"command": "npx", "args": ["-y", "project-pkg"]},
                 },
             ],
         },
@@ -667,9 +671,8 @@ def test_sync_global_mcp_project_wins_duplicate(
         "dependencies": {
             "mcp": [
                 {
-                    "name": "shared",
-                    "command": "node",
-                    "args": ["global-version.js"],
+                    "key": "mcpServers.shared",
+                    "value": {"command": "node", "args": ["global-version.js"]},
                 },
             ],
         },
@@ -687,9 +690,8 @@ def test_sync_global_mcp_project_wins_duplicate(
         "dependencies": {
             "mcp": [
                 {
-                    "name": "shared",
-                    "command": "npx",
-                    "args": ["project-version"],
+                    "key": "mcpServers.shared",
+                    "value": {"command": "npx", "args": ["project-version"]},
                 },
             ],
         },
@@ -987,9 +989,8 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
             ],
             "mcp": [
                 {
-                    "name": "bad-server",
-                    "command": "npx",
-                    "args": ["-y", "bad-server"],
+                    "key": "mcpServers.bad-server",
+                    "value": {"command": "npx", "args": ["-y", "bad-server"]},
                 },
             ],
         },
@@ -1000,7 +1001,7 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     )
 
     with patch(
-        "agpack.cli.deploy_mcp_servers",
+        "agpack.cli.apply_patches_to_targets",
         side_effect=EditFileError("corrupt config file"),
     ):
         runner = CliRunner()
@@ -1012,14 +1013,13 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     assert result.exit_code != 0
     assert "corrupt config file" in result.output
 
-    # Partial lockfile should exist with the successfully synced skill
+    # Partial lockfile should exist with the successfully synced skill.
     lockfile_path = project_dir / ".agpack.lock.yml"
     assert lockfile_path.exists()
     lockfile = yaml.safe_load(lockfile_path.read_text())
     assert len(lockfile["installed"]) == 1
     assert lockfile["installed"][0]["type"] == "skills"
-    # MCP section should be empty since deploy failed
-    assert lockfile.get("mcp", []) == []
+    assert lockfile.get("edits", []) == []
 
 
 def test_sync_with_target_definitions_overriding_builtin(tmp_path: Path) -> None:
@@ -1069,9 +1069,8 @@ def test_sync_with_brand_new_custom_target(tmp_path: Path) -> None:
             "skills": [{"url": str(bare_repo), "path": "skills/my-skill"}],
             "mcp": [
                 {
-                    "name": "filesystem",
-                    "command": "npx",
-                    "args": ["-y", "fs"],
+                    "key": "mcpServers.filesystem",
+                    "value": {"command": "npx", "args": ["-y", "fs"]},
                 },
             ],
         },
@@ -1081,10 +1080,6 @@ def test_sync_with_brand_new_custom_target(tmp_path: Path) -> None:
                 "mcp": {
                     "kind": "edit-file",
                     "path": ".myaitool/config.json",
-                    "merge": {
-                        "servers_key": "mcpServers",
-                        "transports": {"stdio": {}},
-                    },
                 },
             },
         },

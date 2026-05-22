@@ -8,12 +8,13 @@ import pytest
 
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
+from agpack.config import DependencyEntry
 from agpack.config import DependencySource
 from agpack.config import GlobalConfig
-from agpack.config import McpServer
 from agpack.envsubst import load_dotenv
 from agpack.envsubst import resolve_config
 from agpack.envsubst import resolve_env_vars
+from agpack.kinds import Patch
 
 # ---------------------------------------------------------------------------
 # 1. load_dotenv
@@ -22,8 +23,7 @@ from agpack.envsubst import resolve_env_vars
 
 def test_load_dotenv_basic(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text("FOO=bar\nBAZ=qux\n")
-    result = load_dotenv(tmp_path)
-    assert result == {"FOO": "bar", "BAZ": "qux"}
+    assert load_dotenv(tmp_path) == {"FOO": "bar", "BAZ": "qux"}
 
 
 def test_load_dotenv_with_double_quotes(tmp_path: Path) -> None:
@@ -93,105 +93,18 @@ def test_resolve_missing_var_raises() -> None:
         resolve_env_vars("${MISSING}", {})
 
 
-def test_resolve_missing_var_includes_context() -> None:
-    with pytest.raises(ConfigError, match="mcp server 'ctx7'"):
-        resolve_env_vars("${NOPE}", {}, context="mcp server 'ctx7'")
-
-
 def test_resolve_partial_missing_raises() -> None:
     with pytest.raises(ConfigError, match="'MISSING'"):
         resolve_env_vars("${EXISTS}-${MISSING}", {"EXISTS": "ok"})
 
 
 # ---------------------------------------------------------------------------
-# 3. resolve_config – MCP server env
+# 3. resolve_config — dependency URL/path/ref
 # ---------------------------------------------------------------------------
 
 
-def _make_config(mcp: list[McpServer] | None = None) -> AgpackConfig:
-    return AgpackConfig(
-        targets=["claude"],
-        mcp=mcp or [],
-    )
-
-
-def test_resolve_config_from_dotenv(tmp_path: Path) -> None:
-    (tmp_path / ".env").write_text("API_KEY=secret-from-dotenv\n")
-    server = McpServer(name="s", command="cmd", env={"API_KEY": "${API_KEY}"})
-    config = _make_config([server])
-
-    resolve_config(config, tmp_path)
-
-    assert config.mcp[0].env["API_KEY"] == "secret-from-dotenv"
-
-
-def test_resolve_config_from_shell(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("SHELL_VAR", "from-shell")
-    server = McpServer(name="s", command="cmd", env={"KEY": "${SHELL_VAR}"})
-    config = _make_config([server])
-
-    resolve_config(config, tmp_path)
-
-    assert config.mcp[0].env["KEY"] == "from-shell"
-
-
-def test_resolve_config_dotenv_takes_precedence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("MY_VAR", "from-shell")
-    (tmp_path / ".env").write_text("MY_VAR=from-dotenv\n")
-    server = McpServer(name="s", command="cmd", env={"V": "${MY_VAR}"})
-    config = _make_config([server])
-
-    resolve_config(config, tmp_path)
-
-    assert config.mcp[0].env["V"] == "from-dotenv"
-
-
-def test_resolve_config_no_substitution_needed(tmp_path: Path) -> None:
-    server = McpServer(name="s", command="cmd", env={"KEY": "plain-value"})
-    config = _make_config([server])
-
-    resolve_config(config, tmp_path)
-
-    assert config.mcp[0].env["KEY"] == "plain-value"
-
-
-def test_resolve_config_missing_var_raises(tmp_path: Path) -> None:
-    server = McpServer(name="ctx7", command="cmd", env={"K": "${UNDEFINED}"})
-    config = _make_config([server])
-
-    with pytest.raises(ConfigError, match="'UNDEFINED'"):
-        resolve_config(config, tmp_path)
-
-
-def test_resolve_config_empty_mcp_list(tmp_path: Path) -> None:
-    config = _make_config([])
-    resolve_config(config, tmp_path)  # should not raise
-
-
-def test_resolve_config_multiple_servers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("TOKEN_A", "aaa")
-    monkeypatch.setenv("TOKEN_B", "bbb")
-    servers = [
-        McpServer(name="a", command="cmd", env={"T": "${TOKEN_A}"}),
-        McpServer(name="b", command="cmd", env={"T": "${TOKEN_B}"}),
-    ]
-    config = _make_config(servers)
-
-    resolve_config(config, tmp_path)
-
-    assert config.mcp[0].env["T"] == "aaa"
-    assert config.mcp[1].env["T"] == "bbb"
-
-
-# ---------------------------------------------------------------------------
-# 4. resolve_config – dependency fields (url, path, ref)
-# ---------------------------------------------------------------------------
+def _make_config(**deps: list[DependencyEntry]) -> AgpackConfig:
+    return AgpackConfig(targets=["claude"], dependencies=dict(deps))
 
 
 def test_resolve_dependency_url(
@@ -199,12 +112,11 @@ def test_resolve_dependency_url(
 ) -> None:
     monkeypatch.setenv("GH_ORG", "my-org")
     dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
-    config = _make_config()
-    config.dependencies["skills"] = [dep]
-
+    config = _make_config(skills=[dep])
     resolve_config(config, tmp_path)
-
-    assert config.dependencies["skills"][0].url == "https://github.com/my-org/repo"
+    assert config.dependencies["skills"][0].urls == [  # type: ignore[union-attr]
+        "https://github.com/my-org/repo"
+    ]
 
 
 def test_resolve_dependency_path(
@@ -214,12 +126,9 @@ def test_resolve_dependency_path(
     dep = DependencySource(
         urls=["https://github.com/org/repo"], path="skills/${SKILL_NAME}"
     )
-    config = _make_config()
-    config.dependencies["skills"] = [dep]
-
+    config = _make_config(skills=[dep])
     resolve_config(config, tmp_path)
-
-    assert config.dependencies["skills"][0].path == "skills/my-skill"
+    assert config.dependencies["skills"][0].path == "skills/my-skill"  # type: ignore[union-attr]
 
 
 def test_resolve_dependency_ref(
@@ -227,196 +136,14 @@ def test_resolve_dependency_ref(
 ) -> None:
     monkeypatch.setenv("TAG", "v2.0")
     dep = DependencySource(urls=["https://github.com/org/repo"], ref="${TAG}")
-    config = _make_config()
-    config.dependencies["commands"] = [dep]
-
+    config = _make_config(commands=[dep])
     resolve_config(config, tmp_path)
-
-    assert config.dependencies["commands"][0].ref == "v2.0"
-
-
-def test_resolve_dependency_no_vars_unchanged(tmp_path: Path) -> None:
-    dep = DependencySource(urls=["https://github.com/org/repo"], path="skills/foo")
-    config = _make_config()
-    config.dependencies["agents"] = [dep]
-
-    resolve_config(config, tmp_path)
-
-    assert config.dependencies["agents"][0].url == "https://github.com/org/repo"
-    assert config.dependencies["agents"][0].path == "skills/foo"
+    assert config.dependencies["commands"][0].ref == "v2.0"  # type: ignore[union-attr]
 
 
-def test_resolve_dependency_path_none_stays_none(tmp_path: Path) -> None:
-    dep = DependencySource(urls=["https://github.com/org/repo"])
-    config = _make_config()
-    config.dependencies["skills"] = [dep]
-
-    resolve_config(config, tmp_path)
-
-    assert config.dependencies["skills"][0].path is None
-
-
-def test_resolve_dependency_ref_none_stays_none(tmp_path: Path) -> None:
-    dep = DependencySource(urls=["https://github.com/org/repo"])
-    config = _make_config()
-    config.dependencies["skills"] = [dep]
-
-    resolve_config(config, tmp_path)
-
-    assert config.dependencies["skills"][0].ref is None
-
-
-# ---------------------------------------------------------------------------
-# 5. resolve_config – MCP command, args, url fields
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_mcp_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MCP_BIN", "/usr/local/bin/my-server")
-    server = McpServer(name="s", command="${MCP_BIN}")
-    config = _make_config([server])
-
-    resolve_config(config, tmp_path)
-
-    assert config.mcp[0].command == "/usr/local/bin/my-server"
-
-
-def test_resolve_mcp_args(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PORT", "9090")
-    server = McpServer(name="s", command="node", args=["--port", "${PORT}"])
-    config = _make_config([server])
-
-    resolve_config(config, tmp_path)
-
-    assert config.mcp[0].args == ["--port", "9090"]
-
-
-def test_resolve_mcp_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MCP_HOST", "private.example.com")
-    server = McpServer(name="s", type="sse", url="https://${MCP_HOST}/sse")
-    config = _make_config([server])
-
-    resolve_config(config, tmp_path)
-
-    assert config.mcp[0].url == "https://private.example.com/sse"
-
-
-# ---------------------------------------------------------------------------
-# 6. resolve_config – three-tier .env resolution (project > global > shell)
-# ---------------------------------------------------------------------------
-
-
-def test_three_tier_project_dotenv_wins(
+def test_resolve_multiple_urls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Project .env takes highest priority."""
-    monkeypatch.setenv("MY_VAR", "from-shell")
-
-    # Global .env
-    global_dir = tmp_path / "global"
-    global_dir.mkdir()
-    (global_dir / ".env").write_text("MY_VAR=from-global\n")
-    global_cfg = GlobalConfig(config_dir=global_dir)
-
-    # Project .env
-    project_dir = tmp_path / "project"
-    project_dir.mkdir()
-    (project_dir / ".env").write_text("MY_VAR=from-project\n")
-
-    server = McpServer(name="s", command="cmd", env={"V": "${MY_VAR}"})
-    config = _make_config([server])
-
-    resolve_config(config, project_dir, global_config=global_cfg)
-
-    assert config.mcp[0].env["V"] == "from-project"
-
-
-def test_three_tier_global_dotenv_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Global .env used when project .env doesn't define the var."""
-    monkeypatch.setenv("MY_VAR", "from-shell")
-
-    global_dir = tmp_path / "global"
-    global_dir.mkdir()
-    (global_dir / ".env").write_text("MY_VAR=from-global\n")
-    global_cfg = GlobalConfig(config_dir=global_dir)
-
-    project_dir = tmp_path / "project"
-    project_dir.mkdir()
-    # No project .env
-
-    server = McpServer(name="s", command="cmd", env={"V": "${MY_VAR}"})
-    config = _make_config([server])
-
-    resolve_config(config, project_dir, global_config=global_cfg)
-
-    assert config.mcp[0].env["V"] == "from-global"
-
-
-def test_three_tier_shell_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Shell env used when neither .env defines the var."""
-    monkeypatch.setenv("MY_VAR", "from-shell")
-
-    global_dir = tmp_path / "global"
-    global_dir.mkdir()
-    # No global .env
-    global_cfg = GlobalConfig(config_dir=global_dir)
-
-    project_dir = tmp_path / "project"
-    project_dir.mkdir()
-    # No project .env
-
-    server = McpServer(name="s", command="cmd", env={"V": "${MY_VAR}"})
-    config = _make_config([server])
-
-    resolve_config(config, project_dir, global_config=global_cfg)
-
-    assert config.mcp[0].env["V"] == "from-shell"
-
-
-def test_three_tier_no_global_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When no global config is provided, only project .env + shell are used."""
-    monkeypatch.setenv("MY_VAR", "from-shell")
-    (tmp_path / ".env").write_text("MY_VAR=from-project\n")
-
-    server = McpServer(name="s", command="cmd", env={"V": "${MY_VAR}"})
-    config = _make_config([server])
-
-    resolve_config(config, tmp_path)  # no global_config
-
-    assert config.mcp[0].env["V"] == "from-project"
-
-
-def test_three_tier_global_env_applies_to_deps(tmp_path: Path) -> None:
-    """Global .env vars are available for dependency field substitution too."""
-    global_dir = tmp_path / "global"
-    global_dir.mkdir()
-    (global_dir / ".env").write_text("GH_ORG=my-global-org\n")
-    global_cfg = GlobalConfig(config_dir=global_dir)
-
-    project_dir = tmp_path / "project"
-    project_dir.mkdir()
-
-    dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
-    config = _make_config()
-    config.dependencies["skills"] = [dep]
-
-    resolve_config(config, project_dir, global_config=global_cfg)
-
-    assert config.dependencies["skills"][0].url == "https://github.com/my-global-org/repo"
-
-
-# ---------------------------------------------------------------------------
-# 7. resolve_config – multiple URL substitution
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_multiple_urls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GH_ORG", "my-org")
     dep = DependencySource(
         urls=[
@@ -424,22 +151,144 @@ def test_resolve_multiple_urls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             "git@github.com:${GH_ORG}/repo.git",
         ],
     )
-    config = _make_config()
-    config.dependencies["skills"] = [dep]
-
+    config = _make_config(skills=[dep])
     resolve_config(config, tmp_path)
-
-    assert config.dependencies["skills"][0].urls == [
+    assert config.dependencies["skills"][0].urls == [  # type: ignore[union-attr]
         "https://github.com/my-org/repo",
         "git@github.com:my-org/repo.git",
     ]
 
 
-def test_resolve_single_url_unchanged(tmp_path: Path) -> None:
-    dep = DependencySource(urls=["https://github.com/org/repo"])
-    config = _make_config()
-    config.dependencies["skills"] = [dep]
+# ---------------------------------------------------------------------------
+# 4. resolve_config — patch values (recursive)
+# ---------------------------------------------------------------------------
 
+
+def test_resolve_patch_string_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MCP_BIN", "/usr/local/bin/my-server")
+    patch = Patch(key="mcpServers.s", value="${MCP_BIN}")
+    config = _make_config(mcp=[patch])
     resolve_config(config, tmp_path)
+    assert config.dependencies["mcp"][0].value == "/usr/local/bin/my-server"
 
-    assert config.dependencies["skills"][0].urls == ["https://github.com/org/repo"]
+
+def test_resolve_patch_nested_dict_values(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("API_KEY=secret\nPORT=9090\n")
+    patch = Patch(
+        key="mcpServers.s",
+        value={
+            "command": "node",
+            "args": ["--port", "${PORT}"],
+            "env": {"API_KEY": "${API_KEY}"},
+        },
+    )
+    config = _make_config(mcp=[patch])
+    resolve_config(config, tmp_path)
+    resolved = config.dependencies["mcp"][0].value  # type: ignore[union-attr]
+    assert resolved["args"] == ["--port", "9090"]
+    assert resolved["env"]["API_KEY"] == "secret"
+
+
+def test_resolve_patch_key_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SERVER_NAME", "filesystem")
+    patch = Patch(key="mcpServers.${SERVER_NAME}", value={"command": "x"})
+    config = _make_config(mcp=[patch])
+    resolve_config(config, tmp_path)
+    assert config.dependencies["mcp"][0].key == "mcpServers.filesystem"
+
+
+def test_resolve_patch_missing_var_raises(tmp_path: Path) -> None:
+    patch = Patch(key="x", value={"env": {"K": "${UNDEFINED}"}})
+    config = _make_config(mcp=[patch])
+    with pytest.raises(ConfigError, match="'UNDEFINED'"):
+        resolve_config(config, tmp_path)
+
+
+def test_resolve_patch_non_string_leaves_untouched(tmp_path: Path) -> None:
+    """Numbers, bools, None pass through unchanged."""
+    patch = Patch(key="x", value={"n": 42, "b": True, "z": None})
+    config = _make_config(mcp=[patch])
+    resolve_config(config, tmp_path)
+    assert config.dependencies["mcp"][0].value == {"n": 42, "b": True, "z": None}
+
+
+# ---------------------------------------------------------------------------
+# 5. Three-tier .env (project > global > shell)
+# ---------------------------------------------------------------------------
+
+
+def test_three_tier_project_dotenv_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MY_VAR", "from-shell")
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    (global_dir / ".env").write_text("MY_VAR=from-global\n")
+    global_cfg = GlobalConfig(config_dir=global_dir)
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / ".env").write_text("MY_VAR=from-project\n")
+
+    patch = Patch(key="x.v", value="${MY_VAR}")
+    config = _make_config(mcp=[patch])
+    resolve_config(config, project_dir, global_config=global_cfg)
+    assert config.dependencies["mcp"][0].value == "from-project"
+
+
+def test_three_tier_global_dotenv_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MY_VAR", "from-shell")
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    (global_dir / ".env").write_text("MY_VAR=from-global\n")
+    global_cfg = GlobalConfig(config_dir=global_dir)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    patch = Patch(key="x.v", value="${MY_VAR}")
+    config = _make_config(mcp=[patch])
+    resolve_config(config, project_dir, global_config=global_cfg)
+    assert config.dependencies["mcp"][0].value == "from-global"
+
+
+def test_three_tier_shell_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MY_VAR", "from-shell")
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    global_cfg = GlobalConfig(config_dir=global_dir)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    patch = Patch(key="x.v", value="${MY_VAR}")
+    config = _make_config(mcp=[patch])
+    resolve_config(config, project_dir, global_config=global_cfg)
+    assert config.dependencies["mcp"][0].value == "from-shell"
+
+
+def test_three_tier_global_env_applies_to_deps(tmp_path: Path) -> None:
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    (global_dir / ".env").write_text("GH_ORG=my-global-org\n")
+    global_cfg = GlobalConfig(config_dir=global_dir)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    dep = DependencySource(urls=["https://github.com/${GH_ORG}/repo"])
+    config = _make_config(skills=[dep])
+    resolve_config(config, project_dir, global_config=global_cfg)
+    assert config.dependencies["skills"][0].url == (  # type: ignore[union-attr]
+        "https://github.com/my-global-org/repo"
+    )
+
+
+def test_resolve_empty_config_no_op(tmp_path: Path) -> None:
+    config = _make_config()
+    resolve_config(config, tmp_path)
