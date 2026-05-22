@@ -87,16 +87,21 @@ def apply_patches_to_targets(
     patches: list[Patch],
     targets: list[TargetDef],
     project_root: Path,
+    env_vars: dict[str, str] | None = None,
     *,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> list[AppliedPatch]:
     """Apply ``patches`` to every target's edit-file resource of ``resource_type``.
 
-    Targets that don't declare this resource type, or that declare it
-    with a non-edit-file kind, are silently skipped. The returned
-    :class:`AppliedPatch` records are what gets written to the lockfile
-    so cleanup can later reverse each operation.
+    ``${name}`` references in each patch are resolved per-target at
+    apply time, with the target's own ``vars`` taking precedence over
+    ``env_vars``. Targets that don't declare this resource type, or
+    that declare it with a non-edit-file kind, are silently skipped.
+
+    The returned :class:`AppliedPatch` records carry the
+    *post-substitution* keys and values so cleanup can reverse each
+    operation by deep equality without rerunning substitution.
     """
     if not patches:
         return []
@@ -109,10 +114,11 @@ def apply_patches_to_targets(
         if not isinstance(resource, EditFileResource):
             continue
         matched_any = True
-        resource.apply_patches(
-            patches, project_root, dry_run=dry_run, verbose=verbose
+        resolved = resource.apply_patches(
+            patches, project_root, env_vars,
+            dry_run=dry_run, verbose=verbose,
         )
-        for patch in patches:
+        for patch in resolved:
             applied.append(
                 AppliedPatch(
                     file_path=resource.path,

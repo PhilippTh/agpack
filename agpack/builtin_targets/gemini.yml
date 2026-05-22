@@ -11,3 +11,5 @@ commands:
 mcp:
   kind: edit-file
   path: .gemini/settings.json
+  vars:
+    bucket: mcpServers

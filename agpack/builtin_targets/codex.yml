@@ -11,3 +11,5 @@ agents:
 mcp:
   kind: edit-file
   path: .codex/config.toml
+  vars:
+    bucket: mcp_servers

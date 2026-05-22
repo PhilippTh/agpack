@@ -355,6 +355,150 @@ class TestErrors:
 # ---------------------------------------------------------------------------
 
 
+class TestVariableSubstitution:
+    """${name} in patch keys and values resolves at apply time, with
+    the target's own ``vars`` taking precedence over env_vars."""
+
+    def test_target_var_substituted_in_key(self, tmp_path: Path) -> None:
+        resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
+        resource.apply_patches(
+            [Patch(key="${bucket}.fs", value={"command": "npx"})],
+            tmp_path,
+            env_vars={},
+        )
+        cfg = _read_json(tmp_path / ".mcp.json")
+        assert cfg == {"mcpServers": {"fs": {"command": "npx"}}}
+
+    def test_env_var_substituted_in_value(self, tmp_path: Path) -> None:
+        resource = EditFileResource(path=".mcp.json")
+        resource.apply_patches(
+            [
+                Patch(
+                    key="mcpServers.fs",
+                    value={"env": {"API_KEY": "${API_KEY}"}},
+                )
+            ],
+            tmp_path,
+            env_vars={"API_KEY": "secret"},
+        )
+        cfg = _read_json(tmp_path / ".mcp.json")
+        assert cfg["mcpServers"]["fs"]["env"]["API_KEY"] == "secret"
+
+    def test_target_var_overrides_env_var(self, tmp_path: Path) -> None:
+        """Same-name collision: target wins."""
+        resource = EditFileResource(
+            path=".mcp.json", vars={"bucket": "from-target"}
+        )
+        resource.apply_patches(
+            [Patch(key="${bucket}.fs", value={"command": "x"})],
+            tmp_path,
+            env_vars={"bucket": "from-env"},
+        )
+        cfg = _read_json(tmp_path / ".mcp.json")
+        assert "from-target" in cfg
+        assert "from-env" not in cfg
+
+    def test_substitutes_recursively_in_value(self, tmp_path: Path) -> None:
+        resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
+        resource.apply_patches(
+            [
+                Patch(
+                    key="${bucket}.fs",
+                    value={
+                        "command": "node",
+                        "args": ["--port", "${PORT}"],
+                        "env": {"TOKEN": "${TOKEN}"},
+                    },
+                )
+            ],
+            tmp_path,
+            env_vars={"PORT": "9090", "TOKEN": "abc"},
+        )
+        cfg = _read_json(tmp_path / ".mcp.json")
+        srv = cfg["mcpServers"]["fs"]
+        assert srv["args"] == ["--port", "9090"]
+        assert srv["env"]["TOKEN"] == "abc"
+
+    def test_missing_var_raises(self, tmp_path: Path) -> None:
+        resource = EditFileResource(path=".mcp.json")
+        with pytest.raises(EditFileError, match="'UNDEFINED' is not defined"):
+            resource.apply_patches(
+                [Patch(key="${UNDEFINED}.x", value=1)],
+                tmp_path,
+                env_vars={},
+            )
+
+    def test_no_env_vars_argument_defaults_to_empty(self, tmp_path: Path) -> None:
+        """env_vars=None is equivalent to {}; target vars still resolve."""
+        resource = EditFileResource(path=".mcp.json", vars={"bucket": "x"})
+        resource.apply_patches(
+            [Patch(key="${bucket}.fs", value={})],
+            tmp_path,
+        )
+        cfg = _read_json(tmp_path / ".mcp.json")
+        assert cfg == {"x": {"fs": {}}}
+
+    def test_dollar_dollar_escapes_to_literal_dollar(self, tmp_path: Path) -> None:
+        """$${X} writes ${X} literally — needed for runtime vars (e.g.
+        Claude Code's ${CLAUDE_PROJECT_DIR} inside hook commands)."""
+        resource = EditFileResource(path="settings.json")
+        resource.apply_patches(
+            [
+                Patch(
+                    key="hooks.PreToolUse",
+                    strategy="append",
+                    value={
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "$${CLAUDE_PROJECT_DIR}/.claude/block.sh",
+                            }
+                        ],
+                    },
+                ),
+            ],
+            tmp_path,
+            env_vars={},
+        )
+        cfg = _read_json(tmp_path / "settings.json")
+        cmd = cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        assert cmd == "${CLAUDE_PROJECT_DIR}/.claude/block.sh"
+
+    def test_escape_alongside_substitution(self, tmp_path: Path) -> None:
+        """$$ and ${} can appear in the same string."""
+        resource = EditFileResource(
+            path=".mcp.json", vars={"bucket": "mcpServers"}
+        )
+        resource.apply_patches(
+            [
+                Patch(
+                    key="${bucket}.fs",
+                    value="literal $${X} and substituted ${SUB}",
+                ),
+            ],
+            tmp_path,
+            env_vars={"SUB": "OK"},
+        )
+        cfg = _read_json(tmp_path / ".mcp.json")
+        assert cfg["mcpServers"]["fs"] == "literal ${X} and substituted OK"
+
+    def test_resolved_patches_returned(self, tmp_path: Path) -> None:
+        """Return value carries the post-substitution keys/values for
+        the lockfile to record."""
+        resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
+        resolved = resource.apply_patches(
+            [
+                Patch(key="${bucket}.fs", value={"env": {"K": "${K}"}}),
+            ],
+            tmp_path,
+            env_vars={"K": "v"},
+        )
+        assert len(resolved) == 1
+        assert resolved[0].key == "mcpServers.fs"
+        assert resolved[0].value == {"env": {"K": "v"}}
+
+
 class TestAtomicWriteFailure:
     def test_cleans_up_temp_file_on_replace_failure(self, tmp_path: Path) -> None:
         target = tmp_path / "output.json"

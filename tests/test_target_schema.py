@@ -111,6 +111,47 @@ def test_edit_file_unknown_path_extension_raises() -> None:
         )
 
 
+def test_edit_file_with_vars_parses() -> None:
+    target = parse_target_def(
+        {
+            "mcp": {
+                "kind": "edit-file",
+                "path": ".mcp.json",
+                "vars": {"bucket": "mcpServers"},
+            }
+        }
+    )
+    mcp = target.resources["mcp"]
+    assert isinstance(mcp, EditFileResource)
+    assert mcp.vars == {"bucket": "mcpServers"}
+
+
+def test_edit_file_vars_must_be_mapping() -> None:
+    with pytest.raises(TargetSchemaError, match="vars: must be a mapping"):
+        parse_target_def(
+            {
+                "mcp": {
+                    "kind": "edit-file",
+                    "path": ".mcp.json",
+                    "vars": ["not", "a", "mapping"],
+                }
+            }
+        )
+
+
+def test_edit_file_var_value_must_be_string() -> None:
+    with pytest.raises(TargetSchemaError, match="value must be a string"):
+        parse_target_def(
+            {
+                "mcp": {
+                    "kind": "edit-file",
+                    "path": ".mcp.json",
+                    "vars": {"bucket": 42},
+                }
+            }
+        )
+
+
 def test_context_appears_in_error() -> None:
     with pytest.raises(TargetSchemaError, match="my-source.skills.kind"):
         parse_target_def(

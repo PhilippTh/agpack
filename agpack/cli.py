@@ -257,6 +257,7 @@ def _apply_edit_resource(
     target_defs: list[TargetDef],
     project_root: Path,
     new_lockfile: Lockfile,
+    env_vars: dict[str, str],
     *,
     dry_run: bool,
     verbose: bool,
@@ -269,7 +270,7 @@ def _apply_edit_resource(
         return 0
     try:
         applied = apply_patches_to_targets(
-            resource_type, patches, target_defs, project_root,
+            resource_type, patches, target_defs, project_root, env_vars,
             dry_run=dry_run, verbose=verbose,
         )
     except EditFileError as exc:
@@ -401,9 +402,13 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     if not no_global and config.use_global:
         config, global_cfg = _load_and_merge_global(config, verbose=verbose)
 
-    # 3. Resolve ${VAR} references in config values
+    # 3. Resolve ${VAR} references in fetch dependencies; patches
+    # are resolved per-target at apply time using `env_vars` plus the
+    # target's own `vars`.
     try:
-        resolve_config(config, project_root, global_config=global_cfg, verbose=verbose)
+        env_vars = resolve_config(
+            config, project_root, global_config=global_cfg, verbose=verbose
+        )
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -466,6 +471,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                     target_defs,
                     project_root,
                     new_lockfile,
+                    env_vars,
                     dry_run=dry_run,
                     verbose=verbose,
                 )
@@ -632,13 +638,15 @@ dependencies:
     #   path: agents/my-agent.md
 
   mcp:
-    # Shared MCP servers as patches into the per-target MCP config file:
-    # - key: mcpServers.my-server          # bucket-key for Claude/Cursor/Gemini
+    # Shared MCP servers as patches. ${bucket} is supplied by each
+    # built-in target (mcpServers / mcp_servers / mcp / servers), so
+    # one patch deploys correctly to every target.
+    # - key: ${bucket}.my-server
     #   value:
     #     command: npx
     #     args: ["-y", "@example/mcp-server"]
     #     env:
-    #       API_KEY: ${API_KEY}            # resolved from .env or shell env
+    #       API_KEY: ${API_KEY}            # from .env or shell env
 """
         path.write_text(template, encoding="utf-8")
         console.print(f"[green]✓[/green] Created [bold]{path}[/bold]")
@@ -685,26 +693,31 @@ dependencies:
     # - url: https://github.com/owner/repo
     #   path: agents/my-agent.md
 
-  # edit-file resources take patches instead of git URLs:
+  # edit-file resources take patches instead of git URLs. ${bucket}
+  # is supplied by the target manifest (e.g. mcpServers for Claude,
+  # mcp for OpenCode, mcp_servers for Codex), so a single patch
+  # deploys to every configured target.
   mcp:
-    # Patch into the target's MCP config file at the given key.
-    # - key: mcpServers.my-server
+    # - key: ${bucket}.my-server
     #   value:
     #     command: npx
     #     args: ["-y", "@example/mcp-server"]
     #     env:
-    #       API_KEY: ${API_KEY}            # resolved from .env or shell env
+    #       API_KEY: ${API_KEY}            # from .env or shell env
 
-  # Claude Code hooks live in .claude/settings.json under hooks.<event>:
-  # settings:
-  #   - key: hooks.PreToolUse
-  #     strategy: append                   # default is 'replace'
+  # Claude Code hooks (.claude/settings.json → hooks.<event>):
+  # hooks:
+  #   - key: ${bucket}.PreToolUse        # bucket="hooks" on Claude
+  #     strategy: append                  # default is 'replace'
   #     value:
   #       matcher: "Write|Edit"
   #       hooks:
   #         - type: command
-  #           command: "echo ${TOOL_INPUT}"
-  #   - key: permissions.allow
+  #           # $${} escapes — Claude Code resolves at hook fire time:
+  #           command: "$${CLAUDE_PROJECT_DIR}/.claude/hooks/lint.sh"
+  #
+  # permissions:
+  #   - key: ${bucket}.allow              # bucket="permissions"
   #     strategy: append
   #     value: "Read(/etc/**)"
 
@@ -723,6 +736,8 @@ dependencies:
 #     mcp:
 #       kind: edit-file            # patches written from dependencies.mcp
 #       path: .mcp.json            # format (json|toml) inferred from extension
+#       vars:                      # exposed to patches as ${name}
+#         bucket: mcpServers       # so patch ${bucket}.x → mcpServers.x
 #
 #   my-internal-tool:
 #     # Brand-new target — also listed under 'targets:' above to be used.

@@ -160,64 +160,41 @@ def test_resolve_multiple_urls(
 
 
 # ---------------------------------------------------------------------------
-# 4. resolve_config — patch values (recursive)
+# 4. resolve_config — patches are NOT substituted at load time
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_patch_string_value(
+def test_patches_pass_through_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Patches keep their ${...} templates after resolve_config.
+
+    Substitution happens per-target at apply time so target ``vars``
+    can win over env vars on collision (see test_patches.py).
+    """
     monkeypatch.setenv("MCP_BIN", "/usr/local/bin/my-server")
-    patch = Patch(key="mcpServers.s", value="${MCP_BIN}")
+    patch = Patch(key="${bucket}.s", value="${MCP_BIN}")
     config = _make_config(mcp=[patch])
     resolve_config(config, tmp_path)
-    assert config.dependencies["mcp"][0].value == "/usr/local/bin/my-server"
+    # Templates intact: substitution is deferred to apply time.
+    assert config.dependencies["mcp"][0].key == "${bucket}.s"
+    assert config.dependencies["mcp"][0].value == "${MCP_BIN}"
 
 
-def test_resolve_patch_nested_dict_values(tmp_path: Path) -> None:
-    (tmp_path / ".env").write_text("API_KEY=secret\nPORT=9090\n")
-    patch = Patch(
-        key="mcpServers.s",
-        value={
-            "command": "node",
-            "args": ["--port", "${PORT}"],
-            "env": {"API_KEY": "${API_KEY}"},
-        },
-    )
-    config = _make_config(mcp=[patch])
-    resolve_config(config, tmp_path)
-    resolved = config.dependencies["mcp"][0].value  # type: ignore[union-attr]
-    assert resolved["args"] == ["--port", "9090"]
-    assert resolved["env"]["API_KEY"] == "secret"
-
-
-def test_resolve_patch_key_itself(
+def test_resolve_config_returns_env_table(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("SERVER_NAME", "filesystem")
-    patch = Patch(key="mcpServers.${SERVER_NAME}", value={"command": "x"})
-    config = _make_config(mcp=[patch])
-    resolve_config(config, tmp_path)
-    assert config.dependencies["mcp"][0].key == "mcpServers.filesystem"
-
-
-def test_resolve_patch_missing_var_raises(tmp_path: Path) -> None:
-    patch = Patch(key="x", value={"env": {"K": "${UNDEFINED}"}})
-    config = _make_config(mcp=[patch])
-    with pytest.raises(ConfigError, match="'UNDEFINED'"):
-        resolve_config(config, tmp_path)
-
-
-def test_resolve_patch_non_string_leaves_untouched(tmp_path: Path) -> None:
-    """Numbers, bools, None pass through unchanged."""
-    patch = Patch(key="x", value={"n": 42, "b": True, "z": None})
-    config = _make_config(mcp=[patch])
-    resolve_config(config, tmp_path)
-    assert config.dependencies["mcp"][0].value == {"n": 42, "b": True, "z": None}
+    """resolve_config returns the merged env table for downstream apply."""
+    (tmp_path / ".env").write_text("API_KEY=secret\n")
+    monkeypatch.setenv("OTHER", "from-shell")
+    config = _make_config()
+    env = resolve_config(config, tmp_path)
+    assert env["API_KEY"] == "secret"
+    assert env["OTHER"] == "from-shell"
 
 
 # ---------------------------------------------------------------------------
-# 5. Three-tier .env (project > global > shell)
+# 5. Three-tier .env (project > global > shell) — verified via fetch deps
 # ---------------------------------------------------------------------------
 
 
@@ -234,10 +211,12 @@ def test_three_tier_project_dotenv_wins(
     project_dir.mkdir()
     (project_dir / ".env").write_text("MY_VAR=from-project\n")
 
-    patch = Patch(key="x.v", value="${MY_VAR}")
-    config = _make_config(mcp=[patch])
+    dep = DependencySource(urls=["https://example.com/${MY_VAR}"])
+    config = _make_config(skills=[dep])
     resolve_config(config, project_dir, global_config=global_cfg)
-    assert config.dependencies["mcp"][0].value == "from-project"
+    assert config.dependencies["skills"][0].url == (  # type: ignore[union-attr]
+        "https://example.com/from-project"
+    )
 
 
 def test_three_tier_global_dotenv_fallback(
@@ -251,10 +230,12 @@ def test_three_tier_global_dotenv_fallback(
     project_dir = tmp_path / "project"
     project_dir.mkdir()
 
-    patch = Patch(key="x.v", value="${MY_VAR}")
-    config = _make_config(mcp=[patch])
+    dep = DependencySource(urls=["https://example.com/${MY_VAR}"])
+    config = _make_config(skills=[dep])
     resolve_config(config, project_dir, global_config=global_cfg)
-    assert config.dependencies["mcp"][0].value == "from-global"
+    assert config.dependencies["skills"][0].url == (  # type: ignore[union-attr]
+        "https://example.com/from-global"
+    )
 
 
 def test_three_tier_shell_fallback(
@@ -267,10 +248,12 @@ def test_three_tier_shell_fallback(
     project_dir = tmp_path / "project"
     project_dir.mkdir()
 
-    patch = Patch(key="x.v", value="${MY_VAR}")
-    config = _make_config(mcp=[patch])
+    dep = DependencySource(urls=["https://example.com/${MY_VAR}"])
+    config = _make_config(skills=[dep])
     resolve_config(config, project_dir, global_config=global_cfg)
-    assert config.dependencies["mcp"][0].value == "from-shell"
+    assert config.dependencies["skills"][0].url == (  # type: ignore[union-attr]
+        "https://example.com/from-shell"
+    )
 
 
 def test_three_tier_global_env_applies_to_deps(tmp_path: Path) -> None:

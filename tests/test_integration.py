@@ -109,7 +109,10 @@ def test_full_sync_flow(tmp_path: Path) -> None:
             ],
             "mcp": [
                 {
-                    "key": "mcpServers.filesystem",
+                    # ${bucket} resolves per target: 'mcpServers' for
+                    # claude, 'mcp' for opencode. One patch, both
+                    # targets, correct bucket name on each.
+                    "key": "${bucket}.filesystem",
                     "value": {
                         "command": "npx",
                         "args": [
@@ -150,16 +153,11 @@ def test_full_sync_flow(tmp_path: Path) -> None:
     assert (project_dir / ".claude/agents/backend-expert.md").exists()
     assert (project_dir / ".opencode/agents/backend-expert.md").exists()
 
-    # MCP config — the patch key targets `mcpServers.filesystem` and
-    # gets written verbatim into every target's edit-file path.
+    # MCP — each target uses its own bucket name via ${bucket}.
     claude_mcp = json.loads((project_dir / ".mcp.json").read_text())
     assert claude_mcp["mcpServers"]["filesystem"]["command"] == "npx"
     opencode_mcp = json.loads((project_dir / "opencode.json").read_text())
-    # Note: opencode uses `mcp` as its bucket — under the patch model
-    # the user would write a second patch keyed `mcp.filesystem` for
-    # opencode. This test only verifies the Claude/Cursor-style bucket
-    # for the single patch written here.
-    assert opencode_mcp.get("mcpServers", {}).get("filesystem") is not None
+    assert opencode_mcp["mcp"]["filesystem"]["command"] == "npx"
 
     # Verify lockfile
     lockfile_path = project_dir / ".agpack.lock.yml"
@@ -1020,6 +1018,73 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     assert len(lockfile["installed"]) == 1
     assert lockfile["installed"][0]["type"] == "skills"
     assert lockfile.get("edits", []) == []
+
+
+def test_sync_with_claude_hooks_and_permissions(tmp_path: Path) -> None:
+    """End-to-end: hooks + permissions resources deploy realistic
+    Claude Code settings.json content via the patch model."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "hooks": [
+                {
+                    "key": "${bucket}.PreToolUse",
+                    "strategy": "append",
+                    "value": {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                # $${} escapes — Claude Code resolves this
+                                # at hook execution time, not agpack.
+                                "command": (
+                                    "$${CLAUDE_PROJECT_DIR}/.claude/hooks/block.sh"
+                                ),
+                            }
+                        ],
+                    },
+                },
+            ],
+            "permissions": [
+                {
+                    "key": "${bucket}.allow",
+                    "strategy": "append",
+                    "value": "Read(/etc/**)",
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sync", "--config", str(config_path), "--no-global"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+    settings = json.loads((project_dir / ".claude/settings.json").read_text())
+    # ${bucket} resolved to "hooks" and "permissions" respectively;
+    # the runtime variable inside the command was preserved literally.
+    assert settings["hooks"]["PreToolUse"] == [
+        {
+            "matcher": "Bash",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/block.sh",
+                }
+            ],
+        }
+    ]
+    assert settings["permissions"]["allow"] == ["Read(/etc/**)"]
 
 
 def test_sync_with_target_definitions_overriding_builtin(tmp_path: Path) -> None:

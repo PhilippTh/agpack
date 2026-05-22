@@ -53,10 +53,11 @@ dependencies:
     - url: https://github.com/owner/repo
       path: agents/backend-expert.md
 
-  # edit-file resources take patches: a key path into the target file
-  # and a value to put there.
+  # edit-file resources take patches. ${bucket} is supplied by each
+  # built-in target manifest (mcpServers / mcp_servers / mcp / servers),
+  # so one patch deploys correctly to every target's MCP config.
   mcp:
-    - key: mcpServers.filesystem
+    - key: ${bucket}.filesystem
       value:
         command: npx
         args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
@@ -129,9 +130,12 @@ commands:
 
 If the directory contains no deployable files, sync fails with an error.
 
-### Environment variables
+### Variables
 
-Use `${VAR_NAME}` in any string value to reference environment variables. Substitution recurses through dependency URLs/paths/refs and through every string inside a patch's `key` or `value` (including nested dicts and lists).
+Use `${name}` in any string value. The substitution table merges two sources, target wins on collision:
+
+1. **Target vars**: declared by an `edit-file` resource's `vars:` block in the target manifest. Per-target, available only inside patches targeting that resource. The built-in MCP resources ship `bucket: <bucket-name>` so `${bucket}.filesystem` resolves to the right key on every tool.
+2. **Environment vars**: project `.env`, then global `.env`, then shell env. Available everywhere — dependency URLs/paths/refs and patch keys/values (recursing through nested dicts and lists).
 
 ```yaml
 dependencies:
@@ -140,13 +144,15 @@ dependencies:
       path: skills/my-skill
 
   mcp:
-    - key: mcpServers.context7
+    - key: ${bucket}.context7        # ${bucket} comes from the target
       value:
         command: npx
         args: ["-y", "@context7/mcp-server"]
         env:
-          CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+          CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}   # comes from env
 ```
+
+Missing `${name}` references error at apply time (per target), naming the variable and the patch context. To write a literal `${name}` to the target file — for example a Claude Code hook command that references `${CLAUDE_PROJECT_DIR}`, which **Claude Code** resolves at hook execution time — escape with `$$`: write `$${CLAUDE_PROJECT_DIR}` in your patch and `${CLAUDE_PROJECT_DIR}` lands in the file unchanged.
 
 Variables are resolved from up to three sources (highest priority first):
 
@@ -174,7 +180,7 @@ dependencies:
       path: skills/my-standard-skill
 
   mcp:
-    - key: mcpServers.context7
+    - key: ${bucket}.context7
       value:
         command: npx
         args: ["-y", "@upstash/context7-mcp@latest"]
@@ -255,26 +261,32 @@ An edit-file dependency is a **patch**: a dotted `key` path into the file, a `va
 dependencies:
   # Replace a single key (default strategy)
   mcp:
-    - key: mcpServers.filesystem
+    - key: ${bucket}.filesystem
       value:
         command: npx
         args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
 
-  # Append to a list — for hooks, permissions, extensions, etc.
-  settings:
-    - key: hooks.PreToolUse
+  # Claude Code hooks — the built-in `hooks` resource targets
+  # .claude/settings.json with bucket="hooks". $${} escapes a runtime
+  # variable so it's written literally for Claude Code to resolve
+  # when the hook fires.
+  hooks:
+    - key: ${bucket}.PreToolUse
       strategy: append
       value:
         matcher: "Write|Edit"
-        hooks: [{ type: command, command: "echo ${TOOL_INPUT}" }]
-    - key: permissions.allow
+        hooks: [{ type: command, command: "$${CLAUDE_PROJECT_DIR}/lint.sh" }]
+
+  # And the matching `permissions` resource (bucket="permissions"):
+  permissions:
+    - key: ${bucket}.allow
       strategy: append
       value: "Read(/etc/**)"
 ```
 
 Intermediate dicts are auto-created. `append` requires the path to resolve to a list (created empty if absent). Cleanup of removed patches: `replace` deletes the key; `append` finds the entry by deep-equality against the lockfile-recorded value and removes it — agpack never deletes anything it didn't write.
 
-**Per-target bucket keys.** agpack does not translate between targets — the patch key you write is applied verbatim to every target that supports the resource type. For tools whose MCP bucket differs (Claude/Cursor/Gemini use `mcpServers`, Codex uses `mcp_servers`, OpenCode uses `mcp`), write one patch per bucket — or restrict your `targets:` list to tools that share the bucket name.
+**Per-target bucket names — solved with target `vars`.** Every built-in MCP resource ships `vars: { bucket: <bucket-key> }` in its target manifest (`mcpServers` for Claude/Cursor/Gemini, `mcp` for OpenCode, `mcp_servers` for Codex, `servers` for Copilot). Patches reference `${bucket}` and resolve per-target at apply time — one user-written patch deploys correctly to every target. Target vars take precedence over environment variables on name collision; see [Variables](#variables).
 
 ### Arbitrary resource types
 
@@ -326,6 +338,8 @@ agents:   { kind: copy-file, path: ... }
 mcp:                            # omit if the target has no per-project MCP
   kind: edit-file
   path: <relative path>         # extension (.json|.toml) drives the format
+  vars:                         # optional — exposed to patches as ${name}
+    bucket: <top-level key>     # e.g. mcpServers, mcp, mcp_servers, servers
 
 # Any name + edit-file works. agpack ships built-ins for `mcp` and (on
 # Claude only) `settings`, but you can declare your own for any

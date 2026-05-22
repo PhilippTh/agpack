@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import tomllib
 from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -60,6 +62,48 @@ class EditFileError(Exception):
 
 
 _FORMAT_BY_SUFFIX = {".json": "json", ".toml": "toml"}
+
+
+# Matches either ``$$`` (escape — emit literal ``$``) or ``${name}``
+# (substitute). ``$${name}`` therefore writes a literal ``${name}`` to
+# the target file, which lets users pass through runtime variables
+# resolved by the consuming tool (e.g. Claude Code's
+# ``${CLAUDE_PROJECT_DIR}`` inside hook commands).
+_VAR_PATTERN = re.compile(r"\$\$|\$\{([^}]+)}")
+
+
+def _substitute(value: str, table: dict[str, str], context: str) -> str:
+    """Substitute ``${name}`` references in ``value`` using ``table``.
+
+    ``$$`` writes a literal ``$`` (so ``$${X}`` produces ``${X}``).
+    Raises :class:`EditFileError` listing the missing name and the
+    surrounding context if a ``${name}`` reference cannot be resolved.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        if match.group(0) == "$$":
+            return "$"
+        name = match.group(1)
+        if name in table:
+            return table[name]
+        raise EditFileError(
+            f"{context}: variable '{name}' is not defined "
+            f"(checked target vars and environment). "
+            f"Use $${{{name}}} to write a literal ${{{name}}}."
+        )
+
+    return _VAR_PATTERN.sub(_replace, value)
+
+
+def _substitute_recursive(value: Any, table: dict[str, str], context: str) -> Any:
+    """Walk a JSON-ish value substituting ``${name}`` in every string leaf."""
+    if isinstance(value, str):
+        return _substitute(value, table, context)
+    if isinstance(value, dict):
+        return {k: _substitute_recursive(v, table, context) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_substitute_recursive(v, table, context) for v in value]
+    return value
 
 
 def infer_config_format(path: str) -> Literal["json", "toml"]:
@@ -402,13 +446,20 @@ def _cleanup_patch(root: dict[str, Any], patch: Patch) -> bool:
 class EditFileResource:
     """Applies :class:`Patch` operations to a JSON or TOML config file.
 
-    The file format is inferred from :attr:`path`'s extension. The
-    patch shape is fully generic — agpack reads the file, applies each
-    patch (replace or append), and writes it back atomically. No
-    per-domain (MCP, hooks, etc.) knowledge lives here.
+    The file format is inferred from :attr:`path`'s extension. Patches
+    are fully generic — agpack reads the file, applies each patch
+    (replace or append), and writes it back atomically.
+
+    :attr:`vars` is a mapping of substitution variables made available
+    to every patch when this resource is the apply target. They are
+    referenced as ``${name}`` in patch ``key`` strings and recursively
+    in patch ``value`` strings. Target ``vars`` win over environment
+    variables on name collision — the target manifest is the canonical
+    source for per-target structure like bucket names.
     """
 
     path: str
+    vars: dict[str, str] = field(default_factory=dict)
     kind: ClassVar[str] = "edit-file"
 
     @property
@@ -419,29 +470,39 @@ class EditFileResource:
         self,
         patches: list[Patch],
         project_root: Path,
+        env_vars: dict[str, str] | None = None,
         *,
         dry_run: bool = False,
         verbose: bool = False,
-    ) -> None:
+    ) -> list[Patch]:
         """Apply each patch to the config file at :attr:`path`.
 
-        Reads the file once, applies all patches in order, writes once.
+        ``${name}`` references in patch ``key`` and ``value`` strings
+        are substituted using the merged table ``{**env_vars,
+        **self.vars}`` (target vars win on collision). Missing names
+        raise :class:`EditFileError`.
+
+        Returns the list of patches as actually applied (post-
+        substitution). The caller is expected to record these in the
+        lockfile so cleanup matches the literal values written.
         """
         if not patches:
-            return
+            return []
+
+        resolved = [self._resolve_patch(p, env_vars or {}) for p in patches]
 
         config_path = project_root / self.path
 
         if dry_run:
             if verbose:
-                for p in patches:
+                for p in resolved:
                     console.print(
                         f"[dry-run]   {p.strategy} {self.path}:{p.key}"
                     )
-            return
+            return resolved
 
         data = _read_existing(config_path, self.format)
-        for patch in patches:
+        for patch in resolved:
             _apply_patch(data, patch)
 
         try:
@@ -452,8 +513,23 @@ class EditFileResource:
             ) from exc
 
         if verbose:
-            for p in patches:
+            for p in resolved:
                 console.print(f"  {p.strategy} {self.path}:{p.key}")
+
+        return resolved
+
+    def _resolve_patch(self, patch: Patch, env_vars: dict[str, str]) -> Patch:
+        """Return a new Patch with all ${name} references substituted.
+
+        Target ``vars`` override env vars on collision.
+        """
+        table = {**env_vars, **self.vars}
+        ctx = f"patch {self.path}:{patch.key}"
+        return Patch(
+            key=_substitute(patch.key, table, ctx),
+            value=_substitute_recursive(patch.value, table, ctx),
+            strategy=patch.strategy,
+        )
 
     def cleanup_patches(
         self,

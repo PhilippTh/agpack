@@ -15,3 +15,5 @@ agents:
 mcp:
   kind: edit-file
   path: opencode.json
+  vars:
+    bucket: mcp

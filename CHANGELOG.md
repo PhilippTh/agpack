@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-target `vars:` on edit-file resources.** Built-in target
+  manifests declare a `vars:` map (e.g. `bucket: mcpServers` for
+  Claude, `bucket: mcp` for OpenCode, `bucket: mcp_servers` for Codex)
+  exposed to patches as `${name}`. Users write a single patch like
+  `key: ${bucket}.filesystem` and it deploys correctly to every
+  target. Target vars take precedence over environment variables on
+  name collision — the target manifest is the canonical source for
+  per-target structural details.
 - **`kind: edit-file` works for any structured config**, not just MCP.
   Claude Code hooks, permissions, VS Code extensions, EditorConfig, or
   any other JSON/TOML the user wants to merge into — all expressible
@@ -69,7 +77,7 @@ New `agpack.yml`:
 ```yaml
 dependencies:
   mcp:
-    - key: mcpServers.filesystem        # Claude/Cursor/Gemini bucket
+    - key: ${bucket}.filesystem         # resolves per-target via vars
       value:
         command: npx
         args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
@@ -77,14 +85,17 @@ dependencies:
           API_KEY: ${API_KEY}
 ```
 
-If you target multiple tools whose MCP bucket names differ (Codex uses
-`mcp_servers`, OpenCode uses `mcp`), write one patch per bucket name.
+`${bucket}` resolves per target from each built-in's `vars:`:
+`mcpServers` for Claude/Cursor/Gemini, `mcp_servers` for Codex,
+`mcp` for OpenCode, `servers` for Copilot. One patch, all targets.
 
 For custom `target_definitions:`, drop the `merge:` block from
 `edit-file` resources, drop `format:`, and replace `layout:
-directory|file` with `kind: copy-directory|copy-file`. The lockfile
-format also changed; agpack does not read pre-release lockfiles —
-delete `.agpack.lock.yml` before the first sync.
+directory|file` with `kind: copy-directory|copy-file`. Add a
+`vars: { bucket: <key> }` block to edit-file resources whose patches
+should use `${bucket}.<name>` for cross-target portability. The
+lockfile format also changed; agpack does not read pre-release
+lockfiles — delete `.agpack.lock.yml` before the first sync.
   Previously stored as singular (`skill` / `command` / `agent`); now
   stored as it appears in `agpack.yml` (`skills` / `commands` /
   `agents` / or any user-defined name). Legacy singulars are remapped

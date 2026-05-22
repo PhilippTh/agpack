@@ -11,3 +11,5 @@ commands:
 mcp:
   kind: edit-file
   path: .cursor/mcp.json
+  vars:
+    bucket: mcpServers

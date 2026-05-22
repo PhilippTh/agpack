@@ -5,15 +5,15 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
 
 from agpack.config import AgpackConfig
 from agpack.config import ConfigError
 from agpack.config import DependencySource
 from agpack.config import GlobalConfig
-from agpack.kinds import Patch
 
-_VAR_PATTERN = re.compile(r"\$\{([^}]+)}")
+# See agpack.kinds._VAR_PATTERN — same semantics: ``$$`` is an escape
+# that produces a literal ``$``; ``${name}`` substitutes from env.
+_VAR_PATTERN = re.compile(r"\$\$|\$\{([^}]+)}")
 
 
 def load_dotenv(project_root: Path) -> dict[str, str]:
@@ -56,10 +56,13 @@ def load_dotenv(project_root: Path) -> dict[str, str]:
 def resolve_env_vars(value: str, env: dict[str, str], *, context: str = "") -> str:
     """Replace all ``${VAR}`` references in *value* from *env*.
 
-    Raises :class:`ConfigError` if a referenced variable is not defined.
+    ``$$`` writes a literal ``$`` (so ``$${X}`` produces ``${X}``).
+    Raises :class:`ConfigError` if a ``${VAR}`` reference is not defined.
     """
 
     def _replace(match: re.Match[str]) -> str:
+        if match.group(0) == "$$":
+            return "$"
         var_name = match.group(1)
         try:
             return env[var_name]
@@ -67,13 +70,14 @@ def resolve_env_vars(value: str, env: dict[str, str], *, context: str = "") -> s
             hint = context + ": " if context else ""
             raise ConfigError(
                 f"{hint}environment variable '{var_name}' is not set. "
-                f"Define it in .env or your shell environment."
+                f"Define it in .env or your shell environment, or use "
+                f"$${{{var_name}}} to write a literal ${{{var_name}}}."
             ) from None
 
     return _VAR_PATTERN.sub(_replace, value)
 
 
-def _build_env(
+def build_env(
     project_root: Path,
     global_config: GlobalConfig | None = None,
     *,
@@ -112,26 +116,29 @@ def resolve_config(
     *,
     global_config: GlobalConfig | None = None,
     verbose: bool = False,
-) -> None:
-    """Resolve ``${VAR}`` references in config values in-place.
+) -> dict[str, str]:
+    """Resolve ``${VAR}`` references in fetch dependencies in-place.
 
-    Substitutes ``${VAR}`` references in every string field reachable
-    from the config:
+    Only fetch (copy-kind) dependency fields — URLs, paths, refs — are
+    substituted here, because they have no per-target context. Patch
+    entries (edit-file kind) are *not* substituted at load time: their
+    ``${name}`` references are resolved per-target at apply time so
+    that target ``vars`` can win over environment variables (see
+    :meth:`agpack.kinds.EditFileResource.apply_patches`).
 
-    - Fetch dependencies: ``urls``, ``path``, ``ref``.
-    - Patch entries: the ``key`` plus every string nested anywhere
-      inside ``value`` (recursing through dicts and lists).
+    Returns the merged environment table for downstream apply-time
+    substitution.
 
-    Resolution order for variables (highest priority first):
+    Resolution order (highest priority first):
 
     1. Project ``.env`` (from *project_root*)
     2. Global ``.env`` (from the global config directory, if provided)
     3. Shell environment (``os.environ``)
     """
-    merged = _build_env(project_root, global_config, verbose=verbose)
+    merged = build_env(project_root, global_config, verbose=verbose)
 
-    for rt, entries in config.dependencies.items():
-        for i, entry in enumerate(entries):
+    for entries in config.dependencies.values():
+        for entry in entries:
             if isinstance(entry, DependencySource):
                 ctx = f"dependency '{entry.name}'"
                 entry.urls = [
@@ -141,24 +148,5 @@ def resolve_config(
                     entry.path = resolve_env_vars(entry.path, merged, context=ctx)
                 if entry.ref is not None:
                     entry.ref = resolve_env_vars(entry.ref, merged, context=ctx)
-            elif isinstance(entry, Patch):
-                ctx = f"patch {rt}[{i}] ({entry.key})"
-                resolved_key = resolve_env_vars(entry.key, merged, context=ctx)
-                resolved_value = _resolve_recursive(entry.value, merged, ctx)
-                # Patch is frozen; rewrite in place via list assignment.
-                entries[i] = Patch(
-                    key=resolved_key,
-                    value=resolved_value,
-                    strategy=entry.strategy,
-                )
 
-
-def _resolve_recursive(value: Any, env: dict[str, str], context: str) -> Any:
-    """Walk a JSON-ish value, substituting ${VAR} in every string leaf."""
-    if isinstance(value, str):
-        return resolve_env_vars(value, env, context=context)
-    if isinstance(value, dict):
-        return {k: _resolve_recursive(v, env, context) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_resolve_recursive(v, env, context) for v in value]
-    return value
+    return merged

@@ -101,14 +101,33 @@ def _parse_copy_file(data: dict[str, Any], context: str) -> CopyFileResource:
 
 
 def _parse_edit_file(data: dict[str, Any], context: str) -> EditFileResource:
-    _reject_extra({"kind", "path"}, data, context)
+    _reject_extra({"kind", "path", "vars"}, data, context)
     path = _require_string(data.get("path"), f"{context}.path")
     # Validate extension at parse time so malformed manifests fail loudly.
     try:
         infer_config_format(path)
     except Exception as exc:
         raise TargetSchemaError(f"{context}.path: {exc}") from exc
-    return EditFileResource(path=path)
+
+    raw_vars = data.get("vars", {})
+    if not isinstance(raw_vars, dict):
+        raise TargetSchemaError(
+            f"{context}.vars: must be a mapping, got {type(raw_vars).__name__}"
+        )
+    target_vars: dict[str, str] = {}
+    for key, value in raw_vars.items():
+        if not isinstance(key, str) or not key:
+            raise TargetSchemaError(
+                f"{context}.vars: keys must be non-empty strings, got {key!r}"
+            )
+        if not isinstance(value, str):
+            raise TargetSchemaError(
+                f"{context}.vars.{key}: value must be a string, "
+                f"got {type(value).__name__}"
+            )
+        target_vars[key] = value
+
+    return EditFileResource(path=path, vars=target_vars)
 
 
 # ---------------------------------------------------------------------------

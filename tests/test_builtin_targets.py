@@ -20,12 +20,25 @@ def test_claude_paths() -> None:
     assert isinstance(target.resources["commands"], CopyFileResource)
     assert target.resources["commands"].path == ".claude/commands"
     assert target.resources["agents"].path == ".claude/agents"
+
     mcp = target.resources["mcp"]
     assert isinstance(mcp, EditFileResource)
     assert mcp.path == ".mcp.json"
+    assert mcp.vars == {"bucket": "mcpServers"}
+
     settings = target.resources["settings"]
     assert isinstance(settings, EditFileResource)
     assert settings.path == ".claude/settings.json"
+
+    hooks = target.resources["hooks"]
+    assert isinstance(hooks, EditFileResource)
+    assert hooks.path == ".claude/settings.json"
+    assert hooks.vars == {"bucket": "hooks"}
+
+    permissions = target.resources["permissions"]
+    assert isinstance(permissions, EditFileResource)
+    assert permissions.path == ".claude/settings.json"
+    assert permissions.vars == {"bucket": "permissions"}
 
 
 def test_opencode_paths() -> None:
