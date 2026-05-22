@@ -85,8 +85,7 @@ def sync_edit_resource(
     """Reconcile every target's edit-file resource of ``resource_type``.
 
     ``desired`` is the current list of patches from ``agpack.yml``. ``applied_old`` is the lockfile's record of what
-    was applied for this resource type on the previous sync (already grouped — pass the entries from one
-    ``EditLockEntry``).
+    was applied for this resource type on the previous sync (pass the entries from one ``EditLockEntry``).
 
     Each target with a matching edit-file resource gets its own per-file diff: matching patches are left alone, removed
     patches are reversed (``replace`` deletes the leaf; ``append`` drops the previously-appended entry), added patches
@@ -100,8 +99,6 @@ def sync_edit_resource(
     old_by_file: dict[str, list[AppliedPatch]] = defaultdict(list)
     for entry in applied_old:
         old_by_file[entry.file_path].append(entry)
-
-    targets_by_name = {t.name: t for t in targets}
 
     new_applied: list[AppliedPatch] = []
     matched_any = False
@@ -124,21 +121,18 @@ def sync_edit_resource(
                 desired_new=desired,
                 project_root=project_root,
                 env_vars=env_vars,
-                target_name=target.name,
                 dry_run=dry_run,
                 verbose=verbose,
             )
         )
 
     # Files that used to be touched by this resource type but aren't any more (e.g. a target was removed from
-    # ``targets:``) need their old patches reversed too. We re-resolve each leftover's ${var} references against the
-    # originating target's vars — looked up by target_name.
+    # ``targets:``) need their old patches reversed too. Resolved keys live on the entries, so cleanup needs no
+    # target lookup.
     for file_path, leftovers in old_by_file.items():
         if file_path in touched_files or not leftovers:
             continue
-        _cleanup_grouped_by_origin(
-            leftovers, resource_type, targets_by_name, env_vars or {}, project_root, dry_run=dry_run, verbose=verbose
-        )
+        EditFileResource(path=file_path).cleanup_patches(leftovers, project_root, dry_run=dry_run, verbose=verbose)
 
     if not matched_any and desired:
         console.print(
@@ -152,9 +146,6 @@ def sync_edit_resource(
 
 def cleanup_orphaned_edits(
     applied_old: list[AppliedPatch],
-    resource_type: str,
-    targets: list[TargetDef],
-    env_vars: dict[str, str],
     project_root: Path,
     *,
     dry_run: bool = False,
@@ -162,47 +153,14 @@ def cleanup_orphaned_edits(
 ) -> None:
     """Reverse every recorded patch for a resource type that no longer exists in ``dependencies:``.
 
-    For each applied patch we look up the originating target by name (via :attr:`AppliedPatch.target_name`) so the
-    target's ``vars`` are available to resolve ``${var}`` references in the stored key. Patches whose originating
-    target is no longer present are cleaned up best-effort using only *env_vars*.
+    Each :class:`AppliedPatch` carries its already-resolved key, so cleanup needs neither the originating target nor
+    the env table — it dispatches directly to the file for each path it has records for.
     """
-    targets_by_name = {t.name: t for t in targets}
-    _cleanup_grouped_by_origin(
-        applied_old, resource_type, targets_by_name, env_vars, project_root, dry_run=dry_run, verbose=verbose
-    )
-
-
-def _cleanup_grouped_by_origin(
-    applied: list[AppliedPatch],
-    resource_type: str,
-    targets_by_name: dict[str, TargetDef],
-    env_vars: dict[str, str],
-    project_root: Path,
-    *,
-    dry_run: bool,
-    verbose: bool,
-) -> None:
-    """Group *applied* by (file_path, target_name) and run one cleanup pass per group.
-
-    Each group uses the originating target's ``vars`` for the ``resource_type`` (when the target still exists and
-    still declares that resource type as ``edit-file``). When the originating target is missing or no longer owns
-    this resource type, we fall through to an empty-vars resolution — sufficient for patches whose keys had no
-    ``${var}`` references, best-effort for patches whose keys did.
-    """
-    by_origin: dict[tuple[str, str], list[AppliedPatch]] = defaultdict(list)
-    for ap in applied:
-        by_origin[(ap.file_path, ap.target_name)].append(ap)
-
-    for (file_path, target_name), entries in by_origin.items():
-        origin_vars: dict[str, str] = {}
-        target = targets_by_name.get(target_name)
-        if target is not None:
-            resource = target.resources.get(resource_type)
-            if isinstance(resource, EditFileResource):
-                origin_vars = dict(resource.vars)
-        EditFileResource(path=file_path, vars=origin_vars).cleanup_patches(
-            entries, project_root, env_vars, dry_run=dry_run, verbose=verbose
-        )
+    by_file: dict[str, list[AppliedPatch]] = defaultdict(list)
+    for ap in applied_old:
+        by_file[ap.file_path].append(ap)
+    for file_path, entries in by_file.items():
+        EditFileResource(path=file_path).cleanup_patches(entries, project_root, dry_run=dry_run, verbose=verbose)
 
 
 # ===========================================================================

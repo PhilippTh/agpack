@@ -18,12 +18,13 @@ from agpack.kinds.edit_file import _apply_patch
 from agpack.kinds.edit_file import _undo_resolved
 from agpack.lockfile import AppliedPatch
 from agpack.patch import Patch
-from agpack.patch import _value_hash
+from agpack.patch import value_hash
 
 
 def _undo(root: dict[str, object], patch: Patch) -> bool:
     """Test-only convenience: undo a :class:`Patch` against ``root`` in place."""
-    return _undo_resolved(root, patch.strategy, patch.key, _value_hash(patch.value))
+    return _undo_resolved(root, patch.strategy, patch.key, value_hash(patch.value))
+
 
 # ---------------------------------------------------------------------------
 # infer_config_format
@@ -350,7 +351,7 @@ class TestCleanupPatches:
             tmp_path,
         )
         # Drop the Write entry; the Read entry stays. Match by hash, which is what cleanup uses internally.
-        write_hash = _value_hash({"matcher": "Write"})
+        write_hash = value_hash({"matcher": "Write"})
         write_entry = next(ap for ap in applied if ap.value_hash == write_hash)
         resource.cleanup_patches([write_entry], tmp_path)
         cfg = _read_json(tmp_path / "settings.json")
@@ -363,10 +364,9 @@ class TestCleanupPatches:
             [
                 AppliedPatch(
                     file_path=".mcp.json",
-                    target_name="",
                     key="mcpServers.x",
                     strategy="replace",
-                    value_hash=_value_hash({}),
+                    value_hash=value_hash({}),
                 )
             ],
             tmp_path,
@@ -437,9 +437,9 @@ class TestCleanupSemantics:
             project_root=tmp_path,
         )
         # Lockfile records the new value's hash, not the value itself.
-        from agpack.patch import _value_hash
+        from agpack.patch import value_hash
 
-        assert second[0].value_hash == _value_hash({"command": "v2"})
+        assert second[0].value_hash == value_hash({"command": "v2"})
         cfg = json.loads((tmp_path / ".mcp.json").read_text())
         assert cfg["mcpServers"]["fs"] == {"command": "v2"}
 
@@ -725,12 +725,12 @@ class TestVariableSubstitution:
         assert cfg["mcpServers"]["fs"] == "literal ${X} and substituted OK"
 
     def test_resolved_patches_returned(self, tmp_path: Path) -> None:
-        """Returned AppliedPatch stores the **unresolved** key (verbatim from YAML) and a hash of the resolved value.
+        """Returned AppliedPatch stores the **resolved** key plus a hash of the resolved value.
 
-        Resolved keys and values never land in the lockfile — that's how interpolated secrets (``${API_KEY}``) stay
-        out of committed lockfiles.
+        Values never land in the lockfile — only their SHA256 hash — so interpolated secrets (``${API_KEY}``) stay
+        out of committed lockfiles. Keys are assumed to be structural, not secret.
         """
-        from agpack.patch import _value_hash
+        from agpack.patch import value_hash
 
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
         applied = resource.apply_patches(
@@ -739,12 +739,10 @@ class TestVariableSubstitution:
             ],
             tmp_path,
             env_vars={"K": "v"},
-            target_name="claude",
         )
         assert len(applied) == 1
-        assert applied[0].key == "${bucket}.fs"
-        assert applied[0].target_name == "claude"
-        assert applied[0].value_hash == _value_hash({"env": {"K": "v"}})
+        assert applied[0].key == "mcpServers.fs"
+        assert applied[0].value_hash == value_hash({"env": {"K": "v"}})
         # The file itself has the resolved key and value.
         cfg = _read_json(tmp_path / ".mcp.json")
         assert cfg["mcpServers"]["fs"]["env"]["K"] == "v"

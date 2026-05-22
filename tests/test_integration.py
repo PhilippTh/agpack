@@ -361,10 +361,11 @@ def test_status_shows_synced_for_var_patches(tmp_path: Path) -> None:
 
 
 def test_sync_does_not_write_resolved_secrets_to_lockfile(tmp_path: Path) -> None:
-    """A patch that interpolates ``${API_KEY}`` into its value must not write the resolved secret to the lockfile.
+    """A patch that interpolates ``${API_KEY}`` into its **value** must not write the resolved secret to the lockfile.
 
-    The lockfile stores the unresolved key (as the user wrote it) plus a SHA256 hash of the resolved value, so even
-    if the user commits the lockfile to git, the actual secret never lands on disk.
+    The lockfile stores the resolved key plus a SHA256 hash of the resolved value, so even if the user commits the
+    lockfile to git, the actual value secret never lands on disk. (Patch keys are assumed to be structural — see
+    :class:`AppliedPatch` for the assumption that callers don't put secrets in keys.)
     """
     project_dir = tmp_path / "project"
     project_dir.mkdir()
@@ -395,11 +396,11 @@ def test_sync_does_not_write_resolved_secrets_to_lockfile(tmp_path: Path) -> Non
     mcp_file = (project_dir / ".mcp.json").read_text()
     assert secret in mcp_file
 
-    # But the lockfile must not.
+    # But the lockfile must not — value never lands there, only its hash.
     lockfile_text = (project_dir / ".agpack.lock.yml").read_text()
     assert secret not in lockfile_text
-    # And the unresolved key is preserved verbatim.
-    assert "${bucket}.filesystem" in lockfile_text
+    # The resolved key (post ${bucket} substitution) is what gets recorded.
+    assert "mcpServers.filesystem" in lockfile_text
 
 
 def test_status_marks_partially_applied_patch_as_unsynced(tmp_path: Path) -> None:

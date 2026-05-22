@@ -51,7 +51,6 @@ from agpack.lockfile import find_removed_dependencies
 from agpack.lockfile import read_lockfile
 from agpack.lockfile import write_lockfile
 from agpack.patch import Patch
-from agpack.patch import _value_hash
 from agpack.patch import match_key
 from agpack.registry import list_builtins
 from agpack.registry import load_builtin
@@ -507,9 +506,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             continue
         if verbose or dry_run:
             console.print(f"Removing all '{resource_type}' patches (no longer in config)...")
-        cleanup_orphaned_edits(
-            leftovers, resource_type, target_defs, env_vars, project_root, dry_run=dry_run, verbose=verbose
-        )
+        cleanup_orphaned_edits(leftovers, project_root, dry_run=dry_run, verbose=verbose)
 
     for line in all_verbose_lines:
         console.print(line)
@@ -614,9 +611,8 @@ def _is_patch_synced(
 ) -> bool:
     """True iff every target that owns this resource type has the patch recorded in the lockfile.
 
-    Identity comparison uses the *unresolved* key (as the user wrote it in YAML — what the lockfile stores too)
-    plus the SHA256 hash of the resolved value (matched against the lockfile's ``value_hash``). The dep is resolved
-    per-owner-target so the hash captures any target-specific value substitution.
+    The dep is resolved per-owner-target via :meth:`EditFileResource.patch_identity` so any target-specific value
+    substitution participates in the identity hash.
     """
     recorded = edits_by_type.get(resource_type)
     if recorded is None:
@@ -631,10 +627,9 @@ def _is_patch_synced(
         resource = target.resources[resource_type]
         assert isinstance(resource, EditFileResource)  # narrowed above
         try:
-            resolved = resource._resolve_patch(dep, env_vars)
+            identity = resource.patch_identity(dep, env_vars)
         except (ConfigError, EditFileError):
             return False
-        identity = match_key(dep.strategy, dep.key, _value_hash(resolved.value))
         if (resource.path, identity) not in applied_by_id:
             return False
     return True

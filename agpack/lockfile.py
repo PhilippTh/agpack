@@ -45,13 +45,13 @@ class InstalledEntry:
 class AppliedPatch:
     """An edit-file patch recorded for future cleanup.
 
-    The lockfile never stores resolved ``${var}`` substitutions verbatim: :attr:`key` is the unresolved string the
-    user wrote in ``agpack.yml`` (no secrets if a user references ``${API_KEY}``), and :attr:`value_hash` is a
-    SHA256 fingerprint of the resolved value (not the value itself).
+    :attr:`key` is the **resolved** dotted path as it lives on disk (e.g. ``mcpServers.filesystem``) — what cleanup
+    needs to navigate to the leaf. :attr:`value_hash` is a SHA256 fingerprint of the resolved value (not the value
+    itself), so a value interpolated from ``${API_KEY}`` never ends up in the lockfile.
 
-    Cleanup re-resolves :attr:`key` using the originating target's ``vars`` plus the current env. The originating
-    target is looked up by :attr:`target_name`, so even after the resource type is removed from ``dependencies:``
-    we can still find ``${bucket}`` and friends.
+    **Assumption: patch keys are structural, not secret.** Keys describe where in the JSON/TOML a value lives —
+    ``mcpServers.filesystem``, ``hooks.PreToolUse``. If a user ever wrote ``${SECRET}.foo`` as a key, the resolved
+    value would land here in plaintext. Don't put secrets in patch keys.
 
     * ``replace`` cleanup deletes the leaf — symmetric with how copy kinds clean up the files they wrote. If the
       user had a value at that key before agpack first ran, ``replace`` overwrote it; cleanup does not try to
@@ -60,7 +60,6 @@ class AppliedPatch:
     """
 
     file_path: str
-    target_name: str
     key: str
     strategy: str
     value_hash: str
@@ -161,7 +160,6 @@ def read_lockfile(project_root: Path) -> Lockfile | None:  # noqa: C901
             applied.append(
                 AppliedPatch(
                     file_path=raw.get("file_path", ""),
-                    target_name=raw.get("target_name", ""),
                     key=raw.get("key", ""),
                     strategy=raw.get("strategy", "replace"),
                     value_hash=raw.get("value_hash", ""),
@@ -207,7 +205,6 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
                 "applied": [
                     {
                         "file_path": p.file_path,
-                        "target_name": p.target_name,
                         "key": p.key,
                         "strategy": p.strategy,
                         "value_hash": p.value_hash,

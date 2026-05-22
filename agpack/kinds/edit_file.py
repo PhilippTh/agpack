@@ -29,13 +29,12 @@ from tomlkit.exceptions import TOMLKitError
 from agpack.display import console
 from agpack.envsubst import resolve_env_vars
 from agpack.envsubst import resolve_env_vars_recursive
-from agpack.errors import ConfigError
 from agpack.errors import EditFileError
 from agpack.kinds._shared import write_if_changed
 from agpack.lockfile import AppliedPatch
 from agpack.patch import Patch
-from agpack.patch import _value_hash
 from agpack.patch import match_key
+from agpack.patch import value_hash
 
 # ---------------------------------------------------------------------------
 # Format inference
@@ -179,7 +178,7 @@ def _undo_resolved(root: dict[str, Any], strategy: str, resolved_key: str, value
     if not isinstance(bucket, list):
         return False
     for i, item in enumerate(bucket):
-        if _value_hash(item) == value_hash:
+        if value_hash(item) == value_hash:
             del bucket[i]
             return True
     return False
@@ -261,22 +260,18 @@ class EditFileResource:
         project_root: Path,
         env_vars: dict[str, str] | None = None,
         *,
-        target_name: str = "",
         dry_run: bool = False,
         verbose: bool = False,
     ) -> list[AppliedPatch]:
         """Apply each patch to the config file at :attr:`path`.
 
         Thin wrapper around :meth:`sync_patches` with no prior state — every patch is treated as freshly added.
-        *target_name* is stamped onto every resulting :class:`AppliedPatch` so cleanup can re-resolve ``${var}``
-        references against the originating target's manifest.
         """
         return self.sync_patches(
             applied_old=[],
             desired_new=patches,
             project_root=project_root,
             env_vars=env_vars,
-            target_name=target_name,
             dry_run=dry_run,
             verbose=verbose,
         )
@@ -293,6 +288,20 @@ class EditFileResource:
             value=resolve_env_vars_recursive(patch.value, table, context=ctx),
             strategy=patch.strategy,
         )
+
+    def patch_identity(self, patch: Patch, env_vars: dict[str, str]) -> tuple[Any, ...]:
+        """Return the :func:`match_key` identity *patch* would have on disk when applied to this resource.
+
+        Resolves the patch's ``${name}`` references against env + target vars, hashes the resolved value, and combines
+        them with strategy + the **resolved** key into the same tuple :meth:`sync_patches` builds internally for
+        diffing — and the same identity the lockfile records. Used by :func:`agpack.cli.status` to test whether the
+        lockfile already has this patch.
+
+        Raises:
+            ConfigError: If a ``${name}`` reference cannot be resolved.
+        """
+        resolved = self._resolve_patch(patch, env_vars)
+        return match_key(resolved.strategy, resolved.key, value_hash(resolved.value))
 
     def cleanup_patches(
         self,
@@ -331,7 +340,6 @@ class EditFileResource:
         project_root: Path,
         env_vars: dict[str, str] | None = None,
         *,
-        target_name: str = "",
         dry_run: bool = False,
         verbose: bool = False,
     ) -> list[AppliedPatch]:
@@ -345,12 +353,10 @@ class EditFileResource:
         * Patches that appear in both with identical value hashes are left untouched — no file mutation, no churn.
         * For ``replace`` patches whose key matches but value hash differs, the file is updated to the new value.
 
-        Diff identity uses the **unresolved** key (as the user wrote it in YAML) plus the value hash, so the diff is
-        stable across syncs even when ``${var}`` resolution context changes. Resolution is only performed when
-        navigating to the file on disk — to apply (forward) or undo (backward).
+        Diff identity uses the **resolved** key (post-``${var}`` substitution) plus the value hash. That's also what
+        the lockfile records — see :class:`AppliedPatch` for the assumption that keys are structural, not secret.
 
-        Returns the list of :class:`AppliedPatch` records to write to the lockfile. Each one stores ``target_name``
-        so cleanup later can re-resolve ``${var}`` references against the originating target's manifest.
+        Returns the list of :class:`AppliedPatch` records to write to the lockfile.
         """
         env_vars = env_vars or {}
 
@@ -363,7 +369,7 @@ class EditFileResource:
         # last-write-wins on collisions.
         seen: dict[tuple[Any, ...], int] = {}
         for i, p in enumerate(resolved_new):
-            mk = match_key(p.strategy, p.key, _value_hash(p.value))
+            mk = match_key(p.strategy, p.key, value_hash(p.value))
             if mk in seen:
                 first = seen[mk]
                 first_src = desired_new[first].key
@@ -385,12 +391,11 @@ class EditFileResource:
             return [
                 AppliedPatch(
                     file_path=self.path,
-                    target_name=target_name,
-                    key=src.key,
-                    strategy=src.strategy,
-                    value_hash=_value_hash(rp.value),
+                    key=rp.key,
+                    strategy=rp.strategy,
+                    value_hash=value_hash(rp.value),
                 )
-                for src, rp in zip(desired_new, resolved_new, strict=True)
+                for rp in resolved_new
             ]
 
         if not applied_old and not resolved_new and not config_path.exists():
@@ -404,22 +409,22 @@ class EditFileResource:
 
         data = _read_existing(config_path, format_)
 
-        # Diff identities use UNRESOLVED keys + value hashes — stable across var changes between syncs.
+        # Diff identities use RESOLVED keys + value hashes on both sides (lockfile entries already store resolved
+        # keys; desired patches were resolved above).
         old_by_match: dict[tuple[Any, ...], AppliedPatch] = {
             match_key(ap.strategy, ap.key, ap.value_hash): ap for ap in applied_old
         }
-        new_by_match: dict[tuple[Any, ...], tuple[Patch, Patch]] = {}
-        for src, rp in zip(desired_new, resolved_new, strict=True):
-            new_by_match[match_key(src.strategy, src.key, _value_hash(rp.value))] = (src, rp)
+        new_by_match: dict[tuple[Any, ...], Patch] = {
+            match_key(rp.strategy, rp.key, value_hash(rp.value)): rp for rp in resolved_new
+        }
 
         result: list[AppliedPatch] = []
         verbose_lines: list[str] = []
-        table = {**env_vars, **self.vars}
 
         for mk in old_by_match.keys() & new_by_match.keys():
             ap = old_by_match[mk]
-            src, rp = new_by_match[mk]
-            new_hash = _value_hash(rp.value)
+            rp = new_by_match[mk]
+            new_hash = value_hash(rp.value)
             if ap.value_hash == new_hash:
                 # Unchanged — carry forward without touching the file.
                 result.append(ap)
@@ -429,9 +434,8 @@ class EditFileResource:
             result.append(
                 AppliedPatch(
                     file_path=self.path,
-                    target_name=target_name,
-                    key=src.key,
-                    strategy=src.strategy,
+                    key=rp.key,
+                    strategy=rp.strategy,
                     value_hash=new_hash,
                 )
             )
@@ -439,24 +443,19 @@ class EditFileResource:
 
         for mk in old_by_match.keys() - new_by_match.keys():
             ap = old_by_match[mk]
-            try:
-                rk = resolve_env_vars(ap.key, table, context=f"applied patch {self.path}:{ap.key}")
-            except ConfigError:
-                # Old patch referenced a var that's gone — best effort: skip the undo.
-                continue
-            if _undo_resolved(data, ap.strategy, rk, ap.value_hash):
-                verbose_lines.append(f"  remove {self.path}:{rk}")
+            # ``ap.key`` is already resolved — no re-resolution needed; navigate straight to the leaf.
+            if _undo_resolved(data, ap.strategy, ap.key, ap.value_hash):
+                verbose_lines.append(f"  remove {self.path}:{ap.key}")
 
         for mk in new_by_match.keys() - old_by_match.keys():
-            src, rp = new_by_match[mk]
+            rp = new_by_match[mk]
             _apply_patch(data, rp)
             result.append(
                 AppliedPatch(
                     file_path=self.path,
-                    target_name=target_name,
-                    key=src.key,
-                    strategy=src.strategy,
-                    value_hash=_value_hash(rp.value),
+                    key=rp.key,
+                    strategy=rp.strategy,
+                    value_hash=value_hash(rp.value),
                 )
             )
             verbose_lines.append(f"  {rp.strategy} {self.path}:{rp.key}")

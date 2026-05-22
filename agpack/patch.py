@@ -49,7 +49,7 @@ def match_key(strategy: str, key: str, value_hash: str) -> tuple[Any, ...]:
     return ("append", key, value_hash)
 
 
-def _value_hash(value: Any) -> str:
+def value_hash(value: Any) -> str:
     """SHA256 of the canonical JSON form of *value* (post-:func:`_unwrap` of tomlkit wrappers).
 
     Used both as in-memory identity for ``append`` patches and as the lockfile's record of what was applied. Storing

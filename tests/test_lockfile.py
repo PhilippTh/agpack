@@ -56,8 +56,7 @@ class TestReadLockfile:
                     "applied": [
                         {
                             "file_path": ".mcp.json",
-                            "target_name": "claude",
-                            "key": "${bucket}.fs",
+                            "key": "mcpServers.fs",
                             "strategy": "replace",
                             "value_hash": "sha256:abc123",
                         },
@@ -75,9 +74,8 @@ class TestReadLockfile:
         assert edit.resource_type == "mcp"
         assert len(edit.applied) == 1
         assert edit.applied[0].file_path == ".mcp.json"
-        assert edit.applied[0].target_name == "claude"
-        # Stored key is unresolved — what the user wrote in agpack.yml.
-        assert edit.applied[0].key == "${bucket}.fs"
+        # Stored key is the resolved dotted path — what cleanup navigates to.
+        assert edit.applied[0].key == "mcpServers.fs"
         assert edit.applied[0].strategy == "replace"
         # Value never lands in the lockfile — only its SHA256 hash, so interpolated secrets never leak.
         assert edit.applied[0].value_hash == "sha256:abc123"
@@ -180,8 +178,7 @@ class TestWriteLockfile:
                     applied=[
                         AppliedPatch(
                             file_path=".mcp.json",
-                            target_name="claude",
-                            key="${bucket}.fs",
+                            key="mcpServers.fs",
                             strategy="replace",
                             value_hash="sha256:abc",
                         ),
@@ -192,11 +189,12 @@ class TestWriteLockfile:
         write_lockfile(tmp_path, lf)
         data = yaml.safe_load((tmp_path / LOCKFILE_NAME).read_text())
         assert data["edits"][0]["resource_type"] == "mcp"
-        assert data["edits"][0]["applied"][0]["key"] == "${bucket}.fs"
-        assert data["edits"][0]["applied"][0]["target_name"] == "claude"
+        assert data["edits"][0]["applied"][0]["key"] == "mcpServers.fs"
         assert data["edits"][0]["applied"][0]["value_hash"] == "sha256:abc"
         # The raw resolved value never gets written to disk.
         assert "value" not in data["edits"][0]["applied"][0]
+        # target_name was dropped — resolved keys make it unnecessary.
+        assert "target_name" not in data["edits"][0]["applied"][0]
 
 
 class TestRoundTrip:
@@ -217,7 +215,6 @@ class TestRoundTrip:
                     applied=[
                         AppliedPatch(
                             file_path=".claude/settings.json",
-                            target_name="claude",
                             key="hooks.PreToolUse",
                             strategy="append",
                             value_hash="sha256:deadbeef",
@@ -233,7 +230,6 @@ class TestRoundTrip:
         assert restored.installed[0].type == "skills"
         assert restored.edits[0].resource_type == "settings"
         assert restored.edits[0].applied[0].key == original.edits[0].applied[0].key
-        assert restored.edits[0].applied[0].target_name == original.edits[0].applied[0].target_name
         assert restored.edits[0].applied[0].value_hash == original.edits[0].applied[0].value_hash
 
 

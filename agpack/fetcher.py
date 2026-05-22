@@ -21,14 +21,18 @@ _GIT_TIMEOUT_SECONDS = 120
 # Match 7-40 hex chars (commit SHA)
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
 
-# Strip userinfo from any ``<scheme>://user:pass@host/...`` URL embedded in a string. Applied only to ``FetchError``
-# messages built from git's stderr — git echoes the resolved URL it was asked to clone, which is the one place a
-# resolved ``${GITHUB_TOKEN}`` still reaches user-visible output. (SSH-style ``git@github.com:owner/repo`` URLs have no
-# ``://`` and are left untouched — their ``user@host`` form is the scheme, not a secret.)
-_URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+\-.]*://)[^@/\s]+@")
-# Replacement constant lives at module scope so callers can use it inside f-strings on Python 3.11 (PEP 701's
-# f-string-with-backslash is 3.12+, and ``requires-python = ">=3.11"`` for agpack).
-_URL_REDACT_REPL = r"\1"
+
+def _redact(text: str) -> str:
+    """Strip ``user:pass@`` userinfo from any ``scheme://...`` URL embedded in *text*.
+
+    Git echoes the resolved URL it was asked to clone, which is the one place a resolved ``${GITHUB_TOKEN}`` still
+    reaches user-visible output. :func:`_run_git` applies this unconditionally to every returned CompletedProcess
+    (args, stdout, stderr); call sites use it directly on URL inputs they construct error messages from.
+
+    SSH-style ``git@github.com:owner/repo`` URLs have no ``://`` and are left untouched — their ``user@host`` form is
+    the scheme, not a secret.
+    """
+    return re.compile(r"([a-z][a-z0-9+\-.]*://)[^@/\s]+@").sub(r"\1", text)
 
 
 @dataclass
@@ -47,15 +51,18 @@ def _is_sha(ref: str) -> bool:
 
 
 def _run_git(args: list[str], cwd: str | Path | None = None) -> subprocess.CompletedProcess[str]:
-    """Run a git command and return the result.
+    """Run a git command and return the result with userinfo scrubbed from stdout/stderr/args.
 
     The subprocess inherits the current environment with ``GIT_TERMINAL_PROMPT=0`` injected so that git never blocks
     waiting for interactive credentials input (e.g. when an HTTPS URL is used but only SSH authentication is
-    configured).  A timeout is also enforced to guard against network hangs.
+    configured). A timeout is also enforced to guard against network hangs.
+
+    Every returned :class:`CompletedProcess` has its ``args``, ``stdout``, and ``stderr`` passed through
+    :func:`_redact` so a resolved ``${GITHUB_TOKEN}`` in the URL never reaches a caller that might log the result.
     """
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
-        return subprocess.run(
+        result = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
@@ -65,11 +72,17 @@ def _run_git(args: list[str], cwd: str | Path | None = None) -> subprocess.Compl
         )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(
-            args=["git", *args],
+            args=["git", *(_redact(a) for a in args)],
             returncode=1,
             stdout="",
             stderr=f"Git operation timed out after {_GIT_TIMEOUT_SECONDS} seconds",
         )
+    return subprocess.CompletedProcess(
+        args=["git", *(_redact(a) for a in args)],
+        returncode=result.returncode,
+        stdout=_redact(result.stdout),
+        stderr=_redact(result.stderr),
+    )
 
 
 def _clone(
@@ -100,11 +113,9 @@ def _clone(
     result = _run_git(cmd)
 
     if result.returncode != 0:
-        # Both ``url`` and git's stderr may echo the resolved URL with an embedded ``${GITHUB_TOKEN}``; scrub before
-        # surfacing.
-        safe_url = _URL_USERINFO_RE.sub(_URL_REDACT_REPL, url)
-        safe_stderr = _URL_USERINFO_RE.sub(_URL_REDACT_REPL, result.stderr)
-        msg = f"Failed to clone {safe_url}:\n{safe_stderr}"
+        # ``url`` is the caller-supplied value (may carry a resolved ``${GITHUB_TOKEN}``) so it still needs scrubbing
+        # here; ``result.stderr`` was already redacted inside _run_git.
+        msg = f"Failed to clone {_redact(url)}:\n{result.stderr}"
         raise FetchError(msg)
 
     # If ref is a SHA, we need to fetch and checkout that specific commit
@@ -129,14 +140,12 @@ def _checkout_sha(clone_dir: Path, sha: str) -> None:
         # If unshallow fails (e.g. already full), try a regular fetch
         result = _run_git(["fetch", "origin"], cwd=clone_dir)
         if result.returncode != 0:
-            safe_stderr = _URL_USERINFO_RE.sub(_URL_REDACT_REPL, result.stderr)
-            msg = f"Failed to fetch commit {sha}:\n{safe_stderr}"
+            msg = f"Failed to fetch commit {sha}:\n{result.stderr}"
             raise FetchError(msg)
 
     checkout = _run_git(["checkout", sha], cwd=clone_dir)
     if checkout.returncode != 0:
-        safe_stderr = _URL_USERINFO_RE.sub(_URL_REDACT_REPL, checkout.stderr)
-        msg = f"Failed to checkout commit {sha}:\n{safe_stderr}"
+        msg = f"Failed to checkout commit {sha}:\n{checkout.stderr}"
         raise FetchError(msg)
 
 

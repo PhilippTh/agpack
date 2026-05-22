@@ -713,11 +713,15 @@ class TestFetchSubstitutesTokensAtCloneTime:
 
         assert source.urls == ["https://x-access-token:${GH_TOKEN}@github.com/o/r"]
 
-    @patch("agpack.fetcher._run_git")
-    def test_clone_failure_redacts_token_from_error(self, mock_git: MagicMock, tmp_path: Path) -> None:
+    @patch("agpack.fetcher.subprocess.run")
+    def test_clone_failure_redacts_token_from_error(self, mock_run: MagicMock, tmp_path: Path) -> None:
+        # Mock subprocess.run (not _run_git) so the redaction inside _run_git actually fires.
         source = DependencySource(urls=["https://x-access-token:${GH_TOKEN}@github.com/o/r"])
-        mock_git.return_value = _fail(
-            stderr="fatal: unable to access 'https://x-access-token:ghp_SECRET@github.com/o/r/': 404"
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "clone"],
+            returncode=128,
+            stdout="",
+            stderr="fatal: unable to access 'https://x-access-token:ghp_SECRET@github.com/o/r/': 404",
         )
 
         with (
