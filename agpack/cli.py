@@ -34,13 +34,17 @@ from agpack.deployer import detect_items
 from agpack.deployer import sync_edit_resource
 from agpack.display import console
 from agpack.display import create_sync_progress
+from agpack.envsubst import build_env
 from agpack.envsubst import resolve_config
 from agpack.fetcher import FetchError
 from agpack.fetcher import FetchResult
 from agpack.fetcher import cleanup_fetch
 from agpack.fetcher import fetch_dependency
 from agpack.kinds import EditFileError
+from agpack.kinds import EditFileResource
 from agpack.kinds import Patch
+from agpack.kinds import match_key
+from agpack.kinds.edit_file import _value_hash
 from agpack.lockfile import AppliedPatch
 from agpack.lockfile import EditLockEntry
 from agpack.lockfile import InstalledEntry
@@ -501,7 +505,9 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             continue
         if verbose or dry_run:
             console.print(f"Removing all '{resource_type}' patches (no longer in config)...")
-        cleanup_orphaned_edits(leftovers, project_root, dry_run=dry_run, verbose=verbose)
+        cleanup_orphaned_edits(
+            leftovers, resource_type, target_defs, env_vars, project_root, dry_run=dry_run, verbose=verbose
+        )
 
     for line in all_verbose_lines:
         console.print(line)
@@ -543,9 +549,12 @@ def status(config_path: str, no_global: bool) -> None:  # noqa: C901
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    # Load and merge global config
+    global_cfg: GlobalConfig | None = None
     if not no_global and config.use_global:
-        config, _ = _load_and_merge_global(config)
+        config, global_cfg = _load_and_merge_global(config)
+
+    target_defs = _resolve_targets(config)
+    env_vars = build_env(project_root, global_cfg)
 
     lockfile = read_lockfile(project_root)
 
@@ -586,17 +595,47 @@ def status(config_path: str, no_global: bool) -> None:  # noqa: C901
                             "not yet synced",
                         )
                 else:
-                    # Patch entry — synced if the lockfile recorded it.
-                    recorded = edits_by_type.get(resource_type)
-                    synced = recorded is not None and any(
-                        ap.key == dep.key and ap.strategy == dep.strategy and ap.value == dep.value
-                        for ap in recorded.applied
-                    )
+                    synced = _is_patch_synced(dep, resource_type, target_defs, edits_by_type, env_vars)
                     mark = "[green]✓[/green]" if synced else "[red]✗[/red]"
                     detail = dep.strategy if synced else "not yet synced"
                     table.add_row(f"{mark} {dep.key}", detail)
         console.print(table)
         console.print()
+
+
+def _is_patch_synced(
+    dep: Patch,
+    resource_type: str,
+    target_defs: list[TargetDef],
+    edits_by_type: dict[str, EditLockEntry],
+    env_vars: dict[str, str],
+) -> bool:
+    """True iff every target that owns this resource type has the patch recorded in the lockfile.
+
+    Identity comparison uses the *unresolved* key (as the user wrote it in YAML — what the lockfile stores too)
+    plus the SHA256 hash of the resolved value (matched against the lockfile's ``value_hash``). The dep is resolved
+    per-owner-target so the hash captures any target-specific value substitution.
+    """
+    recorded = edits_by_type.get(resource_type)
+    if recorded is None:
+        return False
+    applied_by_id: dict[tuple[str, tuple[Any, ...]], AppliedPatch] = {
+        (ap.file_path, match_key(ap.strategy, ap.key, ap.value_hash)): ap for ap in recorded.applied
+    }
+    owners = [t for t in target_defs if isinstance(t.resources.get(resource_type), EditFileResource)]
+    if not owners:
+        return False
+    for target in owners:
+        resource = target.resources[resource_type]
+        assert isinstance(resource, EditFileResource)  # narrowed above
+        try:
+            resolved = resource._resolve_patch(dep, env_vars)
+        except EditFileError:
+            return False
+        identity = match_key(dep.strategy, dep.key, _value_hash(resolved.value))
+        if (resource.path, identity) not in applied_by_id:
+            return False
+    return True
 
 
 @main.command()

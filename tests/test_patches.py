@@ -15,7 +15,14 @@ from agpack.kinds import Patch
 from agpack.kinds import infer_config_format
 from agpack.kinds._shared import _atomic_write
 from agpack.kinds.edit_file import _apply_patch
-from agpack.kinds.edit_file import _undo_patch
+from agpack.kinds.edit_file import _undo_resolved
+from agpack.kinds.edit_file import _value_hash
+from agpack.lockfile import AppliedPatch
+
+
+def _undo(root: dict[str, object], patch: Patch) -> bool:
+    """Test-only convenience: undo a :class:`Patch` against ``root`` in place."""
+    return _undo_resolved(root, patch.strategy, patch.key, _value_hash(patch.value))
 
 # ---------------------------------------------------------------------------
 # infer_config_format
@@ -120,7 +127,7 @@ class TestDottedKeyEscape:
         """Round-trip: a key applied with an escaped dot can also be undone with the same escaped key."""
         root: dict = {}
         _apply_patch(root, Patch(key="mcpServers.example\\.com", value="x"))
-        assert _undo_patch(root, Patch(key="mcpServers.example\\.com", value="x"))
+        assert _undo(root, Patch(key="mcpServers.example\\.com", value="x"))
         assert root == {"mcpServers": {}}
 
 
@@ -161,38 +168,38 @@ def test_apply_append_on_non_list_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _undo_patch — replace
+# _undo_resolved — replace
 # ---------------------------------------------------------------------------
 
 
 def test_cleanup_replace_deletes_leaf() -> None:
     root: dict = {"a": {"b": 1, "c": 2}}
-    changed = _undo_patch(root, Patch(key="a.b", value=1))
+    changed = _undo(root, Patch(key="a.b", value=1))
     assert changed is True
     assert root == {"a": {"c": 2}}
 
 
 def test_cleanup_replace_missing_is_noop() -> None:
     root: dict = {"a": {}}
-    changed = _undo_patch(root, Patch(key="a.b", value=1))
+    changed = _undo(root, Patch(key="a.b", value=1))
     assert changed is False
     assert root == {"a": {}}
 
 
 def test_cleanup_replace_missing_intermediate_is_noop() -> None:
     root: dict = {}
-    changed = _undo_patch(root, Patch(key="x.y.z", value=1))
+    changed = _undo(root, Patch(key="x.y.z", value=1))
     assert changed is False
 
 
 # ---------------------------------------------------------------------------
-# _undo_patch — append
+# _undo_resolved — append
 # ---------------------------------------------------------------------------
 
 
 def test_cleanup_append_removes_first_match() -> None:
     root: dict = {"hooks": ["a", "b", "c"]}
-    changed = _undo_patch(root, Patch(key="hooks", value="b", strategy="append"))
+    changed = _undo(root, Patch(key="hooks", value="b", strategy="append"))
     assert changed is True
     assert root == {"hooks": ["a", "c"]}
 
@@ -206,7 +213,7 @@ def test_cleanup_append_deep_equality() -> None:
             ]
         }
     }
-    changed = _undo_patch(
+    changed = _undo(
         root,
         Patch(
             key="hooks.PreToolUse",
@@ -220,7 +227,7 @@ def test_cleanup_append_deep_equality() -> None:
 
 def test_cleanup_append_no_match_is_noop() -> None:
     root: dict = {"hooks": ["a"]}
-    changed = _undo_patch(root, Patch(key="hooks", value="z", strategy="append"))
+    changed = _undo(root, Patch(key="hooks", value="z", strategy="append"))
     assert changed is False
     assert root == {"hooks": ["a"]}
 
@@ -319,47 +326,32 @@ class TestApplyPatchesToml:
 class TestCleanupPatches:
     def test_undoes_replace(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
-        resource.apply_patches(
+        applied = resource.apply_patches(
             [
                 Patch(key="mcpServers.fs", value={"command": "npx"}),
                 Patch(key="mcpServers.other", value={"command": "stay"}),
             ],
             tmp_path,
         )
-        resource.cleanup_patches(
-            [Patch(key="mcpServers.fs", value={"command": "npx"})],
-            tmp_path,
-        )
+        # Clean up just the first one — pass the AppliedPatch the apply call returned.
+        first = next(ap for ap in applied if ap.key == "mcpServers.fs")
+        resource.cleanup_patches([first], tmp_path)
         cfg = _read_json(tmp_path / ".mcp.json")
         assert cfg == {"mcpServers": {"other": {"command": "stay"}}}
 
     def test_undoes_append(self, tmp_path: Path) -> None:
         resource = EditFileResource(path="settings.json")
-        resource.apply_patches(
+        applied = resource.apply_patches(
             [
-                Patch(
-                    key="hooks.PreToolUse",
-                    value={"matcher": "Write"},
-                    strategy="append",
-                ),
-                Patch(
-                    key="hooks.PreToolUse",
-                    value={"matcher": "Read"},
-                    strategy="append",
-                ),
+                Patch(key="hooks.PreToolUse", value={"matcher": "Write"}, strategy="append"),
+                Patch(key="hooks.PreToolUse", value={"matcher": "Read"}, strategy="append"),
             ],
             tmp_path,
         )
-        resource.cleanup_patches(
-            [
-                Patch(
-                    key="hooks.PreToolUse",
-                    value={"matcher": "Write"},
-                    strategy="append",
-                )
-            ],
-            tmp_path,
-        )
+        # Drop the Write entry; the Read entry stays. Match by hash, which is what cleanup uses internally.
+        write_hash = _value_hash({"matcher": "Write"})
+        write_entry = next(ap for ap in applied if ap.value_hash == write_hash)
+        resource.cleanup_patches([write_entry], tmp_path)
         cfg = _read_json(tmp_path / "settings.json")
         assert cfg == {"hooks": {"PreToolUse": [{"matcher": "Read"}]}}
 
@@ -367,7 +359,15 @@ class TestCleanupPatches:
         resource = EditFileResource(path=".mcp.json")
         # File doesn't exist — should not raise.
         resource.cleanup_patches(
-            [Patch(key="mcpServers.x", value={})],
+            [
+                AppliedPatch(
+                    file_path=".mcp.json",
+                    target_name="",
+                    key="mcpServers.x",
+                    strategy="replace",
+                    value_hash=_value_hash({}),
+                )
+            ],
             tmp_path,
         )
 
@@ -435,7 +435,10 @@ class TestCleanupSemantics:
             desired_new=[Patch(key="mcpServers.fs", value={"command": "v2"})],
             project_root=tmp_path,
         )
-        assert second[0].value == {"command": "v2"}
+        # Lockfile records the new value's hash, not the value itself.
+        from agpack.kinds.edit_file import _value_hash
+
+        assert second[0].value_hash == _value_hash({"command": "v2"})
         cfg = json.loads((tmp_path / ".mcp.json").read_text())
         assert cfg["mcpServers"]["fs"] == {"command": "v2"}
 
@@ -506,6 +509,67 @@ class TestIdempotency:
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
+
+
+class TestCollisionDetection:
+    """Two patches that resolve to the same identity must be rejected — silent last-write-wins is the bug we ship
+    this check to avoid. The check lives at apply time because parse time doesn't have target vars yet."""
+
+    def test_literal_duplicate_replace_rejected(self, tmp_path: Path) -> None:
+        resource = EditFileResource(path=".mcp.json")
+        with pytest.raises(EditFileError, match=r"patches at indices 0 and 1 resolve to the same identity"):
+            resource.apply_patches(
+                [
+                    Patch(key="mcpServers.fs", value={"command": "v1"}),
+                    Patch(key="mcpServers.fs", value={"command": "v2"}),
+                ],
+                tmp_path,
+            )
+
+    def test_literal_duplicate_append_rejected(self, tmp_path: Path) -> None:
+        """Two appends with identical (key, value) — would dedup to one in the diff dict."""
+        resource = EditFileResource(path="settings.json")
+        with pytest.raises(EditFileError, match=r"strategy=append"):
+            resource.apply_patches(
+                [
+                    Patch(key="permissions.allow", value="Read(/etc)", strategy="append"),
+                    Patch(key="permissions.allow", value="Read(/etc)", strategy="append"),
+                ],
+                tmp_path,
+            )
+
+    def test_resolved_collision_via_substitution_rejected(self, tmp_path: Path) -> None:
+        """Different unresolved keys that resolve to the same key collide too. This is the case parse time *cannot*
+        catch — only apply time has the target's ``vars`` to do the substitution."""
+        resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
+        with pytest.raises(
+            EditFileError,
+            match=r"unresolved keys: 'mcpServers\.fs' and '\$\{bucket\}\.fs'",
+        ):
+            resource.apply_patches(
+                [
+                    Patch(key="mcpServers.fs", value={"command": "v1"}),
+                    Patch(key="${bucket}.fs", value={"command": "v2"}),
+                ],
+                tmp_path,
+            )
+
+    def test_appends_with_distinct_values_do_not_collide(self, tmp_path: Path) -> None:
+        """Two appends at the same key with different values are distinct list elements — both must land.
+
+        Order is currently *not* guaranteed because :meth:`EditFileResource.sync_patches` iterates the diff via
+        ``set.difference``; that's a separate latent issue worth fixing, but it's out of scope here.
+        """
+        resource = EditFileResource(path="settings.json")
+        resource.apply_patches(
+            [
+                Patch(key="permissions.allow", value="Read(/etc)", strategy="append"),
+                Patch(key="permissions.allow", value="Write(/tmp)", strategy="append"),
+            ],
+            tmp_path,
+        )
+        cfg = _read_json(tmp_path / "settings.json")
+        assert sorted(cfg["permissions"]["allow"]) == ["Read(/etc)", "Write(/tmp)"]
 
 
 class TestErrors:
@@ -660,18 +724,29 @@ class TestVariableSubstitution:
         assert cfg["mcpServers"]["fs"] == "literal ${X} and substituted OK"
 
     def test_resolved_patches_returned(self, tmp_path: Path) -> None:
-        """Return value carries the post-substitution keys/values for the lockfile to record."""
+        """Returned AppliedPatch stores the **unresolved** key (verbatim from YAML) and a hash of the resolved value.
+
+        Resolved keys and values never land in the lockfile — that's how interpolated secrets (``${API_KEY}``) stay
+        out of committed lockfiles.
+        """
+        from agpack.kinds.edit_file import _value_hash
+
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
-        resolved = resource.apply_patches(
+        applied = resource.apply_patches(
             [
                 Patch(key="${bucket}.fs", value={"env": {"K": "${K}"}}),
             ],
             tmp_path,
             env_vars={"K": "v"},
+            target_name="claude",
         )
-        assert len(resolved) == 1
-        assert resolved[0].key == "mcpServers.fs"
-        assert resolved[0].value == {"env": {"K": "v"}}
+        assert len(applied) == 1
+        assert applied[0].key == "${bucket}.fs"
+        assert applied[0].target_name == "claude"
+        assert applied[0].value_hash == _value_hash({"env": {"K": "v"}})
+        # The file itself has the resolved key and value.
+        cfg = _read_json(tmp_path / ".mcp.json")
+        assert cfg["mcpServers"]["fs"]["env"]["K"] == "v"
 
 
 class TestAtomicWriteFailure:

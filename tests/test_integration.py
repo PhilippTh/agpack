@@ -321,6 +321,124 @@ def test_status_command(tmp_path: Path) -> None:
     assert "✓" in result.output
 
 
+def test_status_shows_synced_for_var_patches(tmp_path: Path) -> None:
+    """Patches whose keys use ${var} must show as synced after a successful sync.
+
+    Regression: status used to compare the unresolved ``dep.key`` (``${bucket}.fs``) against the resolved ``ap.key``
+    (``mcpServers.fs``) recorded in the lockfile, so any patch using the documented ${bucket} pattern was permanently
+    rendered as "not yet synced".
+    """
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "mcp": [
+                {
+                    "key": "${bucket}.filesystem",
+                    "value": {"command": "npx", "args": ["@modelcontextprotocol/server-filesystem", "."]},
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+
+    runner = CliRunner()
+    sync_result = runner.invoke(main, ["sync", "--config", str(config_path)], catch_exceptions=False)
+    assert sync_result.exit_code == 0
+
+    # The patch landed in .mcp.json under the resolved key.
+    mcp_file = json.loads((project_dir / ".mcp.json").read_text())
+    assert "filesystem" in mcp_file["mcpServers"]
+
+    status_result = runner.invoke(main, ["status", "--config", str(config_path)], catch_exceptions=False)
+    assert status_result.exit_code == 0
+    assert "✓" in status_result.output
+    assert "not yet synced" not in status_result.output
+    # The unresolved key is what the user wrote; status still surfaces it verbatim.
+    assert "${bucket}.filesystem" in status_result.output
+
+
+def test_sync_does_not_write_resolved_secrets_to_lockfile(tmp_path: Path) -> None:
+    """A patch that interpolates ``${API_KEY}`` into its value must not write the resolved secret to the lockfile.
+
+    The lockfile stores the unresolved key (as the user wrote it) plus a SHA256 hash of the resolved value, so even
+    if the user commits the lockfile to git, the actual secret never lands on disk.
+    """
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    secret = "sk-super-secret-token-do-not-leak"
+    (project_dir / ".env").write_text(f"API_KEY={secret}\n", encoding="utf-8")
+    config = {
+        "targets": ["claude"],
+        "dependencies": {
+            "mcp": [
+                {
+                    "key": "${bucket}.filesystem",
+                    "value": {
+                        "command": "npx",
+                        "env": {"API_KEY": "${API_KEY}"},
+                    },
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["sync", "--config", str(config_path)], catch_exceptions=False)
+    assert result.exit_code == 0
+
+    # The resolved file contains the secret (that's the whole point of the sync).
+    mcp_file = (project_dir / ".mcp.json").read_text()
+    assert secret in mcp_file
+
+    # But the lockfile must not.
+    lockfile_text = (project_dir / ".agpack.lock.yml").read_text()
+    assert secret not in lockfile_text
+    # And the unresolved key is preserved verbatim.
+    assert "${bucket}.filesystem" in lockfile_text
+
+
+def test_status_marks_partially_applied_patch_as_unsynced(tmp_path: Path) -> None:
+    """When a patch is applied for one owning target but missing for another, status shows unsynced.
+
+    Two targets owning the same resource type produce two AppliedPatch records (one per file). If the lockfile only
+    has one, the patch is *not* fully synced — status must reflect that.
+    """
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config = {
+        "targets": ["claude", "codex"],
+        "dependencies": {
+            "mcp": [
+                {
+                    "key": "${bucket}.filesystem",
+                    "value": {"command": "npx"},
+                },
+            ],
+        },
+    }
+    config_path = project_dir / "agpack.yml"
+    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+
+    runner = CliRunner()
+    sync_result = runner.invoke(main, ["sync", "--config", str(config_path)], catch_exceptions=False)
+    assert sync_result.exit_code == 0
+
+    lockfile_path = project_dir / ".agpack.lock.yml"
+    lockfile = yaml.safe_load(lockfile_path.read_text())
+    # Drop one of the two recorded applied patches.
+    lockfile["edits"][0]["applied"] = lockfile["edits"][0]["applied"][:1]
+    lockfile_path.write_text(yaml.safe_dump(lockfile, sort_keys=False))
+
+    status_result = runner.invoke(main, ["status", "--config", str(config_path)], catch_exceptions=False)
+    assert status_result.exit_code == 0
+    assert "not yet synced" in status_result.output
+
+
 def test_init_command(tmp_path: Path) -> None:
     """Test the init command with --config."""
     runner = CliRunner()

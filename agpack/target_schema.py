@@ -45,10 +45,12 @@ _VALID_KINDS = ("copy-directory", "copy-file", "edit-file")
 class TargetDef:
     """A fully-resolved target manifest.
 
-    The target's name is the YAML filename (built-ins) or the mapping key under ``target_definitions:`` in
-    ``agpack.yml``; it is not stored on the dataclass.
+    :attr:`name` is the YAML filename (built-ins) or the mapping key under ``target_definitions:`` in ``agpack.yml``.
+    It's recorded in the lockfile so cleanup can re-resolve ``${var}`` references against this target's ``vars`` long
+    after the resource type has been removed from ``dependencies:``.
     """
 
+    name: str = ""
     resources: dict[str, ResourceDef] = field(default_factory=dict)
 
 
@@ -160,11 +162,14 @@ def _parse_resource(raw: Any, context: str) -> ResourceDef:
 # ---------------------------------------------------------------------------
 
 
-def parse_target_def(raw: Any, context: str = "target") -> TargetDef:
+def parse_target_def(raw: Any, *, name: str = "", context: str = "target") -> TargetDef:
     """Parse a target manifest from a raw dict (loaded YAML).
 
     Each top-level key is a resource type name (``skills`` / ``commands`` / ``mcp`` / any user-defined name). Each
     block must declare a ``kind:`` (``copy-directory`` / ``copy-file`` / ``edit-file``) and a ``path:``.
+
+    *name* is stored verbatim on the returned :class:`TargetDef` — callers know what the target is called (built-in
+    filename or the mapping key under ``target_definitions:``) and pass it in.
 
     Raises:
         TargetSchemaError: If the manifest is malformed.
@@ -178,4 +183,4 @@ def parse_target_def(raw: Any, context: str = "target") -> TargetDef:
             raise TargetSchemaError(msg)
         resources[key] = _parse_resource(value, f"{context}.{key}")
 
-    return TargetDef(resources=resources)
+    return TargetDef(name=name, resources=resources)

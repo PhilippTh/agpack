@@ -45,18 +45,25 @@ class InstalledEntry:
 class AppliedPatch:
     """An edit-file patch recorded for future cleanup.
 
-    Cleanup looks up the file by :attr:`file_path`, navigates to :attr:`key`, and reverses the operation:
+    The lockfile never stores resolved ``${var}`` substitutions verbatim: :attr:`key` is the unresolved string the
+    user wrote in ``agpack.yml`` (no secrets if a user references ``${API_KEY}``), and :attr:`value_hash` is a
+    SHA256 fingerprint of the resolved value (not the value itself).
 
-    * ``replace`` deletes the leaf — symmetric with how copy kinds clean up the files they wrote. If the user had a
-      value at that key before agpack first ran, ``replace`` overwrote it; cleanup does not try to magically restore
-      it (the value is gone the same way a hand-edited file copied over would be).
-    * ``append`` uses :attr:`value` to locate the previously-appended list entry via deep equality and remove it.
+    Cleanup re-resolves :attr:`key` using the originating target's ``vars`` plus the current env. The originating
+    target is looked up by :attr:`target_name`, so even after the resource type is removed from ``dependencies:``
+    we can still find ``${bucket}`` and friends.
+
+    * ``replace`` cleanup deletes the leaf — symmetric with how copy kinds clean up the files they wrote. If the
+      user had a value at that key before agpack first ran, ``replace`` overwrote it; cleanup does not try to
+      magically restore it.
+    * ``append`` cleanup walks the list at the path, hashes each element, and removes the first hash-match.
     """
 
     file_path: str
+    target_name: str
     key: str
     strategy: str
-    value: Any
+    value_hash: str
 
 
 @dataclass
@@ -154,9 +161,10 @@ def read_lockfile(project_root: Path) -> Lockfile | None:  # noqa: C901
             applied.append(
                 AppliedPatch(
                     file_path=raw.get("file_path", ""),
+                    target_name=raw.get("target_name", ""),
                     key=raw.get("key", ""),
                     strategy=raw.get("strategy", "replace"),
-                    value=raw.get("value"),
+                    value_hash=raw.get("value_hash", ""),
                 )
             )
         lockfile.edits.append(
@@ -197,7 +205,13 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
             {
                 "resource_type": edit.resource_type,
                 "applied": [
-                    {"file_path": p.file_path, "key": p.key, "strategy": p.strategy, "value": p.value}
+                    {
+                        "file_path": p.file_path,
+                        "target_name": p.target_name,
+                        "key": p.key,
+                        "strategy": p.strategy,
+                        "value_hash": p.value_hash,
+                    }
                     for p in edit.applied
                 ],
             }

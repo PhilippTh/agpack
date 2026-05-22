@@ -56,9 +56,10 @@ class TestReadLockfile:
                     "applied": [
                         {
                             "file_path": ".mcp.json",
-                            "key": "mcpServers.fs",
+                            "target_name": "claude",
+                            "key": "${bucket}.fs",
                             "strategy": "replace",
-                            "value": {"command": "npx"},
+                            "value_hash": "sha256:abc123",
                         },
                     ],
                 },
@@ -74,9 +75,12 @@ class TestReadLockfile:
         assert edit.resource_type == "mcp"
         assert len(edit.applied) == 1
         assert edit.applied[0].file_path == ".mcp.json"
-        assert edit.applied[0].key == "mcpServers.fs"
+        assert edit.applied[0].target_name == "claude"
+        # Stored key is unresolved — what the user wrote in agpack.yml.
+        assert edit.applied[0].key == "${bucket}.fs"
         assert edit.applied[0].strategy == "replace"
-        assert edit.applied[0].value == {"command": "npx"}
+        # Value never lands in the lockfile — only its SHA256 hash, so interpolated secrets never leak.
+        assert edit.applied[0].value_hash == "sha256:abc123"
 
     def test_returns_none_for_corrupt_yaml(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _write_raw(tmp_path, "{{{{not: valid: yaml::::")
@@ -176,9 +180,10 @@ class TestWriteLockfile:
                     applied=[
                         AppliedPatch(
                             file_path=".mcp.json",
-                            key="mcpServers.fs",
+                            target_name="claude",
+                            key="${bucket}.fs",
                             strategy="replace",
-                            value={"command": "npx"},
+                            value_hash="sha256:abc",
                         ),
                     ],
                 ),
@@ -187,7 +192,11 @@ class TestWriteLockfile:
         write_lockfile(tmp_path, lf)
         data = yaml.safe_load((tmp_path / LOCKFILE_NAME).read_text())
         assert data["edits"][0]["resource_type"] == "mcp"
-        assert data["edits"][0]["applied"][0]["key"] == "mcpServers.fs"
+        assert data["edits"][0]["applied"][0]["key"] == "${bucket}.fs"
+        assert data["edits"][0]["applied"][0]["target_name"] == "claude"
+        assert data["edits"][0]["applied"][0]["value_hash"] == "sha256:abc"
+        # The raw resolved value never gets written to disk.
+        assert "value" not in data["edits"][0]["applied"][0]
 
 
 class TestRoundTrip:
@@ -208,9 +217,10 @@ class TestRoundTrip:
                     applied=[
                         AppliedPatch(
                             file_path=".claude/settings.json",
+                            target_name="claude",
                             key="hooks.PreToolUse",
                             strategy="append",
-                            value={"matcher": "Write", "hooks": [{"type": "command"}]},
+                            value_hash="sha256:deadbeef",
                         ),
                     ],
                 ),
@@ -222,7 +232,9 @@ class TestRoundTrip:
         assert restored.installed[0].url == original.installed[0].url
         assert restored.installed[0].type == "skills"
         assert restored.edits[0].resource_type == "settings"
-        assert restored.edits[0].applied[0].value == original.edits[0].applied[0].value
+        assert restored.edits[0].applied[0].key == original.edits[0].applied[0].key
+        assert restored.edits[0].applied[0].target_name == original.edits[0].applied[0].target_name
+        assert restored.edits[0].applied[0].value_hash == original.edits[0].applied[0].value_hash
 
 
 # ---------------------------------------------------------------------------

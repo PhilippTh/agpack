@@ -101,6 +101,8 @@ def sync_edit_resource(
     for entry in applied_old:
         old_by_file[entry.file_path].append(entry)
 
+    targets_by_name = {t.name: t for t in targets}
+
     new_applied: list[AppliedPatch] = []
     matched_any = False
     touched_files: set[str] = set()
@@ -122,18 +124,21 @@ def sync_edit_resource(
                 desired_new=desired,
                 project_root=project_root,
                 env_vars=env_vars,
+                target_name=target.name,
                 dry_run=dry_run,
                 verbose=verbose,
             )
         )
 
     # Files that used to be touched by this resource type but aren't any more (e.g. a target was removed from
-    # ``targets:``) need their old patches reversed too, otherwise the user's file stays littered with agpack-applied
-    # content nobody owns.
+    # ``targets:``) need their old patches reversed too. We re-resolve each leftover's ${var} references against the
+    # originating target's vars — looked up by target_name.
     for file_path, leftovers in old_by_file.items():
         if file_path in touched_files or not leftovers:
             continue
-        EditFileResource(path=file_path).cleanup_patches(leftovers, project_root, dry_run=dry_run, verbose=verbose)
+        _cleanup_grouped_by_origin(
+            leftovers, resource_type, targets_by_name, env_vars or {}, project_root, dry_run=dry_run, verbose=verbose
+        )
 
     if not matched_any and desired:
         console.print(
@@ -147,24 +152,57 @@ def sync_edit_resource(
 
 def cleanup_orphaned_edits(
     applied_old: list[AppliedPatch],
+    resource_type: str,
+    targets: list[TargetDef],
+    env_vars: dict[str, str],
     project_root: Path,
     *,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> None:
-    """Reverse every recorded patch for a resource type that no longer exists.
+    """Reverse every recorded patch for a resource type that no longer exists in ``dependencies:``.
 
-    Called when a whole resource type disappears from ``agpack.yml`` (e.g. the user removed ``mcp:`` from
-    dependencies). Each target file gets one read-modify-write that undoes the old patches — ``replace`` deletes the
-    leaf, ``append`` removes the appended element. Patches with no recoverable file (missing, bad extension) are
-    silently skipped.
+    For each applied patch we look up the originating target by name (via :attr:`AppliedPatch.target_name`) so the
+    target's ``vars`` are available to resolve ``${var}`` references in the stored key. Patches whose originating
+    target is no longer present are cleaned up best-effort using only *env_vars*.
     """
-    by_file: dict[str, list[AppliedPatch]] = defaultdict(list)
-    for entry in applied_old:
-        by_file[entry.file_path].append(entry)
+    targets_by_name = {t.name: t for t in targets}
+    _cleanup_grouped_by_origin(
+        applied_old, resource_type, targets_by_name, env_vars, project_root, dry_run=dry_run, verbose=verbose
+    )
 
-    for file_path, entries in by_file.items():
-        EditFileResource(path=file_path).cleanup_patches(entries, project_root, dry_run=dry_run, verbose=verbose)
+
+def _cleanup_grouped_by_origin(
+    applied: list[AppliedPatch],
+    resource_type: str,
+    targets_by_name: dict[str, TargetDef],
+    env_vars: dict[str, str],
+    project_root: Path,
+    *,
+    dry_run: bool,
+    verbose: bool,
+) -> None:
+    """Group *applied* by (file_path, target_name) and run one cleanup pass per group.
+
+    Each group uses the originating target's ``vars`` for the ``resource_type`` (when the target still exists and
+    still declares that resource type as ``edit-file``). When the originating target is missing or no longer owns
+    this resource type, we fall through to an empty-vars resolution — sufficient for patches whose keys had no
+    ``${var}`` references, best-effort for patches whose keys did.
+    """
+    by_origin: dict[tuple[str, str], list[AppliedPatch]] = defaultdict(list)
+    for ap in applied:
+        by_origin[(ap.file_path, ap.target_name)].append(ap)
+
+    for (file_path, target_name), entries in by_origin.items():
+        origin_vars: dict[str, str] = {}
+        target = targets_by_name.get(target_name)
+        if target is not None:
+            resource = target.resources.get(resource_type)
+            if isinstance(resource, EditFileResource):
+                origin_vars = dict(resource.vars)
+        EditFileResource(path=file_path, vars=origin_vars).cleanup_patches(
+            entries, project_root, env_vars, dry_run=dry_run, verbose=verbose
+        )
 
 
 # ===========================================================================

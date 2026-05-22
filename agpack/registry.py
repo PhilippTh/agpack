@@ -52,7 +52,7 @@ def load_builtin(name: str) -> TargetDef:
         msg = f"Failed to parse built-in target '{name}': {exc}"
         raise TargetSchemaError(msg) from exc
 
-    return parse_target_def(data, context=f"builtin_targets/{name}{_BUILTIN_SUFFIX}")
+    return parse_target_def(data, name=name, context=f"builtin_targets/{name}{_BUILTIN_SUFFIX}")
 
 
 def load_all_builtins() -> dict[str, TargetDef]:
