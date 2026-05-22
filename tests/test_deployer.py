@@ -15,7 +15,7 @@ from agpack.deployer import deploy_item
 from agpack.deployer import detect_items
 from agpack.fetcher import FetchResult
 from agpack.kinds import DeployError
-from agpack.kinds import _atomic_copy_file
+from agpack.kinds._shared import atomic_copy_file
 from agpack.registry import load_all_builtins
 from agpack.target_schema import TargetDef
 
@@ -407,7 +407,7 @@ class TestAtomicCopyFile:
         src.write_text("payload")
         dst = tmp_path / "out" / "dst.txt"
 
-        _atomic_copy_file(src, dst)
+        atomic_copy_file(src, dst)
 
         assert dst.exists()
         assert dst.read_text() == "payload"
@@ -417,7 +417,7 @@ class TestAtomicCopyFile:
         src.write_text("data")
         dst = tmp_path / "a" / "b" / "c" / "file.txt"
 
-        _atomic_copy_file(src, dst)
+        atomic_copy_file(src, dst)
 
         assert dst.exists()
         assert dst.read_text() == "data"
@@ -428,7 +428,7 @@ class TestAtomicCopyFile:
         dst = tmp_path / "dst.txt"
         dst.write_text("old")
 
-        _atomic_copy_file(src, dst)
+        atomic_copy_file(src, dst)
 
         assert dst.read_text() == "new"
 
@@ -717,10 +717,10 @@ class TestAtomicCopyFailure:
         dst = tmp_path / "out" / "dst.txt"
 
         with (
-            patch("agpack.kinds.shutil.copy2", side_effect=OSError("no space")),
+            patch("agpack.kinds._shared.shutil.copy2", side_effect=OSError("no space")),
             pytest.raises(OSError, match="no space"),
         ):
-            _atomic_copy_file(src, dst)
+            atomic_copy_file(src, dst)
 
         # No temp files should be left behind
         leftover = list((tmp_path / "out").glob(".agpack-tmp-*"))

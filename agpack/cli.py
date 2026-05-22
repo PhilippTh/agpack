@@ -27,11 +27,11 @@ from agpack.config import load_config
 from agpack.config import load_global_config
 from agpack.config import merge_configs
 from agpack.config import resolve_global_config_path
-from agpack.deployer import apply_patches_to_targets
-from agpack.deployer import cleanup_applied_patches
 from agpack.deployer import cleanup_deployed_files
+from agpack.deployer import cleanup_orphaned_edits
 from agpack.deployer import deploy_item
 from agpack.deployer import detect_items
+from agpack.deployer import sync_edit_resource
 from agpack.display import console
 from agpack.display import create_sync_progress
 from agpack.envsubst import resolve_config
@@ -41,6 +41,7 @@ from agpack.fetcher import cleanup_fetch
 from agpack.fetcher import fetch_dependency
 from agpack.kinds import EditFileError
 from agpack.kinds import Patch
+from agpack.lockfile import AppliedPatch
 from agpack.lockfile import EditLockEntry
 from agpack.lockfile import InstalledEntry
 from agpack.lockfile import Lockfile
@@ -251,9 +252,10 @@ def _sync_resource_type(
     return sync
 
 
-def _apply_edit_resource(
+def _sync_edit_resource(
     resource_type: str,
     patches: list[Patch],
+    applied_old: list[AppliedPatch],
     target_defs: list[TargetDef],
     project_root: Path,
     new_lockfile: Lockfile,
@@ -262,24 +264,34 @@ def _apply_edit_resource(
     dry_run: bool,
     verbose: bool,
 ) -> int:
-    """Apply edit-file patches and record them in the lockfile.
+    """Reconcile edit-file patches and record the new applied set.
 
-    Returns the number of patches applied (count for the summary line).
+    Diffs ``patches`` against ``applied_old`` per file and only
+    touches each file once. Returns the count for the summary line
+    (number of currently-desired patches, regardless of whether the
+    file was rewritten).
     """
-    if not patches:
+    if not patches and not applied_old:
         return 0
     try:
-        applied = apply_patches_to_targets(
-            resource_type, patches, target_defs, project_root, env_vars,
-            dry_run=dry_run, verbose=verbose,
+        applied_new = sync_edit_resource(
+            resource_type,
+            desired=patches,
+            applied_old=applied_old,
+            targets=target_defs,
+            project_root=project_root,
+            env_vars=env_vars,
+            dry_run=dry_run,
+            verbose=verbose,
         )
     except EditFileError as exc:
         if not dry_run:
             write_lockfile(project_root, new_lockfile)
         raise click.ClickException(str(exc)) from exc
-    new_lockfile.edits.append(
-        EditLockEntry(resource_type=resource_type, applied=applied)
-    )
+    if applied_new:
+        new_lockfile.edits.append(
+            EditLockEntry(resource_type=resource_type, applied=applied_new)
+        )
     return len(patches)
 
 
@@ -435,24 +447,19 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose
         )
 
-    # 7. Clean up edit-file patches that are gone or changed.
-    # Today we just reverse every previously-applied patch wholesale;
-    # the deploy step below re-applies whatever is currently in the
-    # config. This is simple and correct for the current scope.
+    # 7. Index old applied edits by resource type. We don't unapply
+    # them here — sync_edit_resource diffs against this and touches
+    # each file at most once. Files only get written when their text
+    # actually changes (combined with tomlkit for TOML, comments and
+    # key ordering on untouched sections survive across syncs).
+    old_applied_by_rt: dict[str, list[AppliedPatch]] = {}
     if old_lockfile is not None:
         for edit in old_lockfile.edits:
-            if edit.applied:
-                if verbose or dry_run:
-                    console.print(
-                        f"Removing previous '{edit.resource_type}' patches..."
-                    )
-                cleanup_applied_patches(
-                    edit.applied, project_root,
-                    dry_run=dry_run, verbose=verbose,
-                )
+            old_applied_by_rt[edit.resource_type] = list(edit.applied)
 
     # 8. Fetch and deploy dependencies in YAML order. Copy kinds go
-    # through fetch+detect+deploy; edit-file kinds apply patches.
+    # through fetch+detect+deploy; edit-file kinds run the diff-based
+    # sync against the lockfile's prior applied state.
     new_lockfile = Lockfile()
     counts: dict[str, int] = {}
     all_verbose_lines: list[str] = []
@@ -465,9 +472,10 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                 continue
             entries = config.dependencies[resource_type]
             if kind == "edit-file":
-                counts[resource_type] = _apply_edit_resource(
+                counts[resource_type] = _sync_edit_resource(
                     resource_type,
                     [e for e in entries if isinstance(e, Patch)],
+                    old_applied_by_rt.pop(resource_type, []),
                     target_defs,
                     project_root,
                     new_lockfile,
@@ -490,6 +498,20 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
             )
             counts[resource_type] = sync.count
             all_verbose_lines.extend(sync.verbose_lines)
+
+    # 8b. Resource types that existed in the old lockfile but are gone
+    # from the current config — unapply every patch they recorded so
+    # the user's structured config files don't keep stale agpack content.
+    for resource_type, leftovers in old_applied_by_rt.items():
+        if not leftovers:
+            continue
+        if verbose or dry_run:
+            console.print(
+                f"Removing all '{resource_type}' patches (no longer in config)..."
+            )
+        cleanup_orphaned_edits(
+            leftovers, project_root, dry_run=dry_run, verbose=verbose
+        )
 
     for line in all_verbose_lines:
         console.print(line)

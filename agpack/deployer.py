@@ -10,16 +10,20 @@ fundamentally different deployment shapes:
   declares the matching resource type. :func:`detect_items` and
   :func:`deploy_item` cover this path.
 * Edit kind (``edit-file``): a list of :class:`~agpack.kinds.Patch`
-  operations declared inline in ``agpack.yml`` is applied to each
-  matching target's config file. :func:`apply_patches_to_targets` and
-  :func:`cleanup_applied_patches` cover this path.
+  operations declared inline in ``agpack.yml`` is reconciled against
+  the lockfile's record of previously-applied patches.
+  :func:`sync_edit_resource` walks every target with a matching
+  edit-file resource and does a diff-based per-file sync: removed
+  patches are reversed (restoring captured ``previous_value`` for
+  ``replace``); added patches capture their pre-existing value
+  before overwriting; unchanged patches are left strictly alone so
+  the file isn't even written when nothing semantically changed.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import cast
 
 from agpack.display import console
 from agpack.fetcher import FetchResult
@@ -28,7 +32,6 @@ from agpack.kinds import DeployError
 from agpack.kinds import EditFileResource
 from agpack.kinds import Patch
 from agpack.kinds import ResourceDef
-from agpack.kinds import Strategy
 from agpack.lockfile import AppliedPatch
 from agpack.target_schema import TargetDef
 
@@ -82,9 +85,10 @@ def deploy_item(
 # ===========================================================================
 
 
-def apply_patches_to_targets(
+def sync_edit_resource(
     resource_type: str,
-    patches: list[Patch],
+    desired: list[Patch],
+    applied_old: list[AppliedPatch],
     targets: list[TargetDef],
     project_root: Path,
     env_vars: dict[str, str] | None = None,
@@ -92,78 +96,96 @@ def apply_patches_to_targets(
     dry_run: bool = False,
     verbose: bool = False,
 ) -> list[AppliedPatch]:
-    """Apply ``patches`` to every target's edit-file resource of ``resource_type``.
+    """Reconcile every target's edit-file resource of ``resource_type``.
 
-    ``${name}`` references in each patch are resolved per-target at
-    apply time, with the target's own ``vars`` taking precedence over
-    ``env_vars``. Targets that don't declare this resource type, or
-    that declare it with a non-edit-file kind, are silently skipped.
+    ``desired`` is the current list of patches from ``agpack.yml``.
+    ``applied_old`` is the lockfile's record of what was applied for
+    this resource type on the previous sync (already grouped — pass
+    the entries from one ``EditLockEntry``).
 
-    The returned :class:`AppliedPatch` records carry the
-    *post-substitution* keys and values so cleanup can reverse each
-    operation by deep equality without rerunning substitution.
+    Each target with a matching edit-file resource gets its own
+    per-file diff: matching patches are left alone, removed patches
+    are reversed (restoring ``previous_value`` for ``replace``),
+    added patches snapshot the pre-existing value before overwriting.
+    Targets that don't declare this resource type are silently
+    skipped; targets with a non-edit-file kind for this name are
+    also skipped (the cross-target kind consistency check in
+    ``cli._resource_kinds`` should have caught any actual conflict).
+
+    The returned :class:`AppliedPatch` list is the new authoritative
+    state for the lockfile.
     """
-    if not patches:
-        return []
+    # Group old applied entries by file_path so each target picks up
+    # only what was previously written to *its* file.
+    old_by_file: dict[str, list[AppliedPatch]] = defaultdict(list)
+    for entry in applied_old:
+        old_by_file[entry.file_path].append(entry)
 
-    applied: list[AppliedPatch] = []
+    new_applied: list[AppliedPatch] = []
     matched_any = False
+    touched_files: set[str] = set()
 
     for target in targets:
         resource = target.resources.get(resource_type)
         if not isinstance(resource, EditFileResource):
             continue
         matched_any = True
-        resolved = resource.apply_patches(
-            patches, project_root, env_vars,
-            dry_run=dry_run, verbose=verbose,
-        )
-        for patch in resolved:
-            applied.append(
-                AppliedPatch(
-                    file_path=resource.path,
-                    key=patch.key,
-                    strategy=patch.strategy,
-                    value=patch.value,
-                )
+        touched_files.add(resource.path)
+        new_applied.extend(
+            resource.sync_patches(
+                applied_old=old_by_file.get(resource.path, []),
+                desired_new=desired,
+                project_root=project_root,
+                env_vars=env_vars,
+                dry_run=dry_run,
+                verbose=verbose,
             )
+        )
 
-    if not matched_any:
+    # Files that used to be touched by this resource type but aren't
+    # any more (e.g. a target was removed from ``targets:``) need
+    # their old patches reversed too, otherwise the user's file
+    # stays littered with agpack-applied content nobody owns.
+    for file_path, leftovers in old_by_file.items():
+        if file_path in touched_files or not leftovers:
+            continue
+        EditFileResource(path=file_path).cleanup_patches(
+            leftovers, project_root, dry_run=dry_run, verbose=verbose
+        )
+
+    if not matched_any and desired:
         console.print(
-            f"[yellow]warning[/yellow]: {len(patches)} '{resource_type}' "
+            f"[yellow]warning[/yellow]: {len(desired)} '{resource_type}' "
             f"patch(es) configured but no target declares an edit-file "
             f"resource for '{resource_type}'."
         )
 
-    return applied
+    return new_applied
 
 
-def cleanup_applied_patches(
-    applied: list[AppliedPatch],
+def cleanup_orphaned_edits(
+    applied_old: list[AppliedPatch],
     project_root: Path,
     *,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> None:
-    """Reverse every recorded patch, grouped by target file for efficiency.
+    """Reverse every recorded patch for a resource type that no longer exists.
 
-    Patches with no recoverable file (missing, bad extension) are
-    silently skipped — they'll naturally disappear on the next sync.
+    Called when a whole resource type disappears from ``agpack.yml``
+    (e.g. the user removed ``mcp:`` from dependencies). Each target
+    file gets one read-modify-write that undoes the old patches —
+    restoring ``previous_value`` for ``replace``, removing the
+    appended element for ``append``. Patches with no recoverable
+    file (missing, bad extension) are silently skipped.
     """
-    by_file: dict[str, list[Patch]] = defaultdict(list)
-    for entry in applied:
-        by_file[entry.file_path].append(
-            Patch(
-                key=entry.key,
-                value=entry.value,
-                strategy=cast(Strategy, entry.strategy),
-            )
-        )
+    by_file: dict[str, list[AppliedPatch]] = defaultdict(list)
+    for entry in applied_old:
+        by_file[entry.file_path].append(entry)
 
-    for file_path, patches in by_file.items():
-        resource = EditFileResource(path=file_path)
-        resource.cleanup_patches(
-            patches, project_root, dry_run=dry_run, verbose=verbose
+    for file_path, entries in by_file.items():
+        EditFileResource(path=file_path).cleanup_patches(
+            entries, project_root, dry_run=dry_run, verbose=verbose
         )
 
 

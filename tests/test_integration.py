@@ -999,7 +999,7 @@ def test_sync_mcp_failure_writes_partial_lockfile(tmp_path: Path) -> None:
     )
 
     with patch(
-        "agpack.cli.apply_patches_to_targets",
+        "agpack.cli.sync_edit_resource",
         side_effect=EditFileError("corrupt config file"),
     ):
         runner = CliRunner()

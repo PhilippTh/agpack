@@ -12,7 +12,7 @@ dependencies = [
     "click>=8.0",
     "PyYAML>=6.0",
     "rich>=13.0",
-    "tomli-w>=1.0",
+    "tomlkit>=0.13",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

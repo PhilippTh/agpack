@@ -46,12 +46,20 @@ class AppliedPatch:
     Cleanup looks up the file by :attr:`file_path`, navigates to
     :attr:`key`, and reverses the operation. For ``append`` strategy,
     :attr:`value` is used to locate the entry via deep-equality.
+
+    For ``replace`` strategy, :attr:`key_existed` and
+    :attr:`previous_value` capture what was there *before* the patch
+    ran. Cleanup restores the previous value if the key existed, or
+    deletes the key if it did not — so agpack never silently destroys
+    user data when a patch is removed from ``agpack.yml``.
     """
 
     file_path: str
     key: str
     strategy: str
     value: Any
+    key_existed: bool = False
+    previous_value: Any = None
 
 
 @dataclass
@@ -122,6 +130,8 @@ def read_lockfile(project_root: Path) -> Lockfile | None:
                     key=raw.get("key", ""),
                     strategy=raw.get("strategy", "replace"),
                     value=raw.get("value"),
+                    key_existed=bool(raw.get("key_existed", False)),
+                    previous_value=raw.get("previous_value"),
                 )
             )
         lockfile.edits.append(
@@ -132,6 +142,26 @@ def read_lockfile(project_root: Path) -> Lockfile | None:
         )
 
     return lockfile
+
+
+def _serialise_applied(p: AppliedPatch) -> dict[str, Any]:
+    """Build the YAML-friendly mapping for one AppliedPatch.
+
+    ``previous_value`` and ``key_existed`` are only emitted for
+    ``replace`` patches; on ``append`` they have no semantic meaning
+    and would just clutter the lockfile.
+    """
+    out: dict[str, Any] = {
+        "file_path": p.file_path,
+        "key": p.key,
+        "strategy": p.strategy,
+        "value": p.value,
+    }
+    if p.strategy == "replace":
+        out["key_existed"] = p.key_existed
+        if p.key_existed:
+            out["previous_value"] = p.previous_value
+    return out
 
 
 def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
@@ -161,15 +191,7 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
         data["edits"].append(
             {
                 "resource_type": edit.resource_type,
-                "applied": [
-                    {
-                        "file_path": p.file_path,
-                        "key": p.key,
-                        "strategy": p.strategy,
-                        "value": p.value,
-                    }
-                    for p in edit.applied
-                ],
+                "applied": [_serialise_applied(p) for p in edit.applied],
             }
         )
 

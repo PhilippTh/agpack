@@ -12,10 +12,10 @@ import pytest
 from agpack.kinds import EditFileError
 from agpack.kinds import EditFileResource
 from agpack.kinds import Patch
-from agpack.kinds import _apply_patch
-from agpack.kinds import _atomic_write
-from agpack.kinds import _cleanup_patch
 from agpack.kinds import infer_config_format
+from agpack.kinds._shared import _atomic_write
+from agpack.kinds.edit_file import _apply_patch
+from agpack.kinds.edit_file import _cleanup_patch
 
 # ---------------------------------------------------------------------------
 # infer_config_format
@@ -69,6 +69,62 @@ def test_apply_replace_through_non_dict_raises() -> None:
     root: dict = {"a": "scalar"}
     with pytest.raises(EditFileError, match="non-dict"):
         _apply_patch(root, Patch(key="a.b", value=1))
+
+
+# ---------------------------------------------------------------------------
+# _apply_patch — dotted-key escaping
+# ---------------------------------------------------------------------------
+
+
+class TestDottedKeyEscape:
+    """``\\.`` and ``\\\\`` let users address keys that contain dots."""
+
+    def test_literal_dot_in_segment(self) -> None:
+        root: dict = {}
+        _apply_patch(root, Patch(key="mcpServers.example\\.com", value="x"))
+        assert root == {"mcpServers": {"example.com": "x"}}
+
+    def test_dot_only_in_leaf(self) -> None:
+        root: dict = {"mcpServers": {}}
+        _apply_patch(root, Patch(key="mcpServers.a\\.b\\.c", value=1))
+        assert root == {"mcpServers": {"a.b.c": 1}}
+
+    def test_literal_backslash_in_segment(self) -> None:
+        root: dict = {}
+        _apply_patch(root, Patch(key="a\\\\b.c", value=1))
+        assert root == {"a\\b": {"c": 1}}
+
+    def test_backslash_followed_by_separator(self) -> None:
+        """``\\\\.`` is a literal backslash and then a separator."""
+        root: dict = {}
+        _apply_patch(root, Patch(key="a\\\\.b", value=1))
+        assert root == {"a\\": {"b": 1}}
+
+    def test_empty_key_rejected(self) -> None:
+        with pytest.raises(EditFileError, match="non-empty"):
+            _apply_patch({}, Patch(key="", value=1))
+
+    def test_empty_segment_rejected(self) -> None:
+        with pytest.raises(EditFileError, match="empty segment"):
+            _apply_patch({}, Patch(key="a..b", value=1))
+
+    def test_trailing_dot_rejected(self) -> None:
+        with pytest.raises(EditFileError, match="empty segment"):
+            _apply_patch({}, Patch(key="a.", value=1))
+
+    def test_leading_dot_rejected(self) -> None:
+        with pytest.raises(EditFileError, match="empty segment"):
+            _apply_patch({}, Patch(key=".a", value=1))
+
+    def test_cleanup_understands_escapes(self) -> None:
+        """Round-trip: a key applied with an escaped dot can also be
+        undone with the same escaped key."""
+        root: dict = {}
+        _apply_patch(root, Patch(key="mcpServers.example\\.com", value="x"))
+        from agpack.kinds.edit_file import _cleanup_patch as cleanup
+
+        assert cleanup(root, Patch(key="mcpServers.example\\.com", value="x"))
+        assert root == {"mcpServers": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +380,173 @@ class TestCleanupPatches:
 
 
 # ---------------------------------------------------------------------------
+# Safety fixes — previous-value snapshot, format preservation, idempotency
+# ---------------------------------------------------------------------------
+
+
+class TestPreviousValueRestoration:
+    """Removing a ``replace`` patch must restore the user's prior value.
+
+    The pre-fix behaviour was to delete the leaf on cleanup, silently
+    destroying any data that was at the key before agpack first ran.
+    """
+
+    def test_replace_records_pre_existing_value(self, tmp_path: Path) -> None:
+        (tmp_path / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"fs": {"command": "user-tool"}}}),
+            encoding="utf-8",
+        )
+        resource = EditFileResource(path=".mcp.json")
+        applied = resource.sync_patches(
+            applied_old=[],
+            desired_new=[Patch(key="mcpServers.fs", value={"command": "agpack"})],
+            project_root=tmp_path,
+        )
+        assert applied[0].key_existed is True
+        assert applied[0].previous_value == {"command": "user-tool"}
+
+    def test_replace_records_absent_key(self, tmp_path: Path) -> None:
+        (tmp_path / ".mcp.json").write_text("{}", encoding="utf-8")
+        resource = EditFileResource(path=".mcp.json")
+        applied = resource.sync_patches(
+            applied_old=[],
+            desired_new=[Patch(key="mcpServers.new", value={"command": "x"})],
+            project_root=tmp_path,
+        )
+        assert applied[0].key_existed is False
+        assert applied[0].previous_value is None
+
+    def test_cleanup_restores_user_value(self, tmp_path: Path) -> None:
+        """The data-loss kill-shot: user data must survive patch removal."""
+        original = {"mcpServers": {"fs": {"command": "user-tool", "args": ["secret"]}}}
+        (tmp_path / ".mcp.json").write_text(json.dumps(original), encoding="utf-8")
+        resource = EditFileResource(path=".mcp.json")
+        applied = resource.sync_patches(
+            applied_old=[],
+            desired_new=[Patch(key="mcpServers.fs", value={"command": "agpack"})],
+            project_root=tmp_path,
+        )
+        # User removed the patch from their config — sync with empty desired.
+        resource.sync_patches(
+            applied_old=applied,
+            desired_new=[],
+            project_root=tmp_path,
+        )
+        restored = json.loads((tmp_path / ".mcp.json").read_text())
+        assert restored == original
+
+    def test_cleanup_deletes_agpack_created_key(self, tmp_path: Path) -> None:
+        """When agpack created the key (no prior value), cleanup deletes it."""
+        (tmp_path / ".mcp.json").write_text("{}", encoding="utf-8")
+        resource = EditFileResource(path=".mcp.json")
+        applied = resource.sync_patches(
+            applied_old=[],
+            desired_new=[Patch(key="mcpServers.new", value={"command": "x"})],
+            project_root=tmp_path,
+        )
+        resource.sync_patches(
+            applied_old=applied,
+            desired_new=[],
+            project_root=tmp_path,
+        )
+        cfg = json.loads((tmp_path / ".mcp.json").read_text())
+        assert "new" not in cfg.get("mcpServers", {})
+
+    def test_value_change_preserves_original_previous_value(
+        self, tmp_path: Path
+    ) -> None:
+        """A patch whose value updates must keep the original
+        previous_value so a future removal still restores the user's
+        pre-agpack content."""
+        (tmp_path / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"fs": {"command": "user"}}}),
+            encoding="utf-8",
+        )
+        resource = EditFileResource(path=".mcp.json")
+        first = resource.sync_patches(
+            applied_old=[],
+            desired_new=[Patch(key="mcpServers.fs", value={"command": "v1"})],
+            project_root=tmp_path,
+        )
+        # User edits agpack.yml — patch value changes.
+        second = resource.sync_patches(
+            applied_old=first,
+            desired_new=[Patch(key="mcpServers.fs", value={"command": "v2"})],
+            project_root=tmp_path,
+        )
+        # The original user value is still what cleanup will restore.
+        assert second[0].previous_value == {"command": "user"}
+        # And the file now has v2.
+        cfg = json.loads((tmp_path / ".mcp.json").read_text())
+        assert cfg["mcpServers"]["fs"] == {"command": "v2"}
+
+
+class TestTomlPreservation:
+    """tomlkit retains comments and ordering on untouched sections."""
+
+    def test_comments_survive_round_trip(self, tmp_path: Path) -> None:
+        original = (
+            "# leading comment\n"
+            "[mcp_servers]\n"
+            "# inline comment\n"
+            "existing = { command = \"old\" }\n"
+            "\n"
+            "[other]\n"
+            "# unrelated\n"
+            "key = \"value\"\n"
+        )
+        (tmp_path / "config.toml").write_text(original, encoding="utf-8")
+        resource = EditFileResource(path="config.toml")
+        resource.sync_patches(
+            applied_old=[],
+            desired_new=[Patch(key="mcp_servers.new", value={"command": "x"})],
+            project_root=tmp_path,
+        )
+        after = (tmp_path / "config.toml").read_text()
+        assert "# leading comment" in after
+        assert "# inline comment" in after
+        assert "# unrelated" in after
+        assert "existing" in after
+
+
+class TestIdempotency:
+    """No-op syncs must not rewrite the file."""
+
+    def test_resync_identical_state_does_not_touch_file(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / ".mcp.json").write_text("{}", encoding="utf-8")
+        resource = EditFileResource(path=".mcp.json")
+        applied = resource.sync_patches(
+            applied_old=[],
+            desired_new=[Patch(key="mcpServers.fs", value={"command": "x"})],
+            project_root=tmp_path,
+        )
+        path = tmp_path / ".mcp.json"
+        mtime_before = path.stat().st_mtime_ns
+        # Re-running with the same desired state must produce no write.
+        with mock_patch(
+            "agpack.kinds._shared._atomic_write",
+            side_effect=AssertionError("file was rewritten despite no change"),
+        ):
+            resource.sync_patches(
+                applied_old=applied,
+                desired_new=[Patch(key="mcpServers.fs", value={"command": "x"})],
+                project_root=tmp_path,
+            )
+        assert path.stat().st_mtime_ns == mtime_before
+
+    def test_empty_sync_does_not_create_file(self, tmp_path: Path) -> None:
+        resource = EditFileResource(path=".mcp.json")
+        resource.sync_patches(
+            applied_old=[],
+            desired_new=[],
+            project_root=tmp_path,
+        )
+        assert not (tmp_path / ".mcp.json").exists()
+
+
+# ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
 
@@ -344,7 +567,7 @@ class TestErrors:
     def test_oserror_on_write_wrapped(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
         with mock_patch(
-            "agpack.kinds._atomic_write", side_effect=OSError("disk full")
+            "agpack.kinds._shared._atomic_write", side_effect=OSError("disk full")
         ):
             with pytest.raises(EditFileError, match="Failed to write.*disk full"):
                 resource.apply_patches([Patch(key="x", value=1)], tmp_path)
@@ -503,7 +726,10 @@ class TestAtomicWriteFailure:
     def test_cleans_up_temp_file_on_replace_failure(self, tmp_path: Path) -> None:
         target = tmp_path / "output.json"
         with (
-            mock_patch("agpack.kinds.os.replace", side_effect=OSError("disk full")),
+            mock_patch(
+                "agpack.kinds._shared.os.replace",
+                side_effect=OSError("disk full"),
+            ),
             pytest.raises(OSError, match="disk full"),
         ):
             _atomic_write(target, '{"test": true}\n')

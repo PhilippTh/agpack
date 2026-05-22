@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from dataclasses import field
@@ -390,5 +391,8 @@ def _dedup_key(entry: DependencyEntry) -> Any:
         return ("fetch", entry.identity)
     if entry.strategy == "replace":
         return ("patch", "replace", entry.key)
-    value_repr = yaml.safe_dump(entry.value, sort_keys=True)
+    # ``default=str`` covers any oddballs that aren't natively JSON-encodable
+    # (datetimes, custom scalars from YAML). The output is a deterministic
+    # string identity for dict-key use, not something we round-trip.
+    value_repr = json.dumps(entry.value, sort_keys=True, default=str)
     return ("patch", "append", entry.key, value_repr)
