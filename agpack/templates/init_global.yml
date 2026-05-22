@@ -1,0 +1,31 @@
+# Global agpack config — dependencies here are included in every project.
+# Override per-project with 'global: false' in your project agpack.yml,
+# or run agpack sync --no-global.
+
+dependencies:
+  skills:
+    # Shared skills available in all projects:
+    # - url: https://github.com/owner/repo
+    #   path: skills/my-skill
+    #   ref: v1.0.0
+
+  commands:
+    # Shared commands available in all projects:
+    # - url: https://github.com/owner/repo
+    #   path: commands/my-command.md
+
+  agents:
+    # Shared agents available in all projects:
+    # - url: https://github.com/owner/repo
+    #   path: agents/my-agent.md
+
+  mcp:
+    # Shared MCP servers as patches. ${bucket} is supplied by each
+    # built-in target (mcpServers / mcp_servers / mcp / servers), so
+    # one patch deploys correctly to every target.
+    # - key: ${bucket}.my-server
+    #   value:
+    #     command: npx
+    #     args: ["-y", "@example/mcp-server"]
+    #     env:
+    #       API_KEY: ${API_KEY}            # from .env or shell env

@@ -1,11 +1,12 @@
-"""Target manifest schema — parser and validator.
+"""Target manifest schema — parser, validator, and the resource-type unions.
 
 A *target* describes the filesystem location of each resource type a single AI tool consumes. Each top-level key is
 the resource type name (``skills``, ``commands``, ``mcp``, ``settings``, anything user-defined); each value declares a
-:data:`~agpack.kinds.ResourceDef` via the ``kind:`` field.
+resource definition via the ``kind:`` field.
 
-The actual deploy/cleanup behavior lives on the kind classes in :mod:`agpack.kinds`; this module is only responsible
-for turning YAML into well-typed resource definitions.
+The actual deploy/cleanup behavior lives on the kind classes in :mod:`agpack.kinds.copy_directory`,
+:mod:`agpack.kinds.copy_file`, and :mod:`agpack.kinds.edit_file`. This module is only responsible for turning YAML
+into well-typed resource definitions and exposing the union types used in signatures elsewhere.
 """
 
 from __future__ import annotations
@@ -14,20 +15,12 @@ from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
+from agpack.errors import TargetSchemaError
 from agpack.kinds import CopyDirectoryResource
 from agpack.kinds import CopyFileResource
 from agpack.kinds import EditFileResource
 from agpack.kinds import ResourceDef
 from agpack.kinds import infer_config_format
-
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
-
-
-class TargetSchemaError(Exception):
-    """Raised when a target manifest fails to parse or validate."""
-
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -1,4 +1,10 @@
-"""agpack.yml parsing and validation."""
+"""``agpack.yml`` parsing, validation, and fetch-dependency ``${VAR}`` validation.
+
+Pulls together the leaf modules into the load-time pipeline: parsed YAML → typed :class:`AgpackConfig` /
+:class:`GlobalConfig` → eager fetch-dep ``${VAR}`` validation that returns the merged env table for downstream
+apply-time substitution. The substitution primitives themselves live in :mod:`agpack.envsubst`; this module
+sequences them.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +17,12 @@ from typing import Any
 
 import yaml
 
-from agpack.kinds import Patch
+from agpack.envsubst import build_env
+from agpack.envsubst import resolve_env_vars
+from agpack.errors import ConfigError
+from agpack.errors import TargetSchemaError
+from agpack.patch import Patch
 from agpack.target_schema import TargetDef
-from agpack.target_schema import TargetSchemaError
 from agpack.target_schema import parse_target_def
 
 # ---------------------------------------------------------------------------
@@ -21,6 +30,7 @@ from agpack.target_schema import parse_target_def
 # ---------------------------------------------------------------------------
 
 DEFAULT_GLOBAL_CONFIG_DIR = Path.home() / ".config" / "agpack"
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -98,16 +108,7 @@ class GlobalConfig:
 
 
 # ---------------------------------------------------------------------------
-# Validation errors
-# ---------------------------------------------------------------------------
-
-
-class ConfigError(Exception):
-    """Raised when agpack.yml is invalid."""
-
-
-# ---------------------------------------------------------------------------
-# Parsing
+# YAML parsing
 # ---------------------------------------------------------------------------
 
 
@@ -396,3 +397,56 @@ def _dedup_key(entry: DependencyEntry) -> Any:
     # The output is a deterministic string identity for dict-key use, not something we round-trip.
     value_repr = json.dumps(entry.value, sort_keys=True, default=str)
     return ("patch", "append", entry.key, value_repr)
+
+
+# ---------------------------------------------------------------------------
+# Fetch-dependency ${VAR} validation
+# ---------------------------------------------------------------------------
+
+
+def resolve_config(
+    config: AgpackConfig,
+    project_root: Path,
+    *,
+    global_config: GlobalConfig | None = None,
+    verbose: bool = False,
+) -> dict[str, str]:
+    """Validate that every ``${VAR}`` in fetch dependencies is resolvable.
+
+    Walks every URL / path / ref template in copy-kind dependencies and resolves it eagerly so missing variables fail
+    fast (before any slow git clones), but **does not mutate** the entries — the template strings stay verbatim on
+    :class:`DependencySource` so they can be written to the lockfile, progress lines, and error messages without
+    leaking secrets like ``${GITHUB_TOKEN}``. Substitution actually happens inside
+    :func:`agpack.fetcher.fetch_dependency`, where the resolved URL is used for the one ``git clone`` call and then
+    discarded.
+
+    Patch entries (edit-file kind) are *not* substituted at load time: their ``${name}`` references are resolved
+    per-target at apply time so that target ``vars`` can win over environment variables (see
+    :meth:`agpack.kinds.edit_file.EditFileResource.apply_patches`).
+
+    Returns the merged environment table for downstream apply-time substitution.
+
+    Resolution order (highest priority first):
+
+    1. Project ``.env`` (from *project_root*)
+    2. Global ``.env`` (from the global config directory, if provided)
+    3. Shell environment (``os.environ``)
+    """
+    merged = build_env(
+        project_root,
+        global_config.config_dir if global_config is not None else None,
+        verbose=verbose,
+    )
+
+    for entries in config.dependencies.values():
+        for entry in entries:
+            if isinstance(entry, DependencySource):
+                ctx = f"dependency '{entry.name}'"
+                for u in entry.urls:
+                    resolve_env_vars(u, merged, context=ctx)
+                if entry.path is not None:
+                    resolve_env_vars(entry.path, merged, context=ctx)
+                if entry.ref is not None:
+                    resolve_env_vars(entry.ref, merged, context=ctx)
+
+    return merged

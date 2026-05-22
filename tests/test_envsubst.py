@@ -1,4 +1,4 @@
-"""Tests for agpack.envsubst – .env loading and ${VAR} substitution."""
+"""Tests for ``.env`` loading and ``${VAR}`` substitution (lives in :mod:`agpack.config`)."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from agpack.config import ConfigError
 from agpack.config import DependencyEntry
 from agpack.config import DependencySource
 from agpack.config import GlobalConfig
+from agpack.config import resolve_config
 from agpack.envsubst import load_dotenv
-from agpack.envsubst import resolve_config
 from agpack.envsubst import resolve_env_vars
-from agpack.kinds import Patch
+from agpack.patch import Patch
 
 # ---------------------------------------------------------------------------
 # 1. load_dotenv
@@ -89,7 +89,7 @@ def test_resolve_mixed_literal_and_var() -> None:
 
 
 def test_resolve_missing_var_raises() -> None:
-    with pytest.raises(ConfigError, match="environment variable 'MISSING' is not set"):
+    with pytest.raises(ConfigError, match="variable 'MISSING' is not defined"):
         resolve_env_vars("${MISSING}", {})
 
 

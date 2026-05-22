@@ -14,7 +14,7 @@ from agpack.config import GlobalConfig
 from agpack.config import load_config
 from agpack.config import load_global_config
 from agpack.config import merge_configs
-from agpack.kinds import Patch
+from agpack.patch import Patch
 
 # ---------------------------------------------------------------------------
 # Helpers

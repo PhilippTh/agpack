@@ -15,10 +15,10 @@ from agpack.deployer import cleanup_deployed_files
 from agpack.deployer import deploy_item
 from agpack.deployer import detect_items
 from agpack.deployer import sync_edit_resource
+from agpack.errors import DeployError
 from agpack.fetcher import FetchResult
-from agpack.kinds import DeployError
-from agpack.kinds import Patch
 from agpack.kinds._shared import atomic_copy_file
+from agpack.patch import Patch
 from agpack.registry import load_all_builtins
 from agpack.target_schema import TargetDef
 

@@ -15,9 +15,7 @@ back. The diff-based :meth:`EditFileResource.sync_patches` is what makes this sa
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -29,9 +27,15 @@ import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
 from agpack.display import console
-from agpack.kinds._shared import EditFileError
+from agpack.envsubst import resolve_env_vars
+from agpack.envsubst import resolve_env_vars_recursive
+from agpack.errors import ConfigError
+from agpack.errors import EditFileError
 from agpack.kinds._shared import write_if_changed
 from agpack.lockfile import AppliedPatch
+from agpack.patch import Patch
+from agpack.patch import _value_hash
+from agpack.patch import match_key
 
 # ---------------------------------------------------------------------------
 # Format inference
@@ -54,78 +58,6 @@ def infer_config_format(path: str) -> Literal["json", "toml"]:
     valid = ", ".join(sorted(_FORMAT_BY_SUFFIX))
     msg = f"cannot infer config format from '{path}' — path must end in one of: {valid}"
     raise EditFileError(msg)
-
-
-# ---------------------------------------------------------------------------
-# ${name} substitution
-# ---------------------------------------------------------------------------
-
-
-# Matches either ``$$`` (escape — emit literal ``$``) or ``${name}`` (substitute). ``$${name}`` therefore writes a
-# literal ``${name}`` to the target file, which lets users pass through runtime variables resolved by the consuming
-# tool (e.g. Claude Code's ``${CLAUDE_PROJECT_DIR}`` inside hook commands).
-_VAR_PATTERN = re.compile(r"\$\$|\$\{([^}]+)}")
-
-
-def _substitute(value: str, table: dict[str, str], context: str) -> str:
-    """Substitute ``${name}`` references in ``value`` using ``table``.
-
-    ``$$`` writes a literal ``$`` (so ``$${X}`` produces ``${X}``). Raises :class:`EditFileError` listing the missing
-    name and the surrounding context if a ``${name}`` reference cannot be resolved.
-    """
-
-    def _replace(match: re.Match[str]) -> str:
-        if match.group(0) == "$$":
-            return "$"
-        name = match.group(1)
-        if name in table:
-            return table[name]
-        msg = (
-            f"{context}: variable '{name}' is not defined "
-            f"(checked target vars and environment). "
-            f"Use $${{{name}}} to write a literal ${{{name}}}."
-        )
-        raise EditFileError(msg)
-
-    return _VAR_PATTERN.sub(_replace, value)
-
-
-def _substitute_recursive(value: Any, table: dict[str, str], context: str) -> Any:
-    """Walk a JSON-ish value substituting ``${name}`` in every string leaf."""
-    if isinstance(value, str):
-        return _substitute(value, table, context)
-    if isinstance(value, dict):
-        return {k: _substitute_recursive(v, table, context) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_substitute_recursive(v, table, context) for v in value]
-    return value
-
-
-# ---------------------------------------------------------------------------
-# Patch model
-# ---------------------------------------------------------------------------
-
-
-Strategy = Literal["replace", "append"]
-
-
-@dataclass(frozen=True)
-class Patch:
-    """A single change to apply to a structured config file.
-
-    Attributes:
-        key: Dotted path into the config file (``mcpServers.filesystem``
-            or ``hooks.PreToolUse``). Intermediate dicts are auto-created.
-        value: What to put at the path. For ``append``, this is a single
-            element appended to the list at ``key``.
-        strategy: ``"replace"`` overwrites whatever's at the path;
-            ``"append"`` requires the path to resolve to a list (created
-            empty if absent) and appends ``value``.
-    """
-
-    key: str
-    value: Any
-    strategy: Strategy = "replace"
 
 
 # ---------------------------------------------------------------------------
@@ -254,52 +186,6 @@ def _undo_resolved(root: dict[str, Any], strategy: str, resolved_key: str, value
 
 
 # ---------------------------------------------------------------------------
-# Diff identity + tomlkit boundary helpers
-# ---------------------------------------------------------------------------
-
-
-def match_key(strategy: str, key: str, value_hash: str) -> tuple[Any, ...]:
-    """Identity tuple for diffing patches across syncs.
-
-    ``replace`` patches identify by ``(key,)`` — same key with a different value is still the same *slot* (an update).
-    ``append`` patches identify by ``(key, value_hash)`` — different appended values are distinct list elements.
-
-    Callers normalise to primitives before calling: pull ``strategy`` and ``key`` from the patch directly, and use
-    :func:`_value_hash` on the resolved value for a :class:`Patch` or the stored ``value_hash`` for an
-    :class:`AppliedPatch`.
-    """
-    if strategy == "replace":
-        return ("replace", key)
-    return ("append", key, value_hash)
-
-
-def _value_hash(value: Any) -> str:
-    """SHA256 of the canonical JSON form of *value* (post-:func:`_unwrap` of tomlkit wrappers).
-
-    Used both as in-memory identity for ``append`` patches and as the lockfile's record of what was applied. Storing
-    the hash rather than the value keeps secrets interpolated via ``${VAR}`` out of the lockfile.
-    """
-    canonical = json.dumps(_unwrap(value), sort_keys=True, default=str)
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _unwrap(value: Any) -> Any:
-    """Convert a tomlkit ``Item`` to its plain-Python equivalent.
-
-    :meth:`tomlkit.items.Item.unwrap` already recurses through nested Tables and Arrays, so a single call returns a
-    fully-plain dict / list / scalar. For values that are already plain (JSON-loaded data, lockfile values, primitives)
-    this is a no-op. Used at the boundary between tomlkit-managed data and the lockfile / equality checks, which both
-    want plain Python.
-    """
-    if hasattr(value, "unwrap"):
-        try:
-            return value.unwrap()
-        except Exception:  # noqa: BLE001, S110  # defensive: any tomlkit wrapper failure falls through to the plain value
-            pass
-    return value
-
-
-# ---------------------------------------------------------------------------
 # JSON / TOML I/O
 # ---------------------------------------------------------------------------
 
@@ -403,8 +289,8 @@ class EditFileResource:
         table = {**env_vars, **self.vars}
         ctx = f"patch {self.path}:{patch.key}"
         return Patch(
-            key=_substitute(patch.key, table, ctx),
-            value=_substitute_recursive(patch.value, table, ctx),
+            key=resolve_env_vars(patch.key, table, context=ctx),
+            value=resolve_env_vars_recursive(patch.value, table, context=ctx),
             strategy=patch.strategy,
         )
 
@@ -554,8 +440,8 @@ class EditFileResource:
         for mk in old_by_match.keys() - new_by_match.keys():
             ap = old_by_match[mk]
             try:
-                rk = _substitute(ap.key, table, f"applied patch {self.path}:{ap.key}")
-            except EditFileError:
+                rk = resolve_env_vars(ap.key, table, context=f"applied patch {self.path}:{ap.key}")
+            except ConfigError:
                 # Old patch referenced a var that's gone — best effort: skip the undo.
                 continue
             if _undo_resolved(data, ap.strategy, rk, ap.value_hash):

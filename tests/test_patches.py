@@ -9,15 +9,16 @@ from unittest.mock import patch as mock_patch
 
 import pytest
 
-from agpack.kinds import EditFileError
+from agpack.errors import ConfigError
+from agpack.errors import EditFileError
 from agpack.kinds import EditFileResource
-from agpack.kinds import Patch
 from agpack.kinds import infer_config_format
 from agpack.kinds._shared import _atomic_write
 from agpack.kinds.edit_file import _apply_patch
 from agpack.kinds.edit_file import _undo_resolved
-from agpack.kinds.edit_file import _value_hash
 from agpack.lockfile import AppliedPatch
+from agpack.patch import Patch
+from agpack.patch import _value_hash
 
 
 def _undo(root: dict[str, object], patch: Patch) -> bool:
@@ -436,7 +437,7 @@ class TestCleanupSemantics:
             project_root=tmp_path,
         )
         # Lockfile records the new value's hash, not the value itself.
-        from agpack.kinds.edit_file import _value_hash
+        from agpack.patch import _value_hash
 
         assert second[0].value_hash == _value_hash({"command": "v2"})
         cfg = json.loads((tmp_path / ".mcp.json").read_text())
@@ -663,7 +664,7 @@ class TestVariableSubstitution:
 
     def test_missing_var_raises(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
-        with pytest.raises(EditFileError, match="'UNDEFINED' is not defined"):
+        with pytest.raises(ConfigError, match="'UNDEFINED' is not defined"):
             resource.apply_patches(
                 [Patch(key="${UNDEFINED}.x", value=1)],
                 tmp_path,
@@ -729,7 +730,7 @@ class TestVariableSubstitution:
         Resolved keys and values never land in the lockfile — that's how interpolated secrets (``${API_KEY}``) stay
         out of committed lockfiles.
         """
-        from agpack.kinds.edit_file import _value_hash
+        from agpack.patch import _value_hash
 
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
         applied = resource.apply_patches(

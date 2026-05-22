@@ -12,6 +12,7 @@ from pathlib import Path
 
 from agpack.config import DependencySource
 from agpack.envsubst import resolve_env_vars
+from agpack.errors import FetchError
 
 # Timeout (in seconds) for any single git subprocess call.  Prevents indefinite hangs when the remote is unreachable
 # or git is waiting for credentials that will never arrive.
@@ -28,10 +29,6 @@ _URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+\-.]*://)[^@/\s]+@")
 # Replacement constant lives at module scope so callers can use it inside f-strings on Python 3.11 (PEP 701's
 # f-string-with-backslash is 3.12+, and ``requires-python = ">=3.11"`` for agpack).
 _URL_REDACT_REPL = r"\1"
-
-
-class FetchError(Exception):
-    """Raised when a git fetch operation fails."""
 
 
 @dataclass
@@ -204,7 +201,7 @@ def fetch_dependency(source: DependencySource, env: dict[str, str] | None = None
     ``${VAR}`` references in :attr:`DependencySource.urls`, :attr:`~DependencySource.path`, and
     :attr:`~DependencySource.ref` are resolved here against *env* and used only for the ``git`` invocation — the
     resolved strings are never written back to ``source`` and never returned. Pre-cloning eager validation in
-    :func:`agpack.envsubst.resolve_config` guarantees missing variables fail before we get here, so a ``ConfigError``
+    :func:`agpack.config.resolve_config` guarantees missing variables fail before we get here, so a ``ConfigError``
     from this resolve path is a programmer error.
 
     The caller is responsible for cleaning up the returned local_path's parent temp directory when done.

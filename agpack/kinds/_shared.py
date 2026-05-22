@@ -1,8 +1,8 @@
-"""Shared infrastructure for the three deploy kinds.
+"""Shared filesystem helpers for the three deploy kinds.
 
-Sits below all three kind modules in the import graph: error classes, atomic file I/O, directory-traversal helpers
-used by both copy kinds. Nothing kind-specific belongs here — if you find yourself about to add behaviour that knows
-about a single kind, put it in that kind's module instead.
+Atomic file I/O and directory-traversal helpers used by both copy kinds plus :mod:`agpack.kinds.edit_file`. Nothing
+kind-specific belongs here — if you find yourself about to add behaviour that knows about a single kind, put it in
+that kind's module instead. Exception types live in :mod:`agpack.errors`.
 """
 
 from __future__ import annotations
@@ -12,14 +12,6 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-
-
-class DeployError(Exception):
-    """Raised when a copy-kind deployment fails."""
-
-
-class EditFileError(Exception):
-    """Raised when an edit-file deployment or cleanup fails."""
 
 
 def atomic_copy_file(src: Path, dst: Path) -> None:

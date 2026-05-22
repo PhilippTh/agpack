@@ -20,12 +20,12 @@ from rich.table import Table
 
 from agpack import __version__
 from agpack.config import AgpackConfig
-from agpack.config import ConfigError
 from agpack.config import DependencySource
 from agpack.config import GlobalConfig
 from agpack.config import load_config
 from agpack.config import load_global_config
 from agpack.config import merge_configs
+from agpack.config import resolve_config
 from agpack.config import resolve_global_config_path
 from agpack.deployer import cleanup_deployed_files
 from agpack.deployer import cleanup_orphaned_edits
@@ -35,16 +35,14 @@ from agpack.deployer import sync_edit_resource
 from agpack.display import console
 from agpack.display import create_sync_progress
 from agpack.envsubst import build_env
-from agpack.envsubst import resolve_config
-from agpack.fetcher import FetchError
+from agpack.errors import ConfigError
+from agpack.errors import EditFileError
+from agpack.errors import FetchError
+from agpack.errors import TargetSchemaError
 from agpack.fetcher import FetchResult
 from agpack.fetcher import cleanup_fetch
 from agpack.fetcher import fetch_dependency
-from agpack.kinds import EditFileError
 from agpack.kinds import EditFileResource
-from agpack.kinds import Patch
-from agpack.kinds import match_key
-from agpack.kinds.edit_file import _value_hash
 from agpack.lockfile import AppliedPatch
 from agpack.lockfile import EditLockEntry
 from agpack.lockfile import InstalledEntry
@@ -52,10 +50,12 @@ from agpack.lockfile import Lockfile
 from agpack.lockfile import find_removed_dependencies
 from agpack.lockfile import read_lockfile
 from agpack.lockfile import write_lockfile
+from agpack.patch import Patch
+from agpack.patch import _value_hash
+from agpack.patch import match_key
 from agpack.registry import list_builtins
 from agpack.registry import load_builtin
 from agpack.target_schema import TargetDef
-from agpack.target_schema import TargetSchemaError
 
 _MAX_FETCH_WORKERS = 8
 
@@ -273,7 +273,9 @@ def _sync_edit_resource(
             dry_run=dry_run,
             verbose=verbose,
         )
-    except EditFileError as exc:
+    except (ConfigError, EditFileError) as exc:
+        # ConfigError surfaces from ${VAR} resolution inside _resolve_patch; EditFileError covers every other
+        # apply-time failure (collision detection, JSON/TOML I/O, dotted-key navigation).
         if not dry_run:
             write_lockfile(project_root, new_lockfile)
         raise click.ClickException(str(exc)) from exc
@@ -554,7 +556,7 @@ def status(config_path: str, no_global: bool) -> None:  # noqa: C901
         config, global_cfg = _load_and_merge_global(config)
 
     target_defs = _resolve_targets(config)
-    env_vars = build_env(project_root, global_cfg)
+    env_vars = build_env(project_root, global_cfg.config_dir if global_cfg else None)
 
     lockfile = read_lockfile(project_root)
 
@@ -630,12 +632,17 @@ def _is_patch_synced(
         assert isinstance(resource, EditFileResource)  # narrowed above
         try:
             resolved = resource._resolve_patch(dep, env_vars)
-        except EditFileError:
+        except (ConfigError, EditFileError):
             return False
         identity = match_key(dep.strategy, dep.key, _value_hash(resolved.value))
         if (resource.path, identity) not in applied_by_id:
             return False
     return True
+
+
+def _read_init_template(name: str) -> str:
+    """Read an ``init`` scaffold from ``agpack/templates/``."""
+    return importlib_files("agpack.templates").joinpath(name).read_text(encoding="utf-8")
 
 
 @main.command()
@@ -661,41 +668,7 @@ def init(config_path: str, is_global: bool) -> None:
             return
 
         path.parent.mkdir(parents=True, exist_ok=True)
-
-        template = """\
-# Global agpack config — dependencies here are included in every project.
-# Override per-project with 'global: false' in your project agpack.yml,
-# or run agpack sync --no-global.
-
-dependencies:
-  skills:
-    # Shared skills available in all projects:
-    # - url: https://github.com/owner/repo
-    #   path: skills/my-skill
-    #   ref: v1.0.0
-
-  commands:
-    # Shared commands available in all projects:
-    # - url: https://github.com/owner/repo
-    #   path: commands/my-command.md
-
-  agents:
-    # Shared agents available in all projects:
-    # - url: https://github.com/owner/repo
-    #   path: agents/my-agent.md
-
-  mcp:
-    # Shared MCP servers as patches. ${bucket} is supplied by each
-    # built-in target (mcpServers / mcp_servers / mcp / servers), so
-    # one patch deploys correctly to every target.
-    # - key: ${bucket}.my-server
-    #   value:
-    #     command: npx
-    #     args: ["-y", "@example/mcp-server"]
-    #     env:
-    #       API_KEY: ${API_KEY}            # from .env or shell env
-"""
-        path.write_text(template, encoding="utf-8")
+        path.write_text(_read_init_template("init_global.yml"), encoding="utf-8")
         console.print(f"[green]✓[/green] Created [bold]{path}[/bold]")
         return
 
@@ -704,103 +677,7 @@ dependencies:
         console.print(f"{path.name} already exists — doing nothing.")
         return
 
-    template = """\
-# Set to false to ignore the global config (~/.config/agpack/agpack.yml):
-# global: false
-
-targets:
-  # - claude
-  # - opencode
-  # - codex
-  # - cursor
-  # - copilot
-
-dependencies:
-  skills:
-    # Point to a single skill folder:
-    # - url: https://github.com/owner/repo
-    #   path: skills/my-skill
-    #   ref: v1.0.0
-    # Multiple URLs (tried in order, e.g. HTTPS + SSH fallback):
-    # - url:
-    #     - https://github.com/owner/repo
-    #     - git@github.com:owner/repo.git
-    #   path: skills/my-skill
-    # Or to a directory of skill folders (each subfolder is deployed separately):
-    # - url: https://github.com/owner/repo
-    #   path: skills
-
-  commands:
-    # Point to a single file or a directory of command files:
-    # - url: https://github.com/owner/repo
-    #   path: commands/my-command.md
-
-  agents:
-    # Point to a single file or a directory of agent files:
-    # - url: https://github.com/owner/repo
-    #   path: agents/my-agent.md
-
-  # edit-file resources take patches instead of git URLs. ${bucket}
-  # is supplied by the target manifest (e.g. mcpServers for Claude,
-  # mcp for OpenCode, mcp_servers for Codex), so a single patch
-  # deploys to every configured target.
-  mcp:
-    # - key: ${bucket}.my-server
-    #   value:
-    #     command: npx
-    #     args: ["-y", "@example/mcp-server"]
-    #     env:
-    #       API_KEY: ${API_KEY}            # from .env or shell env
-
-  # Claude Code hooks (.claude/settings.json → hooks.<event>):
-  # hooks:
-  #   - key: ${bucket}.PreToolUse        # bucket="hooks" on Claude
-  #     strategy: append                  # default is 'replace'
-  #     value:
-  #       matcher: "Write|Edit"
-  #       hooks:
-  #         - type: command
-  #           # $${} escapes — Claude Code resolves at hook fire time:
-  #           command: "$${CLAUDE_PROJECT_DIR}/.claude/hooks/lint.sh"
-  #
-  # permissions:
-  #   - key: ${bucket}.allow              # bucket="permissions"
-  #     strategy: append
-  #     value: "Read(/etc/**)"
-
-# Override a built-in target or define a brand-new one.
-# Use 'agpack targets list' to see all available targets and
-# 'agpack targets show <name>' to print a starting manifest you can copy here.
-# target_definitions:
-#   claude:
-#     # Override the built-in claude target — replace semantics (no merge).
-#     skills:
-#       kind: copy-directory       # one of: copy-directory, copy-file, edit-file
-#       path: .my-claude/skills
-#     commands:
-#       kind: copy-file
-#       path: .my-claude/commands
-#     mcp:
-#       kind: edit-file            # patches written from dependencies.mcp
-#       path: .mcp.json            # format (json|toml) inferred from extension
-#       vars:                      # exposed to patches as ${name}
-#         bucket: mcpServers       # so patch ${bucket}.x → mcpServers.x
-#
-#   my-internal-tool:
-#     # Brand-new target — also listed under 'targets:' above to be used.
-#     skills:
-#       kind: copy-directory
-#       path: .myaitool/skills
-#     # Resource type names are open — declare any name (rules, prompts,
-#     # personas, …) and use the same name in 'dependencies:' above.
-#     rules:
-#       kind: copy-file
-#       path: .myaitool/rules
-#     settings:
-#       kind: edit-file
-#       path: .myaitool/settings.json
-"""
-    path.write_text(template, encoding="utf-8")
+    path.write_text(_read_init_template("init_project.yml"), encoding="utf-8")
     console.print(f"[green]✓[/green] Created [bold]{path.name}[/bold]")
 
 

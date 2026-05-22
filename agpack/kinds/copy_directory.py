@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from typing import ClassVar
 
 from agpack.display import console
-from agpack.kinds._shared import DeployError
+from agpack.errors import DeployError
 from agpack.kinds._shared import atomic_copy_file
 from agpack.kinds._shared import copy_tree
 from agpack.kinds._shared import find_asset_subfolders

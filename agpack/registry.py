@@ -13,8 +13,8 @@ from importlib.resources import files
 
 import yaml
 
+from agpack.errors import TargetSchemaError
 from agpack.target_schema import TargetDef
-from agpack.target_schema import TargetSchemaError
 from agpack.target_schema import parse_target_def
 
 _BUILTIN_PACKAGE = "agpack.builtin_targets"

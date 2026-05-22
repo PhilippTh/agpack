@@ -1,0 +1,94 @@
+# Set to false to ignore the global config (~/.config/agpack/agpack.yml):
+# global: false
+
+targets:
+  # - claude
+  # - opencode
+  # - codex
+  # - cursor
+  # - copilot
+
+dependencies:
+  skills:
+    # Point to a single skill folder:
+    # - url: https://github.com/owner/repo
+    #   path: skills/my-skill
+    #   ref: v1.0.0
+    # Multiple URLs (tried in order, e.g. HTTPS + SSH fallback):
+    # - url:
+    #     - https://github.com/owner/repo
+    #     - git@github.com:owner/repo.git
+    #   path: skills/my-skill
+    # Or to a directory of skill folders (each subfolder is deployed separately):
+    # - url: https://github.com/owner/repo
+    #   path: skills
+
+  commands:
+    # Point to a single file or a directory of command files:
+    # - url: https://github.com/owner/repo
+    #   path: commands/my-command.md
+
+  agents:
+    # Point to a single file or a directory of agent files:
+    # - url: https://github.com/owner/repo
+    #   path: agents/my-agent.md
+
+  # edit-file resources take patches instead of git URLs. ${bucket}
+  # is supplied by the target manifest (e.g. mcpServers for Claude,
+  # mcp for OpenCode, mcp_servers for Codex), so a single patch
+  # deploys to every configured target.
+  mcp:
+    # - key: ${bucket}.my-server
+    #   value:
+    #     command: npx
+    #     args: ["-y", "@example/mcp-server"]
+    #     env:
+    #       API_KEY: ${API_KEY}            # from .env or shell env
+
+  # Claude Code hooks (.claude/settings.json → hooks.<event>):
+  # hooks:
+  #   - key: ${bucket}.PreToolUse        # bucket="hooks" on Claude
+  #     strategy: append                  # default is 'replace'
+  #     value:
+  #       matcher: "Write|Edit"
+  #       hooks:
+  #         - type: command
+  #           # $${} escapes — Claude Code resolves at hook fire time:
+  #           command: "$${CLAUDE_PROJECT_DIR}/.claude/hooks/lint.sh"
+  #
+  # permissions:
+  #   - key: ${bucket}.allow              # bucket="permissions"
+  #     strategy: append
+  #     value: "Read(/etc/**)"
+
+# Override a built-in target or define a brand-new one.
+# Use 'agpack targets list' to see all available targets and
+# 'agpack targets show <name>' to print a starting manifest you can copy here.
+# target_definitions:
+#   claude:
+#     # Override the built-in claude target — replace semantics (no merge).
+#     skills:
+#       kind: copy-directory       # one of: copy-directory, copy-file, edit-file
+#       path: .my-claude/skills
+#     commands:
+#       kind: copy-file
+#       path: .my-claude/commands
+#     mcp:
+#       kind: edit-file            # patches written from dependencies.mcp
+#       path: .mcp.json            # format (json|toml) inferred from extension
+#       vars:                      # exposed to patches as ${name}
+#         bucket: mcpServers       # so patch ${bucket}.x → mcpServers.x
+#
+#   my-internal-tool:
+#     # Brand-new target — also listed under 'targets:' above to be used.
+#     skills:
+#       kind: copy-directory
+#       path: .myaitool/skills
+#     # Resource type names are open — declare any name (rules, prompts,
+#     # personas, …) and use the same name in 'dependencies:' above.
+#     rules:
+#       kind: copy-file
+#       path: .myaitool/rules
+#     settings:
+#       kind: edit-file
+#       path: .myaitool/settings.json

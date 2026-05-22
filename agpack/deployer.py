@@ -20,13 +20,13 @@ from collections import defaultdict
 from pathlib import Path
 
 from agpack.display import console
+from agpack.errors import DeployError
 from agpack.fetcher import FetchResult
 from agpack.kinds import CopyResource
-from agpack.kinds import DeployError
 from agpack.kinds import EditFileResource
-from agpack.kinds import Patch
 from agpack.kinds import ResourceDef
 from agpack.lockfile import AppliedPatch
+from agpack.patch import Patch
 from agpack.target_schema import TargetDef
 
 # ===========================================================================

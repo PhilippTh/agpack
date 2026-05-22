@@ -12,7 +12,7 @@ from click.testing import CliRunner
 
 from agpack.cli import main
 from agpack.config import load_config
-from agpack.kinds import EditFileError
+from agpack.errors import EditFileError
 from agpack.target_schema import parse_target_def
 
 
