@@ -9,10 +9,9 @@ shapes:
   path.
 * Edit kind (``edit-file``): a list of :class:`~agpack.kinds.Patch` operations declared inline in ``agpack.yml`` is
   reconciled against the lockfile's record of previously-applied patches. :func:`sync_edit_resource` walks every
-  target with a matching edit-file resource and does a diff-based per-file sync: removed patches are reversed
-  (restoring captured ``previous_value`` for ``replace``); added patches capture their pre-existing value before
-  overwriting; unchanged patches are left strictly alone so the file isn't even written when nothing semantically
-  changed.
+  target with a matching edit-file resource and does a diff-based per-file sync: removed ``replace`` patches delete
+  the leaf; removed ``append`` patches drop the previously-appended list entry; unchanged patches are left strictly
+  alone so the file isn't even written when nothing semantically changed.
 """
 
 from __future__ import annotations
@@ -90,10 +89,10 @@ def sync_edit_resource(
     ``EditLockEntry``).
 
     Each target with a matching edit-file resource gets its own per-file diff: matching patches are left alone, removed
-    patches are reversed (restoring ``previous_value`` for ``replace``), added patches snapshot the pre-existing value
-    before overwriting. Targets that don't declare this resource type are silently skipped; targets with a
-    non-edit-file kind for this name are also skipped (the cross-target kind consistency check in
-    ``cli._resource_kinds`` should have caught any actual conflict).
+    patches are reversed (``replace`` deletes the leaf; ``append`` drops the previously-appended entry), added patches
+    are applied fresh. Targets that don't declare this resource type are silently skipped; targets with a non-edit-file
+    kind for this name are also skipped (the cross-target kind consistency check in ``cli._resource_kinds`` should have
+    caught any actual conflict).
 
     The returned :class:`AppliedPatch` list is the new authoritative state for the lockfile.
     """
@@ -156,9 +155,9 @@ def cleanup_orphaned_edits(
     """Reverse every recorded patch for a resource type that no longer exists.
 
     Called when a whole resource type disappears from ``agpack.yml`` (e.g. the user removed ``mcp:`` from
-    dependencies). Each target file gets one read-modify-write that undoes the old patches — restoring
-    ``previous_value`` for ``replace``, removing the appended element for ``append``. Patches with no recoverable file
-    (missing, bad extension) are silently skipped.
+    dependencies). Each target file gets one read-modify-write that undoes the old patches — ``replace`` deletes the
+    leaf, ``append`` removes the appended element. Patches with no recoverable file (missing, bad extension) are
+    silently skipped.
     """
     by_file: dict[str, list[AppliedPatch]] = defaultdict(list)
     for entry in applied_old:

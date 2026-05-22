@@ -45,20 +45,18 @@ class InstalledEntry:
 class AppliedPatch:
     """An edit-file patch recorded for future cleanup.
 
-    Cleanup looks up the file by :attr:`file_path`, navigates to :attr:`key`, and reverses the operation. For
-    ``append`` strategy, :attr:`value` is used to locate the entry via deep-equality.
+    Cleanup looks up the file by :attr:`file_path`, navigates to :attr:`key`, and reverses the operation:
 
-    For ``replace`` strategy, :attr:`key_existed` and :attr:`previous_value` capture what was there *before* the patch
-    ran. Cleanup restores the previous value if the key existed, or deletes the key if it did not — so agpack never
-    silently destroys user data when a patch is removed from ``agpack.yml``.
+    * ``replace`` deletes the leaf — symmetric with how copy kinds clean up the files they wrote. If the user had a
+      value at that key before agpack first ran, ``replace`` overwrote it; cleanup does not try to magically restore
+      it (the value is gone the same way a hand-edited file copied over would be).
+    * ``append`` uses :attr:`value` to locate the previously-appended list entry via deep equality and remove it.
     """
 
     file_path: str
     key: str
     strategy: str
     value: Any
-    key_existed: bool = False
-    previous_value: Any = None
 
 
 @dataclass
@@ -85,12 +83,11 @@ class Lockfile:
 
 
 _CORRUPT_LOCKFILE_WARNING = (
-    "Treating lockfile as missing — every patch will be re-snapshotted "
-    "from the current file contents, so 'previous_value' will reflect "
-    "whatever is on disk now (possibly agpack-written content), not "
-    "your pre-agpack values. Surgical cleanup of removed patches "
-    "may restore agpack content instead of your originals. "
-    "Restore the lockfile from version control if you have it."
+    "Treating lockfile as missing — agpack has no record of which patches "
+    "it previously applied, so cleanup of patches you have since removed "
+    "from agpack.yml will not happen automatically. Restore the lockfile "
+    "from version control if you have it, or remove leftover agpack-written "
+    "entries from your config files by hand."
 )
 
 
@@ -98,8 +95,8 @@ def read_lockfile(project_root: Path) -> Lockfile | None:  # noqa: C901
     """Read the lockfile from disk.
 
     Returns ``None`` if the file is absent. If the file exists but is unreadable, malformed, or has the wrong top-level
-    shape, emits a loud warning explaining what guarantee is now broken (so the user isn't silently dropped into a
-    state where ``previous_value`` snapshots are recaptured from agpack-written content) and returns ``None``.
+    shape, emits a loud warning explaining what guarantee is now broken (without the lockfile, agpack cannot clean up
+    patches the user has since removed from ``agpack.yml``) and returns ``None``.
     """
     path = project_root / LOCKFILE_NAME
     if not path.exists():
@@ -160,8 +157,6 @@ def read_lockfile(project_root: Path) -> Lockfile | None:  # noqa: C901
                     key=raw.get("key", ""),
                     strategy=raw.get("strategy", "replace"),
                     value=raw.get("value"),
-                    key_existed=bool(raw.get("key_existed", False)),
-                    previous_value=raw.get("previous_value"),
                 )
             )
         lockfile.edits.append(
@@ -172,25 +167,6 @@ def read_lockfile(project_root: Path) -> Lockfile | None:  # noqa: C901
         )
 
     return lockfile
-
-
-def _serialise_applied(p: AppliedPatch) -> dict[str, Any]:
-    """Build the YAML-friendly mapping for one AppliedPatch.
-
-    ``previous_value`` and ``key_existed`` are only emitted for ``replace`` patches; on ``append`` they have no
-    semantic meaning and would just clutter the lockfile.
-    """
-    out: dict[str, Any] = {
-        "file_path": p.file_path,
-        "key": p.key,
-        "strategy": p.strategy,
-        "value": p.value,
-    }
-    if p.strategy == "replace":
-        out["key_existed"] = p.key_existed
-        if p.key_existed:
-            out["previous_value"] = p.previous_value
-    return out
 
 
 def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
@@ -220,7 +196,10 @@ def write_lockfile(project_root: Path, lockfile: Lockfile) -> None:
         data["edits"].append(
             {
                 "resource_type": edit.resource_type,
-                "applied": [_serialise_applied(p) for p in edit.applied],
+                "applied": [
+                    {"file_path": p.file_path, "key": p.key, "strategy": p.strategy, "value": p.value}
+                    for p in edit.applied
+                ],
             }
         )
 

@@ -319,6 +319,64 @@ dependencies:
         load_config(cfg_path)
 
 
+def test_duplicate_replace_patch_rejected(tmp_path: Path) -> None:
+    """Two replace patches at the same key would silently collapse in sync_patches — reject at parse time instead."""
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets: [claude]
+dependencies:
+  mcp:
+    - key: mcpServers.fs
+      value: {command: v1}
+    - key: mcpServers.fs
+      value: {command: v2}
+""",
+    )
+    with pytest.raises(ConfigError, match="duplicate 'replace' patch"):
+        load_config(cfg_path)
+
+
+def test_duplicate_append_patch_rejected(tmp_path: Path) -> None:
+    """Two append patches with identical (key, value) would dedup to one — reject at parse time."""
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets: [claude]
+dependencies:
+  permissions:
+    - key: permissions.allow
+      strategy: append
+      value: "Read(/etc/**)"
+    - key: permissions.allow
+      strategy: append
+      value: "Read(/etc/**)"
+""",
+    )
+    with pytest.raises(ConfigError, match="duplicate 'append' patch"):
+        load_config(cfg_path)
+
+
+def test_append_patches_with_distinct_values_allowed(tmp_path: Path) -> None:
+    """Two append patches at the same key with different values are distinct list elements — both must survive."""
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets: [claude]
+dependencies:
+  permissions:
+    - key: permissions.allow
+      strategy: append
+      value: "Read(/etc/**)"
+    - key: permissions.allow
+      strategy: append
+      value: "Read(/var/**)"
+""",
+    )
+    cfg = load_config(cfg_path)
+    assert len(cfg.dependencies["permissions"]) == 2
+
+
 def test_mixed_fetch_and_patch_rejected(tmp_path: Path) -> None:
     cfg_path = _write_config(
         tmp_path,

@@ -81,8 +81,8 @@ class TestReadLockfile:
     def test_returns_none_for_corrupt_yaml(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _write_raw(tmp_path, "{{{{not: valid: yaml::::")
         assert read_lockfile(tmp_path) is None
-        # Must warn loudly — a silent reset would re-snapshot previous_value from agpack-written content and break
-        # surgical cleanup.
+        # Must warn loudly — without the lockfile agpack cannot clean up patches the user has since removed from
+        # agpack.yml.
         out = capsys.readouterr().out
         assert "warning" in out.lower()
         assert "corrupt" in out.lower()
@@ -97,8 +97,7 @@ class TestReadLockfile:
     def test_handles_empty_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _write_raw(tmp_path, "")
         assert read_lockfile(tmp_path) is None
-        # Empty file is also a shape problem — warn so the user knows we won't restore previous_value snapshots from
-        # it.
+        # Empty file is also a shape problem — warn so the user knows we have no record of prior applied patches.
         out = capsys.readouterr().out
         assert "warning" in out.lower()
 

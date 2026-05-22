@@ -15,7 +15,7 @@ from agpack.kinds import Patch
 from agpack.kinds import infer_config_format
 from agpack.kinds._shared import _atomic_write
 from agpack.kinds.edit_file import _apply_patch
-from agpack.kinds.edit_file import _cleanup_patch
+from agpack.kinds.edit_file import _undo_patch
 
 # ---------------------------------------------------------------------------
 # infer_config_format
@@ -120,9 +120,7 @@ class TestDottedKeyEscape:
         """Round-trip: a key applied with an escaped dot can also be undone with the same escaped key."""
         root: dict = {}
         _apply_patch(root, Patch(key="mcpServers.example\\.com", value="x"))
-        from agpack.kinds.edit_file import _cleanup_patch as cleanup
-
-        assert cleanup(root, Patch(key="mcpServers.example\\.com", value="x"))
+        assert _undo_patch(root, Patch(key="mcpServers.example\\.com", value="x"))
         assert root == {"mcpServers": {}}
 
 
@@ -163,38 +161,38 @@ def test_apply_append_on_non_list_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _cleanup_patch — replace
+# _undo_patch — replace
 # ---------------------------------------------------------------------------
 
 
 def test_cleanup_replace_deletes_leaf() -> None:
     root: dict = {"a": {"b": 1, "c": 2}}
-    changed = _cleanup_patch(root, Patch(key="a.b", value=1))
+    changed = _undo_patch(root, Patch(key="a.b", value=1))
     assert changed is True
     assert root == {"a": {"c": 2}}
 
 
 def test_cleanup_replace_missing_is_noop() -> None:
     root: dict = {"a": {}}
-    changed = _cleanup_patch(root, Patch(key="a.b", value=1))
+    changed = _undo_patch(root, Patch(key="a.b", value=1))
     assert changed is False
     assert root == {"a": {}}
 
 
 def test_cleanup_replace_missing_intermediate_is_noop() -> None:
     root: dict = {}
-    changed = _cleanup_patch(root, Patch(key="x.y.z", value=1))
+    changed = _undo_patch(root, Patch(key="x.y.z", value=1))
     assert changed is False
 
 
 # ---------------------------------------------------------------------------
-# _cleanup_patch — append
+# _undo_patch — append
 # ---------------------------------------------------------------------------
 
 
 def test_cleanup_append_removes_first_match() -> None:
     root: dict = {"hooks": ["a", "b", "c"]}
-    changed = _cleanup_patch(root, Patch(key="hooks", value="b", strategy="append"))
+    changed = _undo_patch(root, Patch(key="hooks", value="b", strategy="append"))
     assert changed is True
     assert root == {"hooks": ["a", "c"]}
 
@@ -208,7 +206,7 @@ def test_cleanup_append_deep_equality() -> None:
             ]
         }
     }
-    changed = _cleanup_patch(
+    changed = _undo_patch(
         root,
         Patch(
             key="hooks.PreToolUse",
@@ -222,7 +220,7 @@ def test_cleanup_append_deep_equality() -> None:
 
 def test_cleanup_append_no_match_is_noop() -> None:
     root: dict = {"hooks": ["a"]}
-    changed = _cleanup_patch(root, Patch(key="hooks", value="z", strategy="append"))
+    changed = _undo_patch(root, Patch(key="hooks", value="z", strategy="append"))
     assert changed is False
     assert root == {"hooks": ["a"]}
 
@@ -375,63 +373,18 @@ class TestCleanupPatches:
 
 
 # ---------------------------------------------------------------------------
-# Safety fixes — previous-value snapshot, format preservation, idempotency
+# Cleanup semantics — delete-on-removal, format preservation, idempotency
 # ---------------------------------------------------------------------------
 
 
-class TestPreviousValueRestoration:
-    """Removing a ``replace`` patch must restore the user's prior value.
+class TestCleanupSemantics:
+    """Removing a patch deletes the leaf — symmetric with copy-kind cleanup.
 
-    The pre-fix behaviour was to delete the leaf on cleanup, silently destroying any data that was at the key before
-    agpack first ran.
+    If the user had data at the key before agpack first applied a ``replace``, that value was overwritten on apply.
+    agpack does not try to remember it and put it back; the same way ``cp foo bar`` overwrites whatever was at ``bar``.
     """
 
-    def test_replace_records_pre_existing_value(self, tmp_path: Path) -> None:
-        (tmp_path / ".mcp.json").write_text(
-            json.dumps({"mcpServers": {"fs": {"command": "user-tool"}}}),
-            encoding="utf-8",
-        )
-        resource = EditFileResource(path=".mcp.json")
-        applied = resource.sync_patches(
-            applied_old=[],
-            desired_new=[Patch(key="mcpServers.fs", value={"command": "agpack"})],
-            project_root=tmp_path,
-        )
-        assert applied[0].key_existed is True
-        assert applied[0].previous_value == {"command": "user-tool"}
-
-    def test_replace_records_absent_key(self, tmp_path: Path) -> None:
-        (tmp_path / ".mcp.json").write_text("{}", encoding="utf-8")
-        resource = EditFileResource(path=".mcp.json")
-        applied = resource.sync_patches(
-            applied_old=[],
-            desired_new=[Patch(key="mcpServers.new", value={"command": "x"})],
-            project_root=tmp_path,
-        )
-        assert applied[0].key_existed is False
-        assert applied[0].previous_value is None
-
-    def test_cleanup_restores_user_value(self, tmp_path: Path) -> None:
-        """The data-loss kill-shot: user data must survive patch removal."""
-        original = {"mcpServers": {"fs": {"command": "user-tool", "args": ["secret"]}}}
-        (tmp_path / ".mcp.json").write_text(json.dumps(original), encoding="utf-8")
-        resource = EditFileResource(path=".mcp.json")
-        applied = resource.sync_patches(
-            applied_old=[],
-            desired_new=[Patch(key="mcpServers.fs", value={"command": "agpack"})],
-            project_root=tmp_path,
-        )
-        # User removed the patch from their config — sync with empty desired.
-        resource.sync_patches(
-            applied_old=applied,
-            desired_new=[],
-            project_root=tmp_path,
-        )
-        restored = json.loads((tmp_path / ".mcp.json").read_text())
-        assert restored == original
-
-    def test_cleanup_deletes_agpack_created_key(self, tmp_path: Path) -> None:
-        """When agpack created the key (no prior value), cleanup deletes it."""
+    def test_cleanup_deletes_replace_leaf(self, tmp_path: Path) -> None:
         (tmp_path / ".mcp.json").write_text("{}", encoding="utf-8")
         resource = EditFileResource(path=".mcp.json")
         applied = resource.sync_patches(
@@ -447,28 +400,42 @@ class TestPreviousValueRestoration:
         cfg = json.loads((tmp_path / ".mcp.json").read_text())
         assert "new" not in cfg.get("mcpServers", {})
 
-    def test_value_change_preserves_original_previous_value(self, tmp_path: Path) -> None:
-        """A patch whose value updates must keep the original previous_value so a future removal still restores the
-        user's pre-agpack content."""
+    def test_cleanup_drops_pre_existing_value_too(self, tmp_path: Path) -> None:
+        """When the user had a value at a key before agpack first patched it, that value was overwritten on apply and
+        cleanup does not magically restore it."""
         (tmp_path / ".mcp.json").write_text(
-            json.dumps({"mcpServers": {"fs": {"command": "user"}}}),
+            json.dumps({"mcpServers": {"fs": {"command": "user-tool"}}}),
             encoding="utf-8",
         )
+        resource = EditFileResource(path=".mcp.json")
+        applied = resource.sync_patches(
+            applied_old=[],
+            desired_new=[Patch(key="mcpServers.fs", value={"command": "agpack"})],
+            project_root=tmp_path,
+        )
+        resource.sync_patches(
+            applied_old=applied,
+            desired_new=[],
+            project_root=tmp_path,
+        )
+        cfg = json.loads((tmp_path / ".mcp.json").read_text())
+        assert "fs" not in cfg.get("mcpServers", {})
+
+    def test_value_change_keeps_only_latest_value(self, tmp_path: Path) -> None:
+        """Updating a patch's value writes the new value; the lockfile only tracks what's currently applied."""
+        (tmp_path / ".mcp.json").write_text("{}", encoding="utf-8")
         resource = EditFileResource(path=".mcp.json")
         first = resource.sync_patches(
             applied_old=[],
             desired_new=[Patch(key="mcpServers.fs", value={"command": "v1"})],
             project_root=tmp_path,
         )
-        # User edits agpack.yml — patch value changes.
         second = resource.sync_patches(
             applied_old=first,
             desired_new=[Patch(key="mcpServers.fs", value={"command": "v2"})],
             project_root=tmp_path,
         )
-        # The original user value is still what cleanup will restore.
-        assert second[0].previous_value == {"command": "user"}
-        # And the file now has v2.
+        assert second[0].value == {"command": "v2"}
         cfg = json.loads((tmp_path / ".mcp.json").read_text())
         assert cfg["mcpServers"]["fs"] == {"command": "v2"}
 

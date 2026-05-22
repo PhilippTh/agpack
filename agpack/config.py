@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from agpack.kinds import Patch
+from agpack.kinds import match_key
 from agpack.target_schema import TargetDef
 from agpack.target_schema import TargetSchemaError
 from agpack.target_schema import parse_target_def
@@ -218,6 +219,37 @@ def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef
     return result
 
 
+def _check_duplicate_patches(entries: list[DependencyEntry], *, prefix: str, resource_type: str) -> None:
+    """Reject patches that collide on the sync-time identity tuple.
+
+    ``replace`` patches collide when they share a key; ``append`` patches collide when they share both key and value.
+    Without this guard the diff dict in :func:`agpack.kinds.edit_file.EditFileResource.sync_patches` would silently
+    keep only the last entry — the user would have written two patches but only one would apply.
+    """
+    seen: dict[tuple[Any, ...], int] = {}
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, Patch):
+            continue
+        mk = match_key(entry)
+        if mk in seen:
+            first = seen[mk]
+            if entry.strategy == "replace":
+                msg = (
+                    f"{prefix}dependencies.{resource_type}[{i}]: duplicate "
+                    f"'replace' patch for key {entry.key!r} (also defined at "
+                    f"index {first}). Only one 'replace' patch per key is "
+                    f"allowed — remove or merge the duplicate."
+                )
+            else:
+                msg = (
+                    f"{prefix}dependencies.{resource_type}[{i}]: duplicate "
+                    f"'append' patch for key {entry.key!r} with identical "
+                    f"value (also defined at index {first})."
+                )
+            raise ConfigError(msg)
+        seen[mk] = i
+
+
 def _parse_dependencies(deps: dict[str, Any], prefix: str = "") -> dict[str, list[DependencyEntry]]:
     """Parse the ``dependencies`` mapping into a {resource_type: [entries]} dict.
 
@@ -243,6 +275,9 @@ def _parse_dependencies(deps: dict[str, Any], prefix: str = "") -> dict[str, lis
                         f"patch entries under the same resource type"
                     )
                     raise ConfigError(msg)
+        # Reject patches that share an identity (replace by key; append by key+value). Without this, sync_patches'
+        # diff dict would silently last-write-wins on collisions.
+        _check_duplicate_patches(entries, prefix=prefix, resource_type=rt)
         out[rt] = entries
     return out
 

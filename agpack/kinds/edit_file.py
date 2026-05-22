@@ -5,11 +5,12 @@ back. The diff-based :meth:`EditFileResource.sync_patches` is what makes this sa
 
 * TOML files round-trip through :mod:`tomlkit` so comments, key ordering, and whitespace on untouched sections
   survive unchanged.
-* JSON files use :mod:`json` (no format-preserving alternative in stdlib); ``_write_if_changed`` skips the write
+* JSON files use :mod:`json` (no format-preserving alternative in stdlib); ``write_if_changed`` skips the write
   entirely when the serialised text is byte-identical to disk, so unchanged files don't churn either.
-* Every ``replace`` patch snapshots the *existing* value at its key before overwriting. When the patch is later
-  removed from ``agpack.yml``, cleanup restores that snapshot instead of deleting the key — so agpack can co-exist
-  with files the user also edits by hand without silently destroying their data.
+* Cleanup is symmetric with copy-kind cleanup: a removed ``replace`` patch deletes the key (just like a removed
+  copy file is unlinked), and a removed ``append`` patch removes the previously-appended list entry. agpack does
+  not try to remember what existed at a key before it first applied a ``replace`` — that value was overwritten when
+  the patch was first applied, the same way ``cp`` overwrites an existing file.
 """
 
 from __future__ import annotations
@@ -224,15 +225,15 @@ def _apply_patch(root: dict[str, Any], patch: Patch) -> None:
     bucket.append(patch.value)
 
 
-def _cleanup_patch(root: dict[str, Any], patch: Patch) -> bool:
-    """Legacy cleanup that deletes the leaf for replace.
+def _undo_patch(root: dict[str, Any], patch: Patch | AppliedPatch) -> bool:
+    """Reverse one patch on ``root`` in place.
 
-    Kept for backward compatibility with callers that don't carry the previous-value snapshot. Prefer
-    :func:`_undo_applied` for any new code path — it restores instead of deleting and so doesn't silently destroy
-    pre-existing user data.
+    ``replace`` deletes the leaf — symmetric with copy-kind cleanup, which removes the files agpack wrote without
+    trying to reconstruct whatever the destination contained before. If the user had a value at the key before agpack
+    first applied a ``replace`` patch, that value was overwritten then; cleanup does not magically restore it.
 
-    ``replace`` deletes the leaf key. ``append`` scans the list at the path and removes the first deep-equal match.
-    Either way, silent no-op if the target is missing or already gone.
+    ``append`` scans the list at the path and removes the first deep-equal match. Either way, silent no-op if the
+    target is missing or already gone.
     """
     parent, leaf = _walk_readonly(root, _split_key(patch.key))
     if parent is None or leaf not in parent:
@@ -245,54 +246,10 @@ def _cleanup_patch(root: dict[str, Any], patch: Patch) -> bool:
     return _remove_first_equal(parent[leaf], patch.value)
 
 
-def _read_value_at_key(root: dict[str, Any], key: str) -> tuple[bool, Any]:
-    """Return ``(key_existed, previous_value)`` for the leaf at ``key``.
-
-    ``previous_value`` is the value already present at the dotted path, unwrapped to plain Python so it round-trips
-    cleanly through YAML in the lockfile. If any segment of the path is missing, ``key_existed`` is ``False`` and
-    ``previous_value`` is ``None``.
-
-    Used by :meth:`EditFileResource.sync_patches` to capture what was there *before* a ``replace`` patch overwrites it,
-    so cleanup can later restore the original value rather than deleting the key.
-    """
-    parent, leaf = _walk_readonly(root, _split_key(key))
-    if parent is None or leaf not in parent:
-        return False, None
-    return True, _unwrap(parent[leaf])
-
-
-def _undo_applied(root: dict[str, Any], applied: AppliedPatch) -> bool:
-    """Reverse one ``AppliedPatch`` on ``root`` in place.
-
-    For ``replace`` patches:
-
-    * If ``applied.key_existed`` is True, restore ``previous_value`` —
-      this is the data-loss fix: the user's pre-patch value comes back.
-    * If False, the patch was the one that created the key, so delete
-      it (matches legacy ``_cleanup_patch`` behavior).
-
-    For ``append`` patches, scan the list at the path and remove the first deep-equal match. Returns ``True`` if
-    anything changed.
-    """
-    parent, leaf = _walk_readonly(root, _split_key(applied.key))
-    if parent is None or leaf not in parent:
-        return False
-
-    if applied.strategy == "replace":
-        if applied.key_existed:
-            parent[leaf] = applied.previous_value
-        else:
-            del parent[leaf]
-        return True
-
-    return _remove_first_equal(parent[leaf], applied.value)
-
-
 def _remove_first_equal(bucket: Any, value: Any) -> bool:
     """Remove the first list element deep-equal to ``value`` (post-unwrap).
 
-    Shared by ``append`` cleanup in both :func:`_cleanup_patch` and :func:`_undo_applied`. Returns ``True`` if an
-    element was removed; ``False`` if ``bucket`` isn't a list or no match exists.
+    Returns ``True`` if an element was removed; ``False`` if ``bucket`` isn't a list or no match exists.
     """
     if not isinstance(bucket, list):
         return False
@@ -308,13 +265,15 @@ def _remove_first_equal(bucket: Any, value: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _match_key(p: Patch | AppliedPatch) -> tuple[Any, ...]:
+def match_key(p: Patch | AppliedPatch) -> tuple[Any, ...]:
     """Identity tuple for diffing patches across syncs.
 
     ``replace`` patches identify by ``(key,)`` — same key with a different value is still the same *slot* (an update).
     ``append`` patches identify by ``(key, value)`` — different appended values are distinct list elements.
 
-    Works on either :class:`Patch` or :class:`AppliedPatch`; both expose ``strategy``, ``key``, and ``value``.
+    Works on either :class:`Patch` or :class:`AppliedPatch`; both expose ``strategy``, ``key``, and ``value``. Also used
+    at config parse time to detect duplicate patches inside one resource type — see
+    :func:`agpack.config._parse_dependencies`.
     """
     if p.strategy == "replace":
         return ("replace", p.key)
@@ -328,11 +287,6 @@ def _hashable_value(value: Any) -> str:
     ``default=str`` is a cheap fallback for anything ``json`` can't natively encode.
     """
     return json.dumps(_unwrap(value), sort_keys=True, default=str)
-
-
-def _values_equal(a: Any, b: Any) -> bool:
-    """Deep equality after unwrapping any tomlkit wrappers on either side."""
-    return bool(_unwrap(a) == _unwrap(b))
 
 
 def _unwrap(value: Any) -> Any:
@@ -432,9 +386,7 @@ class EditFileResource:
     ) -> list[AppliedPatch]:
         """Apply each patch to the config file at :attr:`path`.
 
-        Thin wrapper around :meth:`sync_patches` with no prior state — every patch is treated as freshly added. The
-        captured :attr:`AppliedPatch.previous_value` lets a later cleanup restore exactly what was at each key before
-        the patch ran, instead of silently deleting it.
+        Thin wrapper around :meth:`sync_patches` with no prior state — every patch is treated as freshly added.
         """
         return self.sync_patches(
             applied_old=[],
@@ -458,7 +410,7 @@ class EditFileResource:
             strategy=patch.strategy,
         )
 
-    def cleanup_patches(  # noqa: C901
+    def cleanup_patches(  # noqa: C901  # branch fan-out: dry-run, missing file, bad format, per-patch undo, verbose
         self,
         patches: list[Patch] | list[AppliedPatch],
         project_root: Path,
@@ -468,9 +420,9 @@ class EditFileResource:
     ) -> None:
         """Undo patches on the config file at :attr:`path`.
 
-        Accepts either :class:`Patch` (legacy delete-on-replace) or :class:`AppliedPatch` (smart restore from
-        ``previous_value``). New callers should pass ``AppliedPatch`` so previously-overwritten user values come back;
-        ``Patch`` is kept working for callers that don't carry the snapshot.
+        Accepts either :class:`Patch` or :class:`AppliedPatch` — both carry the same ``key`` / ``strategy`` / ``value``
+        fields that :func:`_undo_patch` needs. ``replace`` deletes the leaf; ``append`` removes the previously-appended
+        entry.
 
         Silent no-op if the file is missing or a patch has nothing to remove. Format-inference failures (stale lockfile
         entries pointing at unknown extensions) are absorbed.
@@ -498,10 +450,7 @@ class EditFileResource:
         data = _read_existing(config_path, format_)
         changed = False
         for patch in patches:
-            if isinstance(patch, AppliedPatch):
-                if _undo_applied(data, patch):
-                    changed = True
-            elif _cleanup_patch(data, patch):
+            if _undo_patch(data, patch):
                 changed = True
 
         if changed:
@@ -516,7 +465,7 @@ class EditFileResource:
             for p in patches:
                 console.print(f"  removed {self.path}:{p.key}")
 
-    def sync_patches(  # noqa: C901
+    def sync_patches(  # noqa: C901  # three-way diff: matches/removes/adds + dry-run + format inference
         self,
         applied_old: list[AppliedPatch],
         desired_new: list[Patch],
@@ -530,21 +479,11 @@ class EditFileResource:
 
         The diff-based path that backs both ``apply`` and ``cleanup``:
 
-        * Patches in *applied_old* that aren't in *desired_new* get
-          undone — for ``replace``, this restores
-          :attr:`AppliedPatch.previous_value` rather than deleting,
-          so pre-existing user data survives a patch being removed
-          from ``agpack.yml``.
-        * Patches in *desired_new* that aren't in *applied_old* get
-          applied, capturing the current value at the key first so
-          future syncs know what to restore.
-        * Patches that appear in both with identical values are
-          left untouched — no file mutation, no churn.
-        * For ``replace`` patches whose key matches but value
-          differs, the file is updated to the new value but the
-          *original* ``previous_value`` from *applied_old* is carried
-          forward, so removing the patch entirely later still
-          restores the user's pre-agpack content.
+        * Patches in *applied_old* but not in *desired_new* are undone (``replace`` deletes the leaf; ``append``
+          removes the previously-appended list entry).
+        * Patches in *desired_new* but not in *applied_old* are applied fresh.
+        * Patches that appear in both with identical values are left untouched — no file mutation, no churn.
+        * For ``replace`` patches whose key matches but value differs, the file is updated to the new value.
 
         The file is only written when the serialised text actually differs from what's on disk — combined with
         ``tomlkit`` for TOML, this keeps unrelated formatting and comments intact across syncs.
@@ -560,13 +499,7 @@ class EditFileResource:
                 for p in resolved_new:
                     console.print(f"[dry-run]   {p.strategy} {self.path}:{p.key}")
             return [
-                AppliedPatch(
-                    file_path=self.path,
-                    key=p.key,
-                    strategy=p.strategy,
-                    value=p.value,
-                )
-                for p in resolved_new
+                AppliedPatch(file_path=self.path, key=p.key, strategy=p.strategy, value=p.value) for p in resolved_new
             ]
 
         if not applied_old and not resolved_new and not config_path.exists():
@@ -581,8 +514,8 @@ class EditFileResource:
 
         data = _read_existing(config_path, format_)
 
-        old_by_match: dict[tuple[Any, ...], AppliedPatch] = {_match_key(p): p for p in applied_old}
-        new_by_match: dict[tuple[Any, ...], Patch] = {_match_key(p): p for p in resolved_new}
+        old_by_match: dict[tuple[Any, ...], AppliedPatch] = {match_key(p): p for p in applied_old}
+        new_by_match: dict[tuple[Any, ...], Patch] = {match_key(p): p for p in resolved_new}
 
         result: list[AppliedPatch] = []
         verbose_lines: list[str] = []
@@ -590,47 +523,23 @@ class EditFileResource:
         for mk in old_by_match.keys() & new_by_match.keys():
             old_p = old_by_match[mk]
             new_p = new_by_match[mk]
-            if _values_equal(old_p.value, new_p.value):
+            if _unwrap(old_p.value) == _unwrap(new_p.value):
                 # Unchanged — carry forward without touching the file.
                 result.append(old_p)
                 continue
-            # Same key+strategy, different value → update in-place but keep the original previous_value so a future
-            # removal of the patch still restores the user's pre-agpack content.
             _apply_patch(data, new_p)
-            result.append(
-                AppliedPatch(
-                    file_path=self.path,
-                    key=new_p.key,
-                    strategy=new_p.strategy,
-                    value=new_p.value,
-                    key_existed=old_p.key_existed,
-                    previous_value=old_p.previous_value,
-                )
-            )
+            result.append(AppliedPatch(file_path=self.path, key=new_p.key, strategy=new_p.strategy, value=new_p.value))
             verbose_lines.append(f"  update {self.path}:{new_p.key}")
 
         for mk in old_by_match.keys() - new_by_match.keys():
             old_p = old_by_match[mk]
-            if _undo_applied(data, old_p):
+            if _undo_patch(data, old_p):
                 verbose_lines.append(f"  remove {self.path}:{old_p.key}")
 
         for mk in new_by_match.keys() - old_by_match.keys():
             new_p = new_by_match[mk]
-            if new_p.strategy == "replace":
-                key_existed, prev = _read_value_at_key(data, new_p.key)
-            else:
-                key_existed, prev = False, None
             _apply_patch(data, new_p)
-            result.append(
-                AppliedPatch(
-                    file_path=self.path,
-                    key=new_p.key,
-                    strategy=new_p.strategy,
-                    value=new_p.value,
-                    key_existed=key_existed,
-                    previous_value=prev,
-                )
-            )
+            result.append(AppliedPatch(file_path=self.path, key=new_p.key, strategy=new_p.strategy, value=new_p.value))
             verbose_lines.append(f"  {new_p.strategy} {self.path}:{new_p.key}")
 
         new_text = _dump(data, format_)

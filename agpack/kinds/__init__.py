@@ -25,6 +25,7 @@ from agpack.kinds.edit_file import EditFileResource
 from agpack.kinds.edit_file import Patch
 from agpack.kinds.edit_file import Strategy
 from agpack.kinds.edit_file import infer_config_format
+from agpack.kinds.edit_file import match_key
 
 ResourceDef = CopyDirectoryResource | CopyFileResource | EditFileResource
 CopyResource = CopyDirectoryResource | CopyFileResource
@@ -40,4 +41,5 @@ __all__ = [
     "ResourceDef",
     "Strategy",
     "infer_config_format",
+    "match_key",
 ]
