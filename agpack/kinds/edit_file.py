@@ -265,26 +265,6 @@ class EditFileResource:
     def format(self) -> Literal["json", "toml"]:
         return infer_config_format(self.path)
 
-    def apply_patches(
-        self,
-        patches: list[Patch],
-        project_root: Path,
-        env_vars: dict[str, str] | None = None,
-        *,
-        verbose: bool = False,
-    ) -> list[AppliedPatch]:
-        """Apply each patch to the config file at :attr:`path`.
-
-        Thin wrapper around :meth:`sync_patches` with no prior state — every patch is treated as freshly added.
-        """
-        return self.sync_patches(
-            applied_old=[],
-            desired_new=patches,
-            project_root=project_root,
-            env_vars=env_vars,
-            verbose=verbose,
-        )
-
     def _resolve_patch(self, patch: Patch, env_vars: dict[str, str]) -> Patch:
         """Return a new Patch with all ${name} references substituted.
 

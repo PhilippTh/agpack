@@ -422,7 +422,7 @@ def resolve_config(
 
     Patch entries (edit-file kind) are *not* substituted at load time: their ``${name}`` references are resolved
     per-target at apply time so that target ``vars`` can win over environment variables (see
-    :meth:`agpack.kinds.edit_file.EditFileResource.apply_patches`).
+    :meth:`agpack.kinds.edit_file.EditFileResource.sync_patches`).
 
     Returns the merged environment table for downstream apply-time substitution.
 

@@ -26,6 +26,24 @@ def _undo(root: dict[str, object], patch: Patch) -> bool:
     return _undo_resolved(root, patch.strategy, patch.key, value_hash(patch.value))
 
 
+def _apply(
+    resource: EditFileResource,
+    patches: list[Patch],
+    project_root: Path,
+    env_vars: dict[str, str] | None = None,
+    *,
+    verbose: bool = False,
+) -> list[AppliedPatch]:
+    """Test-only convenience: apply fresh patches with no prior state."""
+    return resource.sync_patches(
+        applied_old=[],
+        desired_new=patches,
+        project_root=project_root,
+        env_vars=env_vars,
+        verbose=verbose,
+    )
+
+
 # ---------------------------------------------------------------------------
 # infer_config_format
 # ---------------------------------------------------------------------------
@@ -235,7 +253,7 @@ def test_cleanup_append_no_match_is_noop() -> None:
 
 
 # ---------------------------------------------------------------------------
-# EditFileResource.apply_patches — JSON file end-to-end
+# EditFileResource.sync_patches — JSON file end-to-end (via _apply helper)
 # ---------------------------------------------------------------------------
 
 
@@ -250,7 +268,8 @@ def _read_toml(path: Path) -> dict:
 class TestApplyPatchesJson:
     def test_creates_file_when_missing(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
-        resource.apply_patches(
+        _apply(
+            resource,
             [
                 Patch(
                     key="mcpServers.fs",
@@ -268,7 +287,8 @@ class TestApplyPatchesJson:
             encoding="utf-8",
         )
         resource = EditFileResource(path=".mcp.json")
-        resource.apply_patches(
+        _apply(
+            resource,
             [Patch(key="mcpServers.new", value={"command": "new"})],
             tmp_path,
         )
@@ -280,7 +300,8 @@ class TestApplyPatchesJson:
     def test_append_creates_list_and_extends(self, tmp_path: Path) -> None:
         (tmp_path / "settings.json").write_text("{}", encoding="utf-8")
         resource = EditFileResource(path="settings.json")
-        resource.apply_patches(
+        _apply(
+            resource,
             [
                 Patch(
                     key="hooks.PreToolUse",
@@ -303,7 +324,8 @@ class TestApplyPatchesJson:
 class TestApplyPatchesToml:
     def test_writes_toml_inferred_from_extension(self, tmp_path: Path) -> None:
         resource = EditFileResource(path="config.toml")
-        resource.apply_patches(
+        _apply(
+            resource,
             [Patch(key="mcp_servers.fs", value={"command": "npx"})],
             tmp_path,
         )
@@ -319,7 +341,8 @@ class TestApplyPatchesToml:
 class TestCleanupPatches:
     def test_undoes_replace(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
-        applied = resource.apply_patches(
+        applied = _apply(
+            resource,
             [
                 Patch(key="mcpServers.fs", value={"command": "npx"}),
                 Patch(key="mcpServers.other", value={"command": "stay"}),
@@ -334,7 +357,8 @@ class TestCleanupPatches:
 
     def test_undoes_append(self, tmp_path: Path) -> None:
         resource = EditFileResource(path="settings.json")
-        applied = resource.apply_patches(
+        applied = _apply(
+            resource,
             [
                 Patch(key="hooks.PreToolUse", value={"matcher": "Write"}, strategy="append"),
                 Patch(key="hooks.PreToolUse", value={"matcher": "Read"}, strategy="append"),
@@ -567,7 +591,8 @@ class TestCollisionDetection:
     def test_literal_duplicate_replace_rejected(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
         with pytest.raises(EditFileError, match=r"patches at indices 0 and 1 resolve to the same identity"):
-            resource.apply_patches(
+            _apply(
+                resource,
                 [
                     Patch(key="mcpServers.fs", value={"command": "v1"}),
                     Patch(key="mcpServers.fs", value={"command": "v2"}),
@@ -579,7 +604,8 @@ class TestCollisionDetection:
         """Two appends with identical (key, value) — would dedup to one in the diff dict."""
         resource = EditFileResource(path="settings.json")
         with pytest.raises(EditFileError, match=r"strategy=append"):
-            resource.apply_patches(
+            _apply(
+                resource,
                 [
                     Patch(key="permissions.allow", value="Read(/etc)", strategy="append"),
                     Patch(key="permissions.allow", value="Read(/etc)", strategy="append"),
@@ -595,7 +621,8 @@ class TestCollisionDetection:
             EditFileError,
             match=r"unresolved keys: 'mcpServers\.fs' and '\$\{bucket\}\.fs'",
         ):
-            resource.apply_patches(
+            _apply(
+                resource,
                 [
                     Patch(key="mcpServers.fs", value={"command": "v1"}),
                     Patch(key="${bucket}.fs", value={"command": "v2"}),
@@ -610,7 +637,8 @@ class TestCollisionDetection:
         ``set.difference``; that's a separate latent issue worth fixing, but it's out of scope here.
         """
         resource = EditFileResource(path="settings.json")
-        resource.apply_patches(
+        _apply(
+            resource,
             [
                 Patch(key="permissions.allow", value="Read(/etc)", strategy="append"),
                 Patch(key="permissions.allow", value="Write(/tmp)", strategy="append"),
@@ -626,13 +654,13 @@ class TestErrors:
         (tmp_path / "settings.json").write_text("[1, 2, 3]", encoding="utf-8")
         resource = EditFileResource(path="settings.json")
         with pytest.raises(EditFileError, match="top-level must be a mapping"):
-            resource.apply_patches([Patch(key="x", value=1)], tmp_path)
+            _apply(resource, [Patch(key="x", value=1)], tmp_path)
 
     def test_corrupt_json_raises_on_apply(self, tmp_path: Path) -> None:
         (tmp_path / ".mcp.json").write_text("not json!", encoding="utf-8")
         resource = EditFileResource(path=".mcp.json")
         with pytest.raises(EditFileError, match="Failed to read"):
-            resource.apply_patches([Patch(key="x", value=1)], tmp_path)
+            _apply(resource, [Patch(key="x", value=1)], tmp_path)
 
     def test_oserror_on_write_wrapped(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
@@ -640,7 +668,7 @@ class TestErrors:
             mock_patch("agpack.kinds._shared._atomic_write", side_effect=OSError("disk full")),
             pytest.raises(EditFileError, match="Failed to write.*disk full"),
         ):
-            resource.apply_patches([Patch(key="x", value=1)], tmp_path)
+            _apply(resource, [Patch(key="x", value=1)], tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +682,8 @@ class TestVariableSubstitution:
 
     def test_target_var_substituted_in_key(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
-        resource.apply_patches(
+        _apply(
+            resource,
             [Patch(key="${bucket}.fs", value={"command": "npx"})],
             tmp_path,
             env_vars={},
@@ -664,7 +693,8 @@ class TestVariableSubstitution:
 
     def test_env_var_substituted_in_value(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
-        resource.apply_patches(
+        _apply(
+            resource,
             [
                 Patch(
                     key="mcpServers.fs",
@@ -680,7 +710,8 @@ class TestVariableSubstitution:
     def test_target_var_overrides_env_var(self, tmp_path: Path) -> None:
         """Same-name collision: target wins."""
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "from-target"})
-        resource.apply_patches(
+        _apply(
+            resource,
             [Patch(key="${bucket}.fs", value={"command": "x"})],
             tmp_path,
             env_vars={"bucket": "from-env"},
@@ -691,7 +722,8 @@ class TestVariableSubstitution:
 
     def test_substitutes_recursively_in_value(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
-        resource.apply_patches(
+        _apply(
+            resource,
             [
                 Patch(
                     key="${bucket}.fs",
@@ -713,7 +745,8 @@ class TestVariableSubstitution:
     def test_missing_var_raises(self, tmp_path: Path) -> None:
         resource = EditFileResource(path=".mcp.json")
         with pytest.raises(ConfigError, match="'UNDEFINED' is not defined"):
-            resource.apply_patches(
+            _apply(
+                resource,
                 [Patch(key="${UNDEFINED}.x", value=1)],
                 tmp_path,
                 env_vars={},
@@ -722,7 +755,8 @@ class TestVariableSubstitution:
     def test_no_env_vars_argument_defaults_to_empty(self, tmp_path: Path) -> None:
         """env_vars=None is equivalent to {}; target vars still resolve."""
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "x"})
-        resource.apply_patches(
+        _apply(
+            resource,
             [Patch(key="${bucket}.fs", value={})],
             tmp_path,
         )
@@ -733,7 +767,8 @@ class TestVariableSubstitution:
         """$${X} writes ${X} literally — needed for runtime vars (e.g. Claude Code's ${CLAUDE_PROJECT_DIR} inside hook
         commands)."""
         resource = EditFileResource(path="settings.json")
-        resource.apply_patches(
+        _apply(
+            resource,
             [
                 Patch(
                     key="hooks.PreToolUse",
@@ -759,7 +794,8 @@ class TestVariableSubstitution:
     def test_escape_alongside_substitution(self, tmp_path: Path) -> None:
         """$$ and ${} can appear in the same string."""
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
-        resource.apply_patches(
+        _apply(
+            resource,
             [
                 Patch(
                     key="${bucket}.fs",
@@ -781,7 +817,8 @@ class TestVariableSubstitution:
         from agpack.patch import value_hash
 
         resource = EditFileResource(path=".mcp.json", vars={"bucket": "mcpServers"})
-        applied = resource.apply_patches(
+        applied = _apply(
+            resource,
             [
                 Patch(key="${bucket}.fs", value={"env": {"K": "${K}"}}),
             ],
