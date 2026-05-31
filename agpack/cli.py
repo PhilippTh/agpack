@@ -250,6 +250,7 @@ def _sync_edit_resource(
     project_root: Path,
     new_lockfile: Lockfile,
     env_vars: dict[str, str],
+    progress: Progress,
     *,
     dry_run: bool,
     verbose: bool,
@@ -261,6 +262,17 @@ def _sync_edit_resource(
     """
     if not patches and not applied_old:
         return 0
+
+    task_ids: list[TaskID] = [
+        progress.add_task(
+            f"{resource_type} [bold]{p.key}[/bold]",
+            total=1,
+            icon=" ",
+            detail=f"Applying {p.strategy} patch",
+        )
+        for p in patches
+    ]
+
     try:
         applied_new = sync_edit_resource(
             resource_type,
@@ -275,9 +287,15 @@ def _sync_edit_resource(
     except (ConfigError, EditFileError) as exc:
         # ConfigError surfaces from ${VAR} resolution inside _resolve_patch; EditFileError covers every other
         # apply-time failure (collision detection, JSON/TOML I/O, dotted-key navigation).
+        for tid in task_ids:
+            progress.update(tid, completed=1, icon="[red]✗[/red]", detail=str(exc))
         if not dry_run:
             write_lockfile(project_root, new_lockfile)
         raise click.ClickException(str(exc)) from exc
+
+    for tid, p in zip(task_ids, patches, strict=True):
+        progress.update(tid, completed=1, icon="[green]✓[/green]", detail=f"{p.strategy.capitalize()}d")
+
     if applied_new:
         new_lockfile.edits.append(EditLockEntry(resource_type=resource_type, applied=applied_new))
     return len(patches)
@@ -479,6 +497,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                     project_root,
                     new_lockfile,
                     env_vars,
+                    progress,
                     dry_run=dry_run,
                     verbose=verbose,
                 )
@@ -518,7 +537,7 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     # 10. Summary — one chip per resource type that had configured deps.
     elapsed = time.monotonic() - start_time
     target_count = len(config.targets)
-    parts = [f"[bold]{counts.get(rt, 0)}[/bold] {rt}" for rt in config.dependencies]
+    parts = [f"[bold]{n}[/bold] {rt}" for rt, n in counts.items() if n > 0]
     summary = ", ".join(parts) if parts else "[dim]nothing to deploy[/dim]"
     targets = f"[bold]{target_count}[/bold] targets"
     console.print()
