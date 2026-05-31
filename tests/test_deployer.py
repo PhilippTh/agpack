@@ -80,8 +80,8 @@ def deploy_agent(fr, targets, project, **kwargs):  # type: ignore[no-untyped-def
     return _run("agents", fr, targets, project, **kwargs)
 
 
-def deploy_single_skill(name, path, targets, project, dry_run, verbose):  # type: ignore[no-untyped-def]
-    return deploy_item(name, path, "skills", _resolve(targets), project, dry_run, verbose)
+def deploy_single_skill(name, path, targets, project):  # type: ignore[no-untyped-def]
+    return deploy_item(name, path, "skills", _resolve(targets), project)
 
 
 def _make_source(name: str = "my-skill") -> DependencySource:
@@ -188,19 +188,6 @@ class TestDeploySkill:
 
         assert (project / ".claude" / "skills" / "my-skill").is_dir()
 
-    def test_dry_run_no_files_created(self, tmp_path: Path) -> None:
-        project = tmp_path / "project"
-        project.mkdir()
-        fr = _make_dir_fetch(tmp_path)
-
-        result = deploy_skill(fr, ALL_TARGETS, project, dry_run=True)
-
-        # Should report what would be deployed...
-        assert len(result.files) > 0
-        # ...but nothing actually written
-        for rel in result.files:
-            assert not (project / rel).exists()
-
     def test_skill_name_derived_from_source_path(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
@@ -249,16 +236,6 @@ class TestDeployCommand:
 
         assert result.files == []
 
-    def test_dry_run_no_files_created(self, tmp_path: Path) -> None:
-        project = tmp_path / "project"
-        project.mkdir()
-        fr = _make_file_fetch(tmp_path, source_name="lint.md")
-
-        result = deploy_command(fr, ["claude"], project, dry_run=True)
-
-        assert len(result.files) == 1
-        assert not (project / result.files[0]).exists()
-
 
 # ---------------------------------------------------------------------------
 # deploy_agent
@@ -291,17 +268,6 @@ class TestDeployAgent:
         result = deploy_agent(fr, ["cursor", "gemini", "windsurf"], project)
 
         assert result.files == []
-
-    def test_dry_run_no_files_created(self, tmp_path: Path) -> None:
-        project = tmp_path / "project"
-        project.mkdir()
-        fr = _make_file_fetch(tmp_path, source_name="reviewer.md")
-
-        result = deploy_agent(fr, ["claude", "opencode"], project, dry_run=True)
-
-        assert len(result.files) == 2
-        for rel in result.files:
-            assert not (project / rel).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -349,19 +315,6 @@ class TestCleanupDeployedFiles:
         for rel in result.files:
             assert not (project / rel).exists()
         assert extra.exists()
-
-    def test_dry_run_no_files_removed(self, tmp_path: Path) -> None:
-        project = tmp_path / "project"
-        project.mkdir()
-
-        fr = _make_dir_fetch(tmp_path)
-        result = deploy_skill(fr, ["claude"], project)
-
-        cleanup_deployed_files(result.files, project, dry_run=True)
-
-        # Everything should still be there
-        for rel in result.files:
-            assert (project / rel).exists()
 
     def test_handles_already_missing_files(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
@@ -493,18 +446,6 @@ class TestDeploySkillFolderDetection:
             assert (project / base / "skill-a" / "SKILL.md").exists()
             assert (project / base / "skill-b" / "SKILL.md").exists()
 
-    def test_folder_of_skills_dry_run(self, tmp_path: Path) -> None:
-        project = tmp_path / "project"
-        project.mkdir()
-        fr = _make_folder_of_skills_fetch(tmp_path)
-
-        result = deploy_skill(fr, ["claude"], project, dry_run=True)
-
-        assert len(result.files) == 3
-        assert result.expanded_items == ["skill-a", "skill-b"]
-        for rel in result.files:
-            assert not (project / rel).exists()
-
     def test_errors_on_empty_directory(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
@@ -599,17 +540,6 @@ class TestDeployCommandFolderDetection:
 
         with pytest.raises(DeployError, match="does not contain any commands files"):
             deploy_command(fr, ["claude"], project)
-
-    def test_dry_run_with_directory(self, tmp_path: Path) -> None:
-        project = tmp_path / "project"
-        project.mkdir()
-        fr = _make_dir_command_fetch(tmp_path)
-
-        result = deploy_command(fr, ["claude"], project, dry_run=True)
-
-        assert len(result.files) == 2
-        for rel in result.files:
-            assert not (project / rel).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +638,7 @@ class TestDeploySingleFileSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill("my-skill", skill_file, ["claude"], project, dry_run=False, verbose=False)
+        result = deploy_single_skill("my-skill", skill_file, ["claude"], project)
 
         assert len(result) == 1
         deployed = project / result[0]
@@ -724,24 +654,11 @@ class TestDeploySingleFileSkill:
         skill_file.parent.mkdir(parents=True)
         skill_file.write_text("# My Skill")
 
-        result = deploy_single_skill("my-skill", skill_file, ALL_TARGETS, project, dry_run=False, verbose=False)
+        result = deploy_single_skill("my-skill", skill_file, ALL_TARGETS, project)
 
         assert len(result) == len(SKILL_DIRS)
         for rel in result:
             assert (project / rel).exists()
-
-    def test_dry_run_single_file_skill(self, tmp_path: Path) -> None:
-        project = tmp_path / "project"
-        project.mkdir()
-
-        skill_file = tmp_path / "src" / "SKILL.md"
-        skill_file.parent.mkdir(parents=True)
-        skill_file.write_text("# My Skill")
-
-        result = deploy_single_skill("my-skill", skill_file, ["claude"], project, dry_run=True, verbose=False)
-
-        assert len(result) == 1
-        assert not (project / result[0]).exists()
 
 
 # ---------------------------------------------------------------------------

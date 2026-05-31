@@ -228,41 +228,6 @@ def test_sync_cleanup_removed_dependency(tmp_path: Path) -> None:
     assert (project_dir / ".claude/commands/review.md").exists()
 
 
-def test_sync_dry_run(tmp_path: Path) -> None:
-    """Test that --dry-run doesn't create any files."""
-    bare_repo = _create_bare_repo(tmp_path)
-
-    project_dir = tmp_path / "project"
-    project_dir.mkdir()
-
-    config = {
-        "targets": ["claude"],
-        "dependencies": {
-            "skills": [
-                {
-                    "url": str(bare_repo),
-                    "path": "skills/my-skill",
-                },
-            ],
-        },
-    }
-
-    config_path = project_dir / "agpack.yml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
-
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["sync", "--config", str(config_path), "--dry-run"],
-        catch_exceptions=False,
-    )
-    assert result.exit_code == 0
-
-    # No files should have been created
-    assert not (project_dir / ".claude").exists()
-    assert not (project_dir / ".agpack.lock.yml").exists()
-
-
 def test_status_command(tmp_path: Path) -> None:
     """Test the status command output."""
     bare_repo = _create_bare_repo(tmp_path)

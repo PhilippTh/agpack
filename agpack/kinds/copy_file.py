@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import ClassVar
 
-from agpack.display import console
 from agpack.errors import DeployError
 from agpack.kinds._shared import atomic_copy_file
 from agpack.kinds._shared import find_asset_subfolders
@@ -54,16 +53,7 @@ class CopyFileResource:
         item_name: str,
         src_path: Path,
         project_root: Path,
-        *,
-        dry_run: bool = False,
-        verbose: bool = False,
     ) -> list[str]:
         dst = project_root / self.path / item_name
-
-        if dry_run:
-            if verbose:
-                console.print(f"[dry-run]   copy → {dst}")
-            return [str(dst.relative_to(project_root))]
-
         atomic_copy_file(src_path, dst)
         return [str(dst.relative_to(project_root))]

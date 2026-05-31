@@ -292,3 +292,59 @@ def cleanup_fetch(result: FetchResult) -> None:
     """Clean up temporary files from a fetch operation."""
     if result._tmpdir is not None:
         shutil.rmtree(result._tmpdir, ignore_errors=True)
+
+
+def ls_remote(source: DependencySource, env: dict[str, str] | None = None) -> str | None:
+    """Resolve the remote ref to a commit SHA via ``git ls-remote`` without cloning.
+
+    Used by ``agpack status`` to detect upstream drift cheaply: one network round-trip per repo, no checkout. Tries
+    each entry in :attr:`DependencySource.urls` in order until one returns a SHA. Returns ``None`` on any failure
+    (network down, auth failure, ref doesn't exist remotely) so the caller can render an "unknown" state without
+    aborting the whole status report.
+
+    If ``source.ref`` is already a commit SHA, returns it directly — pinned-by-SHA deps can't drift.
+    """
+    env = env or {}
+    ctx = f"dependency '{source.name}'"
+
+    ref_template = source.ref or "HEAD"
+    try:
+        resolved_ref = resolve_env_vars(ref_template, env, context=ctx)
+    except Exception:  # noqa: BLE001  # display-only path: any resolve failure → unknown
+        return None
+
+    if _is_sha(resolved_ref):
+        return resolved_ref
+
+    for url_template in source.urls:
+        try:
+            resolved_url = resolve_env_vars(url_template, env, context=ctx)
+        except Exception:  # noqa: BLE001, S112
+            continue
+        result = _run_git(["ls-remote", resolved_url, resolved_ref])
+        if result.returncode != 0:
+            continue
+        sha = _parse_ls_remote(result.stdout)
+        if sha:
+            return sha
+    return None
+
+
+def _parse_ls_remote(stdout: str) -> str | None:
+    """Pick the commit SHA from ``git ls-remote URL REF`` output.
+
+    Annotated tags emit two lines — ``<tag-object-sha>\trefs/tags/X`` and ``<commit-sha>\trefs/tags/X^{}`` — and we
+    want the peeled commit SHA so the comparison matches ``rev-parse HEAD`` recorded in the lockfile. Lightweight
+    tags and branches emit a single line.
+    """
+    peeled: str | None = None
+    direct: str | None = None
+    for line in stdout.strip().splitlines():
+        if "\t" not in line:
+            continue
+        sha, ref = line.split("\t", 1)
+        if ref.endswith("^{}"):
+            peeled = sha
+        else:
+            direct = sha
+    return peeled or direct

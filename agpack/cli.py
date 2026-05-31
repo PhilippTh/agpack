@@ -42,6 +42,7 @@ from agpack.errors import TargetSchemaError
 from agpack.fetcher import FetchResult
 from agpack.fetcher import cleanup_fetch
 from agpack.fetcher import fetch_dependency
+from agpack.fetcher import ls_remote
 from agpack.kinds import EditFileResource
 from agpack.lockfile import AppliedPatch
 from agpack.lockfile import EditLockEntry
@@ -91,7 +92,6 @@ def _sync_resource_type(  # noqa: C901  # orchestrator: fetch + deploy + lockfil
     progress: Progress,
     env_vars: dict[str, str],
     *,
-    dry_run: bool,
     verbose: bool,
 ) -> SyncResult:
     """Fetch and deploy a list of copy-kind dependencies.
@@ -139,8 +139,7 @@ def _sync_resource_type(  # noqa: C901  # orchestrator: fetch + deploy + lockfil
     if errors:
         for _, result in results:
             cleanup_fetch(result)
-        if not dry_run:
-            write_lockfile(project_root, new_lockfile)
+        write_lockfile(project_root, new_lockfile)
         raise click.ClickException("\n".join([f"Failed to fetch {len(errors)} {resource_type} dep(s):"] + errors))
 
     # Phase 3: sequential deploy — update progress rows, collect verbose output
@@ -153,8 +152,7 @@ def _sync_resource_type(  # noqa: C901  # orchestrator: fetch + deploy + lockfil
         except Exception as exc:
             progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
             cleanup_fetch(result)
-            if not dry_run:
-                write_lockfile(project_root, new_lockfile)
+            write_lockfile(project_root, new_lockfile)
             msg = f"Error deploying {resource_type} '{dep.name}': {exc}"
             raise click.ClickException(msg) from exc
 
@@ -184,8 +182,6 @@ def _sync_resource_type(  # noqa: C901  # orchestrator: fetch + deploy + lockfil
                     resource_type,
                     target_defs,
                     project_root,
-                    dry_run=dry_run,
-                    verbose=False,
                 )
             except Exception as exc:
                 if is_expanded:
@@ -197,8 +193,7 @@ def _sync_resource_type(  # noqa: C901  # orchestrator: fetch + deploy + lockfil
                     )
                 progress.update(tid, completed=2, icon="[red]✗[/red]", detail=str(exc))
                 cleanup_fetch(result)
-                if not dry_run:
-                    write_lockfile(project_root, new_lockfile)
+                write_lockfile(project_root, new_lockfile)
                 msg = f"Error deploying {resource_type} '{dep.name}': {exc}"
                 raise click.ClickException(msg) from exc
 
@@ -252,7 +247,6 @@ def _sync_edit_resource(
     env_vars: dict[str, str],
     progress: Progress,
     *,
-    dry_run: bool,
     verbose: bool,
 ) -> int:
     """Reconcile edit-file patches and record the new applied set.
@@ -281,7 +275,6 @@ def _sync_edit_resource(
             targets=target_defs,
             project_root=project_root,
             env_vars=env_vars,
-            dry_run=dry_run,
             verbose=verbose,
         )
     except (ConfigError, EditFileError) as exc:
@@ -289,8 +282,7 @@ def _sync_edit_resource(
         # apply-time failure (collision detection, JSON/TOML I/O, dotted-key navigation).
         for tid in task_ids:
             progress.update(tid, completed=1, icon="[red]✗[/red]", detail=str(exc))
-        if not dry_run:
-            write_lockfile(project_root, new_lockfile)
+        write_lockfile(project_root, new_lockfile)
         raise click.ClickException(str(exc)) from exc
 
     for tid, p in zip(task_ids, patches, strict=True):
@@ -399,7 +391,6 @@ def main() -> None:
 
 
 @main.command()
-@click.option("--dry-run", is_flag=True, help="Print actions without writing files.")
 @click.option(
     "--config",
     "config_path",
@@ -413,7 +404,7 @@ def main() -> None:
     is_flag=True,
     help="Ignore the global config file.",
 )
-def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> None:  # noqa: C901
+def sync(config_path: str, verbose: bool, no_global: bool) -> None:  # noqa: C901
     """Fetch all dependencies and deploy to all target directories."""
     cfg_path = Path(config_path).resolve()
     project_root = cfg_path.parent
@@ -453,9 +444,9 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     # 6. Clean up removed copy-kind dependencies.
     removed_deps = find_removed_dependencies(old_lockfile, current_identities)
     for entry in removed_deps:
-        if verbose or dry_run:
+        if verbose:
             console.print(f"Removing {entry.type} '{entry.identity}'...")
-        cleanup_deployed_files(entry.deployed_files, project_root, dry_run=dry_run, verbose=verbose)
+        cleanup_deployed_files(entry.deployed_files, project_root, verbose=verbose)
 
     # 7. Index old applied edits by resource type. We don't unapply them here — sync_edit_resource diffs against this
     # and touches each file at most once. Files only get written when their text actually changes (combined with
@@ -498,7 +489,6 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                     new_lockfile,
                     env_vars,
                     progress,
-                    dry_run=dry_run,
                     verbose=verbose,
                 )
                 continue
@@ -512,7 +502,6 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
                 new_lockfile,
                 progress,
                 env_vars,
-                dry_run=dry_run,
                 verbose=verbose,
             )
             counts[resource_type] = sync.count
@@ -523,16 +512,15 @@ def sync(dry_run: bool, config_path: str, verbose: bool, no_global: bool) -> Non
     for resource_type, leftovers in old_applied_by_rt.items():
         if not leftovers:
             continue
-        if verbose or dry_run:
+        if verbose:
             console.print(f"Removing all '{resource_type}' patches (no longer in config)...")
-        cleanup_orphaned_edits(leftovers, project_root, dry_run=dry_run, verbose=verbose)
+        cleanup_orphaned_edits(leftovers, project_root, verbose=verbose)
 
     for line in all_verbose_lines:
         console.print(line)
 
     # 9. Write lockfile.
-    if not dry_run:
-        write_lockfile(project_root, new_lockfile)
+    write_lockfile(project_root, new_lockfile)
 
     # 10. Summary — one chip per resource type that had configured deps.
     elapsed = time.monotonic() - start_time
@@ -584,7 +572,31 @@ def status(config_path: str, no_global: bool) -> None:  # noqa: C901
         for edit in lockfile.edits:
             edits_by_type[edit.resource_type] = edit
 
+    # Parallel `git ls-remote` for every installed copy-kind dep so we can flag upstream drift. Patches have no
+    # remote — they live in agpack.yml — so they're handled inline below without a network call.
+    remote_targets: list[DependencySource] = [
+        dep
+        for deps in config.dependencies.values()
+        for dep in deps
+        if isinstance(dep, DependencySource) and dep.identity in installed_map
+    ]
+    remote_shas: dict[str, str | None] = {}
+    if remote_targets:
+        with (
+            console.status(f"Checking {len(remote_targets)} remote(s)..."),
+            ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(remote_targets))) as executor,
+        ):
+            futures = {executor.submit(ls_remote, dep, env_vars): dep.identity for dep in remote_targets}
+            for future in as_completed(futures):
+                identity = futures[future]
+                try:
+                    remote_shas[identity] = future.result()
+                except Exception:  # noqa: BLE001  # display-only path: any failure → unknown
+                    remote_shas[identity] = None
+
     for resource_type, deps in config.dependencies.items():
+        if not deps:
+            continue
         table = Table(
             title=resource_type.capitalize(),
             title_style="bold",
@@ -595,28 +607,34 @@ def status(config_path: str, no_global: bool) -> None:  # noqa: C901
         )
         table.add_column(style="bold", no_wrap=True)
         table.add_column(style="dim")
-        if not deps:
-            table.add_row("[dim]no dependencies configured[/dim]")
-        else:
-            for dep in deps:
-                if isinstance(dep, DependencySource):
-                    installed = installed_map.get(dep.identity)
-                    if installed:
-                        short_ref = installed.resolved_ref[:7]
-                        table.add_row(
-                            f"[green]✓[/green] {dep.name}",
-                            f"{dep.url} @ {short_ref}",
-                        )
-                    else:
-                        table.add_row(
-                            f"[red]✗[/red] {dep.name}",
-                            "not yet synced",
-                        )
+        for dep in deps:
+            if isinstance(dep, DependencySource):
+                installed = installed_map.get(dep.identity)
+                if installed is None:
+                    table.add_row(f"[red]✗[/red] {dep.name}", "not yet synced")
+                    continue
+                local_short = installed.resolved_ref[:7]
+                remote_sha = remote_shas.get(dep.identity)
+                if remote_sha is None:
+                    table.add_row(
+                        f"[yellow]⚠[/yellow] {dep.name}",
+                        f"{dep.url} @ {local_short} (remote check failed)",
+                    )
+                elif remote_sha == installed.resolved_ref:
+                    table.add_row(
+                        f"[green]✓[/green] {dep.name}",
+                        f"{dep.url} @ {local_short}",
+                    )
                 else:
-                    synced = _is_patch_synced(dep, resource_type, target_defs, edits_by_type, env_vars)
-                    mark = "[green]✓[/green]" if synced else "[red]✗[/red]"
-                    detail = dep.strategy if synced else "not yet synced"
-                    table.add_row(f"{mark} {dep.key}", detail)
+                    table.add_row(
+                        f"[yellow]⚠[/yellow] {dep.name}",
+                        f"{dep.url} @ {local_short} → {remote_sha[:7]} (outdated)",
+                    )
+            else:
+                synced = _is_patch_synced(dep, resource_type, target_defs, edits_by_type, env_vars)
+                mark = "[green]✓[/green]" if synced else "[red]✗[/red]"
+                detail = dep.strategy if synced else "not yet synced"
+                table.add_row(f"{mark} {dep.key}", detail)
         console.print(table)
         console.print()
 

@@ -271,7 +271,6 @@ class EditFileResource:
         project_root: Path,
         env_vars: dict[str, str] | None = None,
         *,
-        dry_run: bool = False,
         verbose: bool = False,
     ) -> list[AppliedPatch]:
         """Apply each patch to the config file at :attr:`path`.
@@ -283,7 +282,6 @@ class EditFileResource:
             desired_new=patches,
             project_root=project_root,
             env_vars=env_vars,
-            dry_run=dry_run,
             verbose=verbose,
         )
 
@@ -320,7 +318,6 @@ class EditFileResource:
         project_root: Path,
         env_vars: dict[str, str] | None = None,
         *,
-        dry_run: bool = False,
         verbose: bool = False,
     ) -> None:
         """Undo a list of previously-applied patches on the config file at :attr:`path`.
@@ -340,18 +337,16 @@ class EditFileResource:
             desired_new=[],
             project_root=project_root,
             env_vars=env_vars,
-            dry_run=dry_run,
             verbose=verbose,
         )
 
-    def sync_patches(  # noqa: C901  # three-way diff: matches/removes/adds + dry-run + format inference
+    def sync_patches(  # noqa: C901  # three-way diff: matches/removes/adds + format inference
         self,
         applied_old: list[AppliedPatch],
         desired_new: list[Patch],
         project_root: Path,
         env_vars: dict[str, str] | None = None,
         *,
-        dry_run: bool = False,
         verbose: bool = False,
     ) -> list[AppliedPatch]:
         """Reconcile the file at :attr:`path` to match *desired_new*.
@@ -394,20 +389,6 @@ class EditFileResource:
             seen[mk] = i
 
         config_path = project_root / self.path
-
-        if dry_run:
-            if verbose:
-                for p in resolved_new:
-                    console.print(f"[dry-run]   {p.strategy} {self.path}:{p.key}")
-            return [
-                AppliedPatch(
-                    file_path=self.path,
-                    key=rp.key,
-                    strategy=rp.strategy,
-                    value_hash=value_hash(rp.value),
-                )
-                for rp in resolved_new
-            ]
 
         if not applied_old and not resolved_new and not config_path.exists():
             return []

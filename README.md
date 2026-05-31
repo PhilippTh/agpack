@@ -383,8 +383,7 @@ Delete the entry from `agpack.yml`, run `agpack sync`. The lockfile diff drives 
 
 ```
 agpack init    [--config PATH] [--global]                Scaffold a new config file
-agpack sync    [--config PATH] [--no-global]             Fetch and deploy all dependencies
-               [--dry-run] [--verbose]
+agpack sync    [--config PATH] [--no-global] [--verbose] Fetch and deploy all dependencies
 agpack status  [--config PATH] [--no-global]             Show installed vs configured state
 agpack targets list  [--config PATH] [--no-global]       Show all available targets and source
 agpack targets show <name> [--config PATH] [--no-global] Print the resolved manifest for one

@@ -47,8 +47,6 @@ def _fake_deploy_item(
     _resource_type: str,
     _targets: list[TargetDef],
     _project_root: Path,
-    dry_run: bool = False,  # noqa: ARG001  # mock must mirror deploy_item's kwargs
-    verbose: bool = False,  # noqa: ARG001
 ) -> list[str]:
     """Stand-in for ``agpack.deployer.deploy_item``."""
     return [f"{name}.md"]
@@ -81,7 +79,6 @@ class TestParallelFetchAllSucceed:
                 new_lockfile,
                 progress,
                 {},
-                dry_run=False,
                 verbose=False,
             )
 
@@ -110,7 +107,6 @@ class TestParallelFetchAllSucceed:
                 new_lockfile,
                 progress,
                 {},
-                dry_run=False,
                 verbose=False,
             )
 
@@ -147,7 +143,6 @@ class TestParallelFetchCollectAllErrors:
                 new_lockfile,
                 progress,
                 {},
-                dry_run=False,
                 verbose=False,
             )
 
@@ -188,36 +183,10 @@ class TestParallelFetchCollectAllErrors:
                 Lockfile(),
                 progress,
                 {},
-                dry_run=False,
                 verbose=False,
             )
 
         mock_cleanup.assert_called_once_with(fake_result)
-
-    def test_dry_run_skips_lockfile_write(self, tmp_path: Path) -> None:
-        deps = [_make_dep("bad")]
-        target_defs = _make_targets()
-
-        with (
-            patch("agpack.cli.fetch_dependency", side_effect=FetchError("boom")),
-            patch("agpack.cli.write_lockfile") as mock_write,
-            patch("agpack.cli.cleanup_fetch"),
-            create_sync_progress() as progress,
-            pytest.raises(click.ClickException),
-        ):
-            _sync_resource_type(
-                deps,
-                "skills",
-                target_defs,
-                tmp_path,
-                Lockfile(),
-                progress,
-                {},
-                dry_run=True,
-                verbose=False,
-            )
-
-        mock_write.assert_not_called()
 
     def test_deploy_not_called_when_any_fetch_fails(self, tmp_path: Path) -> None:
         deps = [_make_dep("a"), _make_dep("b")]
@@ -249,7 +218,6 @@ class TestParallelFetchCollectAllErrors:
                 Lockfile(),
                 progress,
                 {},
-                dry_run=False,
                 verbose=False,
             )
 
@@ -271,7 +239,6 @@ class TestParallelFetchEdgeCases:
                 Lockfile(),
                 progress,
                 {},
-                dry_run=False,
                 verbose=False,
             )
         assert sync.count == 0
@@ -308,7 +275,6 @@ class TestParallelFetchEdgeCases:
                 Lockfile(),
                 progress,
                 {},
-                dry_run=False,
                 verbose=False,
             )
 
@@ -340,7 +306,6 @@ class TestParallelFetchEdgeCases:
                 Lockfile(),
                 progress,
                 {},
-                dry_run=False,
                 verbose=False,
             )
 

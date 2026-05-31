@@ -277,15 +277,6 @@ class TestApplyPatchesJson:
         assert cfg["mcpServers"]["old"]["command"] == "old"
         assert cfg["mcpServers"]["new"]["command"] == "new"
 
-    def test_dry_run_does_not_write(self, tmp_path: Path) -> None:
-        resource = EditFileResource(path=".mcp.json")
-        resource.apply_patches(
-            [Patch(key="mcpServers.fs", value={"command": "npx"})],
-            tmp_path,
-            dry_run=True,
-        )
-        assert not (tmp_path / ".mcp.json").exists()
-
     def test_append_creates_list_and_extends(self, tmp_path: Path) -> None:
         (tmp_path / "settings.json").write_text("{}", encoding="utf-8")
         resource = EditFileResource(path="settings.json")

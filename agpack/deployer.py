@@ -48,8 +48,6 @@ def deploy_item(
     resource_type: str,
     targets: list[TargetDef],
     project_root: Path,
-    dry_run: bool = False,
-    verbose: bool = False,
 ) -> list[str]:
     """Deploy one item to every target that supports ``resource_type``."""
     deployed: list[str] = []
@@ -57,11 +55,7 @@ def deploy_item(
         resource = target.resources.get(resource_type)
         if not isinstance(resource, CopyResource):
             continue
-        deployed.extend(resource.deploy_item(name, src_path, project_root, dry_run=dry_run, verbose=verbose))
-
-    if verbose and not dry_run:
-        for entry in deployed:
-            console.print(f"  {entry}")
+        deployed.extend(resource.deploy_item(name, src_path, project_root))
 
     return deployed
 
@@ -79,7 +73,6 @@ def sync_edit_resource(
     project_root: Path,
     env_vars: dict[str, str] | None = None,
     *,
-    dry_run: bool = False,
     verbose: bool = False,
 ) -> list[AppliedPatch]:
     """Reconcile every target's edit-file resource of ``resource_type``.
@@ -121,7 +114,6 @@ def sync_edit_resource(
                 desired_new=desired,
                 project_root=project_root,
                 env_vars=env_vars,
-                dry_run=dry_run,
                 verbose=verbose,
             )
         )
@@ -132,7 +124,7 @@ def sync_edit_resource(
     for file_path, leftovers in old_by_file.items():
         if file_path in touched_files or not leftovers:
             continue
-        EditFileResource(path=file_path).cleanup_patches(leftovers, project_root, dry_run=dry_run, verbose=verbose)
+        EditFileResource(path=file_path).cleanup_patches(leftovers, project_root, verbose=verbose)
 
     if not matched_any and desired:
         console.print(
@@ -148,7 +140,6 @@ def cleanup_orphaned_edits(
     applied_old: list[AppliedPatch],
     project_root: Path,
     *,
-    dry_run: bool = False,
     verbose: bool = False,
 ) -> None:
     """Reverse every recorded patch for a resource type that no longer exists in ``dependencies:``.
@@ -160,7 +151,7 @@ def cleanup_orphaned_edits(
     for ap in applied_old:
         by_file[ap.file_path].append(ap)
     for file_path, entries in by_file.items():
-        EditFileResource(path=file_path).cleanup_patches(entries, project_root, dry_run=dry_run, verbose=verbose)
+        EditFileResource(path=file_path).cleanup_patches(entries, project_root, verbose=verbose)
 
 
 # ===========================================================================
@@ -171,23 +162,17 @@ def cleanup_orphaned_edits(
 def cleanup_deployed_files(
     deployed_files: list[str],
     project_root: Path,
-    dry_run: bool = False,
     verbose: bool = False,
 ) -> None:
     """Remove previously deployed files and clean up empty directories."""
     for rel_path in deployed_files:
         full_path = project_root / rel_path
         if full_path.exists():
-            if dry_run:
-                if verbose:
-                    console.print(f"[dry-run]   delete {rel_path}")
-                continue
             full_path.unlink()
             if verbose:
                 console.print(f"  deleted {rel_path}")
 
-    if not dry_run:
-        _cleanup_empty_dirs(deployed_files, project_root)
+    _cleanup_empty_dirs(deployed_files, project_root)
 
 
 def _cleanup_empty_dirs(deployed_files: list[str], project_root: Path) -> None:

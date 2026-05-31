@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import ClassVar
 
-from agpack.display import console
 from agpack.errors import DeployError
 from agpack.kinds._shared import atomic_copy_file
 from agpack.kinds._shared import copy_tree
@@ -55,24 +54,9 @@ class CopyDirectoryResource:
         item_name: str,
         src_path: Path,
         project_root: Path,
-        *,
-        dry_run: bool = False,
-        verbose: bool = False,
     ) -> list[str]:
         dst = project_root / self.path / item_name
         deployed: list[str] = []
-
-        if dry_run:
-            if src_path.is_dir():
-                for f in sorted(src_path.rglob("*")):
-                    if f.is_file() and not any(p.startswith(".git") for p in f.relative_to(src_path).parts):
-                        rel = dst / f.relative_to(src_path)
-                        deployed.append(str(rel.relative_to(project_root)))
-            else:
-                deployed.append(str((dst / src_path.name).relative_to(project_root)))
-            if verbose:
-                console.print(f"[dry-run]   copy {src_path} → {dst}")
-            return deployed
 
         if src_path.is_dir():
             for copied in copy_tree(src_path, dst):
