@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+from pathlib import Path
 from typing import Any
 
 from agpack.errors import TargetSchemaError
@@ -78,21 +79,25 @@ def _reject_extra(known: set[str], data: dict[str, Any], context: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _make_path(raw: str) -> str:
+    return str(Path(raw).expanduser())
+
+
 def _parse_copy_directory(data: dict[str, Any], context: str) -> CopyDirectoryResource:
     _reject_extra({"kind", "path"}, data, context)
-    path = _require_string(data.get("path"), f"{context}.path")
+    path = _make_path(_require_string(data.get("path"), f"{context}.path"))
     return CopyDirectoryResource(path=path)
 
 
 def _parse_copy_file(data: dict[str, Any], context: str) -> CopyFileResource:
     _reject_extra({"kind", "path"}, data, context)
-    path = _require_string(data.get("path"), f"{context}.path")
+    path = _make_path(_require_string(data.get("path"), f"{context}.path"))
     return CopyFileResource(path=path)
 
 
 def _parse_edit_file(data: dict[str, Any], context: str) -> EditFileResource:
     _reject_extra({"kind", "path", "vars"}, data, context)
-    path = _require_string(data.get("path"), f"{context}.path")
+    path = _make_path(_require_string(data.get("path"), f"{context}.path"))
     # Validate extension at parse time so malformed manifests fail loudly.
     try:
         infer_config_format(path)
