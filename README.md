@@ -115,6 +115,15 @@ dependencies:
   ref: v1.2.0
 ```
 
+`path` can also be a list, to pull several paths from the same repo without repeating the `url` block — each expands into its own dependency sharing the same `url`/`ref` (note the asymmetry: a `url` list means fallbacks for one source, a `path` list means multiple sources):
+
+```yaml
+- url: https://github.com/owner/skills-repo
+  path:
+    - skills/code-review
+    - skills/productivity/handoff
+```
+
 ### Directory expansion
 
 `path` can point at a single file, a single folder, or a parent directory containing multiple items. agpack figures out what's inside:

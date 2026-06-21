@@ -197,6 +197,26 @@ def _parse_dependency_entry(raw: Any, context: str) -> DependencyEntry:
     raise ConfigError(msg)
 
 
+def _expand_paths(raw: Any, context: str) -> list[Any]:
+    """Desugar a list-valued ``path:`` into one raw entry per path, before parsing.
+
+    ``{url, path: [a, b]}`` becomes ``[{url, path: a}, {url, path: b}]`` — pure sugar for pulling several paths
+    from the same repo, identical to writing the block out by hand. A scalar ``path`` (or none) passes through
+    untouched, so the rest of the pipeline only ever sees a single string ``path``. Note the asymmetry with ``url``:
+    a ``url`` list means fallbacks for *one* source, whereas a ``path`` list means *multiple* sources.
+    """
+    if not isinstance(raw, dict) or not isinstance(raw.get("path"), list):
+        return [raw]
+    paths = raw["path"]
+    if not paths:
+        msg = f"{context}: 'path' list must not be empty"
+        raise ConfigError(msg)
+    if any(not isinstance(p, str) or not p for p in paths):
+        msg = f"{context}: 'path' entries must be non-empty strings, got {paths!r}"
+        raise ConfigError(msg)
+    return [{**raw, "path": p} for p in paths]
+
+
 def _parse_target_definitions(raw: Any, prefix: str = "") -> dict[str, TargetDef]:
     """Parse a ``target_definitions`` mapping into TargetDef objects."""
     if raw is None:
@@ -235,9 +255,10 @@ def _parse_dependencies(deps: dict[str, Any], prefix: str = "") -> dict[str, lis
             msg = f"{prefix}dependencies: keys must be non-empty strings, got {rt!r}"
             raise ConfigError(msg)
         items = raw_list or []
-        entries: list[DependencyEntry] = [
-            _parse_dependency_entry(item, f"{prefix}dependencies.{rt}[{i}]") for i, item in enumerate(items)
-        ]
+        entries: list[DependencyEntry] = []
+        for i, item in enumerate(items):
+            context = f"{prefix}dependencies.{rt}[{i}]"
+            entries.extend(_parse_dependency_entry(e, context) for e in _expand_paths(item, context))
         # Reject mixed fetch + patch within one resource type.
         if entries:
             first_kind = type(entries[0])
