@@ -268,6 +268,89 @@ dependencies:
     assert dep.ref == "main"
 
 
+def test_fetch_entry_path_list_expands_to_multiple_sources(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets: [claude]
+dependencies:
+  skills:
+    - url: https://github.com/mattpocock/skills
+      ref: main
+      path:
+        - skills/productivity/grill-me
+        - skills/productivity/caveman
+        - skills/productivity/handoff
+""",
+    )
+    cfg = load_config(cfg_path)
+    skills = cfg.dependencies["skills"]
+    assert len(skills) == 3
+    assert all(isinstance(s, DependencySource) for s in skills)
+    # Each expanded source shares url + ref but carries its own path.
+    assert [s.path for s in skills] == [
+        "skills/productivity/grill-me",
+        "skills/productivity/caveman",
+        "skills/productivity/handoff",
+    ]
+    assert all(s.urls == ["https://github.com/mattpocock/skills"] for s in skills)
+    assert all(s.ref == "main" for s in skills)
+    # Identities stay distinct so lockfile matching/dedup keeps working.
+    assert len({s.identity for s in skills}) == 3
+
+
+def test_fetch_entry_path_list_preserves_order_among_other_entries(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets: [claude]
+dependencies:
+  skills:
+    - url: https://github.com/owner/a
+      path: x
+    - url: https://github.com/owner/multi
+      path: [p1, p2]
+    - url: https://github.com/owner/b
+      path: y
+""",
+    )
+    cfg = load_config(cfg_path)
+    skills = cfg.dependencies["skills"]
+    assert [s.path for s in skills] == ["x", "p1", "p2", "y"]
+
+
+def test_fetch_entry_path_list_must_not_be_empty(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets: [claude]
+dependencies:
+  skills:
+    - url: https://github.com/owner/repo
+      path: []
+""",
+    )
+    with pytest.raises(ConfigError, match="'path' list must not be empty"):
+        load_config(cfg_path)
+
+
+def test_fetch_entry_path_list_entries_must_be_non_empty_strings(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        """\
+targets: [claude]
+dependencies:
+  skills:
+    - url: https://github.com/owner/repo
+      path:
+        - skills/ok
+        - ""
+""",
+    )
+    with pytest.raises(ConfigError, match="'path' entries must be non-empty strings"):
+        load_config(cfg_path)
+
+
 # ---------------------------------------------------------------------------
 # 4. Patch entry validation
 # ---------------------------------------------------------------------------
