@@ -1,0 +1,14 @@
+# pi (Earendil Works coding agent)
+
+skills:
+  kind: copy-directory
+  path: .pi/skills
+
+# pi calls these "prompt templates" (invoked as /name); same role as commands
+# elsewhere.
+commands:
+  kind: copy-file
+  path: .pi/prompts
+
+# pi has no MCP (by design) and no file-based subagents (it uses extensions),
+# so there is no `mcp:` or `agents:` resource type.

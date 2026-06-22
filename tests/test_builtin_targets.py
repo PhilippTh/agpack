@@ -99,6 +99,15 @@ def test_windsurf_paths() -> None:
     assert "mcp" not in target.resources
 
 
+def test_pi_paths() -> None:
+    target = load_builtin("pi")
+    assert target.resources["skills"].path == ".pi/skills"
+    assert isinstance(target.resources["commands"], CopyFileResource)
+    assert target.resources["commands"].path == ".pi/prompts"
+    assert "agents" not in target.resources
+    assert "mcp" not in target.resources
+
+
 def test_antigravity_paths() -> None:
     target = load_builtin("antigravity")
     assert target.resources["skills"].path == ".agent/skills"
