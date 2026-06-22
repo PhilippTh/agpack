@@ -1203,6 +1203,7 @@ def test_targets_list_shows_all_builtins(tmp_path: Path) -> None:
         "cursor",
         "copilot",
         "gemini",
+        "pi",
         "windsurf",
         "antigravity",
     ]:

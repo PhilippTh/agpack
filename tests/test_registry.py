@@ -17,6 +17,7 @@ EXPECTED_BUILTINS = {
     "cursor",
     "gemini",
     "opencode",
+    "pi",
     "windsurf",
 }
 

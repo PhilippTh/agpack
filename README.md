@@ -209,7 +209,7 @@ agpack targets show claude           # print Claude's manifest as YAML
 
 ### Bundled targets
 
-agpack ships manifests for eight tools: `claude`, `codex`, `copilot`, `cursor`, `gemini`, `opencode`, `windsurf`, `antigravity`. The manifests themselves are the source of truth — browse them at [`agpack/builtin_targets/`](agpack/builtin_targets/) or introspect locally:
+agpack ships manifests for nine tools: `claude`, `codex`, `copilot`, `cursor`, `gemini`, `opencode`, `pi`, `windsurf`, `antigravity`. The manifests themselves are the source of truth — browse them at [`agpack/builtin_targets/`](agpack/builtin_targets/) or introspect locally:
 
 ```bash
 agpack targets list                   # every target + its resource types
@@ -219,6 +219,7 @@ agpack targets show claude            # the full manifest as YAML
 One thing worth knowing that isn't obvious from the file names:
 
 - **Windsurf and Antigravity have no per-project MCP config.** Their MCP configs live in user-global locations (`~/.codeium/windsurf/mcp_config.json` and `~/.gemini/antigravity/mcp_config.json`), which agpack does not manage.
+- **pi has no MCP and no file-based subagents.** It deliberately ships without MCP (CLI tools and extensions cover that role) and uses TypeScript extensions instead of copy-file agents, so its manifest exposes only `skills` (`.pi/skills`) and `commands` — which map to pi's prompt templates in `.pi/prompts`.
 
 ### Custom and overridden targets
 
