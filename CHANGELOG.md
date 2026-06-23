@@ -4,6 +4,40 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-06-22
+
+### Added
+
+- **`pi` built-in target** (Earendil Works coding agent). Deploys `skills` to `.pi/skills` and `commands` to `.pi/prompts` (pi's prompt templates). pi ships without MCP and uses extensions instead of file-based subagents, so the manifest exposes no `mcp` or `agents` resource type. Added to the `agpack init` scaffold.
+
+## [0.4.3] - 2026-06-21
+
+### Added
+
+- **List-valued `path:` on a fetch dependency.** `path:` accepts a list, expanding into one dependency per path that shares the same `url`/`ref` — sugar for pulling several skills/commands from one repo without repeating the `url` block. Note the asymmetry with `url`: a `url` list means fallbacks for one source, a `path` list means multiple sources.
+
+## [0.4.2] - 2026-05-31
+
+### Removed
+
+- **`--dry-run` flag on `agpack sync`**, superseded by the `agpack status` command. To preview state, run `agpack status` instead of `agpack sync --dry-run`.
+
+### Added
+
+- `git ls-remote` support in the fetcher (`ls_remote`), letting `agpack status` resolve a dependency's remote ref without performing a full fetch.
+
+## [0.4.1] - 2026-05-31
+
+### Added
+
+- **`agpack status` command** — shows installed vs. configured state without writing anything.
+- `edit-file` (patch) resources now appear in `agpack targets list` alongside copy resources.
+- Per-patch progress lines during sync (applying / applied / failed).
+
+### Changed
+
+- The sync summary hides resource types with a zero count instead of printing `0 <type>` chips.
+
 ## [0.4.0] - 2026-05-22
 
 > Breaking release. Target manifests and `agpack.yml` were overhauled to make every resource generic. The old MCP-specific syntax has no in-place upgrade — see the migration block below.
@@ -112,7 +146,11 @@ For custom `target_definitions:`, drop the `merge:` block and `format:` from edi
 
 - Type-check failures and CI configuration.
 
-[Unreleased]: https://github.com/PhilippTh/agpack/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/PhilippTh/agpack/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/PhilippTh/agpack/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/PhilippTh/agpack/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/PhilippTh/agpack/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/PhilippTh/agpack/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/PhilippTh/agpack/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/PhilippTh/agpack/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/PhilippTh/agpack/compare/v0.2.1...v0.3.0
