@@ -131,7 +131,7 @@ def test_full_sync_flow(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["sync", "--config", str(config_path), "--verbose"],
+        ["sync", "--config", str(config_path), "--no-global", "--verbose"],
         catch_exceptions=False,
     )
 
